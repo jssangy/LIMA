@@ -78,7 +78,7 @@ class ENV():
 
         return 
     
-    def step(self, actions, reward, events):
+    def step2(self, actions, reward, events):
         self.time += 1
         total_reward = 0
         next_events = {}
@@ -137,6 +137,21 @@ class ENV():
 
         next_states = self.get_state()
         return next_states, total_reward, next_events
+    
+    def step(self, actions):
+        self.time += 1
+
+        # <1 Step>
+        # All AGVs send the sensor signal
+        for num, agv in self.agv_list.items():
+            # Send the signal to controller through network 
+            self.controller.get_sensing(num, self.network.send(agv.sensing()))
+        
+        # <2 Step>
+        # Controller sends the conntrol signal through network
+        control_sig = self.controller.update_control(actions)
+        for num, agv in self.agv_list.items():
+            agv.get_control(self.network.send([control_sig[0][num], control_sig[1][num]]))
    
 
     # Single Process Step

@@ -70,7 +70,7 @@ class DQN_Agent:
     def remember(self, state, action, reward, next_state):
         self.memory.push(state, action, reward, next_state)
     
-    def act(self, state, agv_id):
+    def act(self, state):
         with torch.no_grad():
             state = torch.FloatTensor(state).to(self.device)
             q_values = self.policy_net(state)
