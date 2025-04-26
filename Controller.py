@@ -1,6 +1,5 @@
 import heapq
 import numpy as np # use for matrix calculation
-from sklearn import neighbors  # use for dijkstra
 
 import Funct
 
@@ -10,7 +9,8 @@ class controller():
         self.agv_pos = {} # save the position of agv positions
         self.agv_next_pos = {} # save the next position of agv positions
         self.agv_next_rout = {} # save the next rout position of agv
-        self.control_buffer = {} # save the control output of agvs
+        self.dstar_control_buffer = {} # save the D* algorithm based control output of agvs
+        self.action_control_buffer = {} # save the action control output of agvs
         self.agv_state = {} # 0(start - pick up) 1(pick up - drop) 2(drop - rest) 3(rest - start)
         self.agv_nums = [] # agv numbers (A, B, C, ... O)
         self.agv_mode = {} # 0 (normal) 1 (Danger)
@@ -18,6 +18,7 @@ class controller():
         self.agv_info = {} # for GUI infomation
         self.agv_rout = {} # for routing of AGV
         self.agv_pre_rout = {} # previous node
+        self.planners = {} # D* class for each AGV
         
         # Whole Products
         self.whole_product = 0
@@ -31,18 +32,29 @@ class controller():
             self.agv_mode[chr(i + 65)] = 0 # Initial mode is normal
             self.agv_goal[chr(i + 65)] = [(0, 0), (0, 0), (0, 0), (0, 0)]
             self.agv_info[chr(i + 65)] = [0, 0]
-            self.control_buffer[chr(i + 65)] = (0, 0)
+            self.dstar_control_buffer[chr(i + 65)] = (0, 0)
+            self.action_control_buffer[chr(i + 65)] = (0, 0)
             self.agv_rout[chr(i + 65)] = []
             self.agv_pre_rout[chr(i + 65)] = (0, 0)
         
         # Map of warehouse digital twin
         self.map = map
         
-        # Make graph for routing
+        # Make graph & grid for routing
         self.graphing()
+        self.make_grid()
                 
         # Time
         self.time = 0
+
+    def get_obs(self, num):
+        pos = self.agv_pos[num]
+        x, y = pos
+
+        if (self.map[y][x] == 6) or (isinstance(self.map[y][x]), str):
+            pass
+        else:
+            dx, dy = self.action_control_buffer[num]
     
     # set start position
     def set_start(self, num, pos):
@@ -79,100 +91,153 @@ class controller():
             self.agv_info[num][1] = data[1]
             
         if self.time == 0:
-            self.agv_rout[num] = self.dijkstra_shortest(self.graph, self.agv_pos[num], self.agv_goal[num][self.agv_state[num]])
-            self.agv_next_rout[num] = self.agv_rout[num][0]
-
-    def update_control(self, actions):
-        self.time += 1
-        self.dijkstra_rout(actions)
-        return (self.control_buffer, self.agv_mode)
-    
-    def dijkstra_rout(self, actions):
-        # Get the Dijkstra rout of AGVs
-        for num in self.agv_nums:
             pos = self.agv_pos[num]
-            state = self.agv_state[num]
-            goal = self.agv_goal[num][state]
+            goal = self.agv_goal[num][self.agv_state[num]]
+            self.planners[num] = DStar(self.grid, pos, goal)
+            self.planners[num].compute_shortest_path()
 
-            # Change the state of AGVs
-            if (pos == goal):
-                state = self.change_state(num, state)
-                goal = self.agv_goal[num][state]
-                self.agv_mode[num] = 0
-                self.agv_rout[num] = self.dijkstra_shortest(self.graph, pos, goal)
-            
-            # If AGV need next rout! (rout node)
-            if (((self.map[pos[1]][pos[0]] == 6) or (pos in self.agv_goal[num])) and (self.agv_mode[num] == 0)):
-                next_rout = self.agv_rout[num].pop(0)
-                
-                # Save next rout position
-                self.agv_next_rout[num] = next_rout  
-    
-    def make_control(self):
-        self.time += 1
-        self.dijkstra_rout()
-        return (self.control_buffer, self.agv_mode)
-    
-    def dijkstra_rout(self):
-        # Get the Dijkstra rout of AGVs
-        for num in self.agv_nums:
-            pos = self.agv_pos[num]
-            state = self.agv_state[num]
-            goal = self.agv_goal[num][state]
-
-            # Change the state of AGVs
-            if (pos == goal):
-                state = self.change_state(num, state)
-                goal = self.agv_goal[num][state]
-                self.agv_mode[num] = 0
-                self.agv_rout[num] = self.dijkstra_shortest(self.graph, pos, goal)
-            
-            # If AGV need next rout! (rout node)
-            if (((self.map[pos[1]][pos[0]] == 6) or (pos in self.agv_goal[num])) and (self.agv_mode[num] == 0)):
-                next_rout = self.agv_rout[num].pop(0)
-                
-                # Save next rout position
-                self.agv_next_rout[num] = next_rout
-                
-                # Determine new control signal
-                if next_rout[0] > pos[0]:
-                    self.control_buffer[num] = (1, 0)
-                elif next_rout[0] < pos[0]:
-                    self.control_buffer[num] = (-1, 0)
-                elif next_rout[1] > pos[1]:
-                    self.control_buffer[num] = (0, 1)
-                elif next_rout[1] < pos[1]:
-                    self.control_buffer[num] = (0, -1)
-                else:
-                    self.control_buffer[num] = (0, 0)
-                self.agv_next_pos[num] = (pos[0] + self.control_buffer[num][0], pos[1] + self.control_buffer[num][1]) 
-        
-            # Just keep going!
+            path = self.planners[num].extract_path()
+            self.agv_rout[num] = path
+            if len(path) >= 2:
+                self.agv_next_rout[num] = path[1]
             else:
-                self.agv_next_pos[num] = (pos[0] + self.control_buffer[num][0], pos[1] + self.control_buffer[num][1]) 
+                self.agv_next_rout[num] = pos
+
+
+    def action_control(self, actions):
+        self.time += 1
+        self.dstar_action(actions)
+        return (self.action_control_buffer, self.agv_mode)
+    
+    def action(self, actions):
+        for num in self.agv_nums:
+            control = [(0, 1), (0, -1), (1, 0), (-1, 0), (0, 0)]
+            pos = self.agv_pos[num]
+            state = self.agv_state[num]
+            goal = self.agv_goal[num][state]
+
+            if pos == goal:
+                state = self.change_state(num, state)
+                new_goal = self.agv_goal[num][state]
+                self.agv_mode[num] = 0
                 
+                self.planners[num] = DStar(self.grid, pos, new_goal)
+                self.planners[num].compute_shortest_path()
+                path = self.planners[num].extract_path()
+            else:
+                planner = self.planners[num]
+                planner.start = pos
+                planner.compute_shortest_path()
+                path = planner.extract_path()
+
+            if len(path) >= 2:
+                next_pos = path[1]
+                dx = next_pos[0] - pos[0]
+                dy = next_pos[1] - pos[1]
+                self.dstar_control_buffer[num] = (dx, dy)
+                self.action_control_buffer[num] = control[actions[num]]
+                self.agv_next_pos[num] = pos + self.action_control_buffer[num]
+            else:
+                self.dstar_control_buffer[num] = (0, 0)
+                self.action_control_buffer[num] = (0, 0)
+                self.agv_next_pos[num] = pos
+
         # Collision prevention => Dead Lock
         for num1 in self.agv_nums:
             num1_pos = self.agv_pos[num1]
             num1_next_pos = self.agv_next_pos[num1]
 
-            # Deadlock 상태 초기화
             self.agv_mode[num1] = 0
-
             for num2 in self.agv_nums:
                 if num1 != num2:
                     num2_pos = self.agv_pos[num2]
                     num2_next_pos = self.agv_next_pos[num2]
                     if (num1_next_pos == num2_next_pos):
                         self.agv_mode[num1] = 1
-                    elif (num1_next_pos == num2_pos and num2_next_pos == num1_pos):
+                    elif (num1_next_pos == num2_pos):
                         self.agv_mode[num1] = 1
           
             if self.map[num1_pos[1]][num1_pos[0]] == 1:
                 self.agv_mode[num1] = 2
-                self.control_buffer[num1] = (0, 0)    
+                self.dstar_control_buffer[num1] = (0, 0) 
+    
+    def make_control(self):
+        self.time += 1
+        self.dstar_rout()
+        return (self.dstar_control_buffer, self.agv_mode)
+    
+    def dstar_rout(self):
+        for num in self.agv_nums:
+            pos = self.agv_pos[num]
+            state = self.agv_state[num]
+            goal = self.agv_goal[num][state]
+
+            if pos == goal:
+                state = self.change_state(num, state)
+                goal = self.agv_goal[num][state]
+                self.agv_mode[num] = 0
+                
+                self.planners[num] = DStar(self.grid, pos, goal)
+                self.planners[num].compute_shortest_path()
+                path = self.planners[num].extract_path()
+            else:
+                planner = self.planners[num]
+                planner.start = pos
+                planner.compute_shortest_path()
+                path = planner.extract_path()
+
+            if len(path) >= 2:
+                next_pos = path[1]
+                dx = next_pos[0] - pos[0]
+                dy = next_pos[1] - pos[1]
+                self.dstar_control_buffer[num] = (dx, dy)
+                self.agv_next_pos[num] = next_pos
+            else:
+                self.dstar_control_buffer[num] = (0, 0)
+                self.agv_next_pos[num] = pos
+
+        # Collision prevention => Dead Lock
+        for num1 in self.agv_nums:
+            num1_pos = self.agv_pos[num1]
+            num1_next_pos = self.agv_next_pos[num1]
+
+            self.agv_mode[num1] = 0
+            for num2 in self.agv_nums:
+                if num1 != num2:
+                    num2_pos = self.agv_pos[num2]
+                    num2_next_pos = self.agv_next_pos[num2]
+                    if (num1_next_pos == num2_next_pos):
+                        self.agv_mode[num1] = 1
+                    elif (num1_next_pos == num2_pos):
+                        self.agv_mode[num1] = 1
+          
+            if self.map[num1_pos[1]][num1_pos[0]] == 1:
+                self.agv_mode[num1] = 2
+                self.dstar_control_buffer[num1] = (0, 0)   
+
         
     # ======================== Routing Functions ============================================
+    def make_grid(self):
+        height, width = len(self.map), len(self.map[0])
+        self.grid = np.zeros((height, width), dtype=np.uint8)
+        white_cells = set(self.graph.keys())
+
+        for start, neighbors in self.graph.items():
+            for end in neighbors:
+                x0, y0 = start
+                x1, y1 = end
+                steps = max(abs(x1 - x0), abs(y1 - y0))
+                for i in range(steps + 1):
+                    xi = x0 + round((x1 - x0) * i / steps)
+                    yi = y0 + round((y1 - y0) * i / steps)
+                    white_cells.add((xi, yi))
+
+        for (x, y) in white_cells:
+            if 0 <= x < width and 0 <= y < height:
+                self.grid[y][x] = 1
+        
+        return self.grid
+
     def graphing(self):
         self.graph = {}
         for x in range (100):
@@ -190,109 +255,106 @@ class controller():
                     nodes = {}
                     for neighbor in neighbors:
                         nodes[neighbor] = Funct.get_distance((x,y), neighbor)
-                    self.graph[(x,y)] = nodes   
+                    self.graph[(x,y)] = nodes  
     
-    def find_neighbors(self, x, y, rout = True):
+    def find_neighbors(self, x, y, rout=True):
         line_list = []
-        distance = 0
-        poss_x = x
-        poss_y = y
-        # up
-        while distance < 15 and 1 <= poss_y < 99 and 1 <= poss_x < 99:
-            poss_x += 1
-            distance += 1
-            if (self.map[poss_y][poss_x] == 1):
-                break
-            if (self.map[poss_y][poss_x] == 6):
-                line_list.append((poss_x, poss_y))
-                break
-            if (type(self.map[poss_y][poss_x]) == str) and rout:
-                line_list.append((poss_x, poss_y))
-                break
-                
-        distance = 0
-        poss_x = x
-        poss_y = y
-        
-        # down
-        while distance < 15 and 1 <= poss_y < 99 and 1 <= poss_x < 99:
-            poss_x -= 1
-            distance += 1
-            if (self.map[poss_y][poss_x] == 1):
-                break
-            if (self.map[poss_y][poss_x] == 6):
-                line_list.append((poss_x, poss_y))
-                break
-            if (type(self.map[poss_y][poss_x]) == str) and rout:
-                line_list.append((poss_x, poss_y))
-                break
-        
-        distance = 0
-        poss_x = x
-        poss_y = y
-        
-        # right
-        while distance < 15 and 1 <= poss_y < 99 and 1 <= poss_x < 99:
-            poss_y += 1
-            distance += 1
-            if (self.map[poss_y][poss_x] == 6):
-                line_list.append((poss_x, poss_y))
-                break
-            if (type(self.map[poss_y][poss_x]) == str) and rout:
-                line_list.append((poss_x, poss_y))
-                break
-            if (self.map[poss_y][poss_x] == 1):
-                break
-            
-        distance = 0
-        poss_x = x
-        poss_y = y
-        
-        # left
-        while distance < 15 and 1 <= poss_y < 99 and 1 <= poss_x < 99:
-            poss_y -= 1
-            distance += 1
-            if (self.map[poss_y][poss_x] == 1):
-                break
-            if (self.map[poss_y][poss_x] == 6):
-                line_list.append((poss_x, poss_y))
-                break
-            if (type(self.map[poss_y][poss_x]) == str) and rout:
-                line_list.append((poss_x, poss_y))
-                break
-            
+        for direction in ['up', 'down', 'left', 'right']:
+            dx, dy = {'up': (1, 0), 'down': (-1, 0), 'right': (0, 1), 'left': (0, -1)}[direction]
+            distance, poss_x, poss_y = 0, x, y
+            while distance < 15 and 1 <= poss_x < 99 and 1 <= poss_y < 99:
+                poss_x += dx
+                poss_y += dy
+                distance += 1
+                val = self.map[poss_y][poss_x]
+                if val == 1:
+                    break
+                if val == 6 or (isinstance(val, str) and rout):
+                    line_list.append((poss_x, poss_y))
+                    break
         return line_list
-
-    def dijkstra_shortest(self, graph, start, end):
-        distances = {node: float('inf') for node in graph}  # start로 부터의 거리 값을 저장하기 위함
-        distances[start] = 0  # 시작 값은 0이어야 함
-        queue = []
-        heapq.heappush(queue, [distances[start], start])  # 시작 노드부터 탐색 시작 하기 위함.
-        
-        parents = {start: None}
-        distance = {start: 0}
-
-        while queue:  # queue에 남아 있는 노드가 없으면 끝
-            current_distance, current_destination = heapq.heappop(queue)  # 탐색 할 노드, 거리를 가져옴.
-
-            if current_destination == end:
-                return self.traceback_path(end, parents)
-
-            if distances[current_destination] < current_distance:  # 기존에 있는 거리보다 길다면, 볼 필요도 없음
-                continue
-            
-            for new_destination, new_distance in graph[current_destination].items():
-                distance = current_distance + new_distance  # 해당 노드를 거쳐 갈 때 거리
-                if distance < distances[new_destination]:  # 알고 있는 거리 보다 작으면 갱신
-                    distances[new_destination] = distance
-                    heapq.heappush(queue, [distance, new_destination])  # 다음 인접 거리를 계산 하기 위해 큐에 삽입
-                    parents[new_destination] = current_destination
-            
-        return -1
     
-    def traceback_path(self, target, parents):
-        path = []
-        while target:
-            path.append(target)
-            target = parents[target]
-        return list(reversed(path))[1:]
+# D* Lite Algorithm
+class DStar:
+    def __init__(self, grid_map, start, goal):
+        self.map = grid_map
+        self.start = start
+        self.goal = goal
+
+        self.g = {}          # 실제 비용
+        self.rhs = {}        # 예상 비용
+        self.queue = []      # 우선순위 큐
+
+        h, w = grid_map.shape
+        for y in range(h):
+            for x in range(w):
+                if grid_map[y][x] == 1:
+                    self.g[(x, y)] = float('inf')
+                    self.rhs[(x, y)] = float('inf')
+
+        self.rhs[self.goal] = 0
+        self.insert(self.goal)
+
+    def manhattan(self, a, b):
+        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+    def get_neighbors(self, pos):
+        x, y = pos
+        neighbors = []
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < self.map.shape[1] and 0 <= ny < self.map.shape[0]:
+                if self.map[ny][nx] == 1:
+                    neighbors.append((nx, ny))
+        return neighbors
+
+    def calculate_key(self, node):
+        g_rhs = min(self.g[node], self.rhs[node])
+        return (g_rhs + self.manhattan(self.start, node), g_rhs)
+
+    def insert(self, node):
+        heapq.heappush(self.queue, (self.calculate_key(node), node))
+
+    def update_vertex(self, node):
+        if node != self.goal:
+            self.rhs[node] = min(
+                self.g.get(n, float('inf')) + 1
+                for n in self.get_neighbors(node)
+            )
+        self.queue = [(k, n) for (k, n) in self.queue if n != node]
+        heapq.heapify(self.queue)
+        if self.g[node] != self.rhs[node]:
+            self.insert(node)
+
+    def compute_shortest_path(self):
+        while self.queue and (
+            self.queue[0][0] < self.calculate_key(self.start) or
+            self.rhs[self.start] != self.g[self.start]
+        ):
+            _, u = heapq.heappop(self.queue)
+            if self.g[u] > self.rhs[u]:
+                self.g[u] = self.rhs[u]
+            else:
+                self.g[u] = float('inf')
+                self.update_vertex(u)
+            for s in self.get_neighbors(u):
+                self.update_vertex(s)
+
+    def extract_path(self):
+        if self.start not in self.g:
+            return []
+
+        path = [self.start]
+        current = self.start
+        while current != self.goal:
+            neighbors = self.get_neighbors(current)
+            if not neighbors:
+                return []
+            current = min(
+                neighbors,
+                key=lambda n: self.g.get(n, float('inf'))
+            )
+            if self.g.get(current, float('inf')) == float('inf'):
+                return []
+            path.append(current)
+        return path

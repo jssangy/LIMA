@@ -1,110 +1,61 @@
-import yaml
-import wandb
-import numpy as np
+import torch
 from tqdm import tqdm
 
 from Environment import ENV
-from Agent import DQN_Agent
+from agent import Actor
+from critic import CentralCritic
+from buffer import MultiAgentBuffer
+from trainer import MAPPOTrainer
 
-def load_config(config_file):
-    with open(config_file, 'r') as file:
-        config = yaml.safe_load(file)
-    return config
+episodes = 1000
+timesteps = 3600
+gamma = 0.99
+clip_ratio = 0.2
+actor_lr = 1e-3
+critic_lr = 1e-3
 
-def train(cfg):
-    # wandb 설정
-    wandb.init(project='DAA_CPS', name='DQN_training')
-    wandb.config.update(cfg['params'])
-    
-    env_test = ENV()
+env = ENV()
+agv_nums = env.controller.agv_nums
 
-    # 파라미터 설정
-    state_size = env_test.get_state().size
-    hidden_size = cfg['params']['hidden_size']
-    action_size = len(cfg['params']['action'])
-    learning_rate = cfg['params']['learning_rate']
-    gamma = cfg['params']['gamma']
-    memory_size = cfg['params']['memory_size']
-    episodes = cfg['params']['episode']
-    batch_size = cfg['params']['batch_size']
-    target_update_frequency = cfg['params']['target_update_frequency']
-    timesteps  = cfg['params']['timestep']
-    reward = cfg['params']['reward']
-    
-    # 에이전트 초기화
-    agent = DQN_Agent(state_size, hidden_size, action_size, learning_rate, gamma, memory_size)    
-    
-    # 훈련 모니터링을 위한 변수들
-    best_reward = float('-inf')
-    best_episode = 0
-    
-    print("Train Begin...")
-    
-    for episode in tqdm(range(episodes), desc="Episodes"):
-        # 매 에피소드마다 환경 초기화
-        env = ENV()
-        state = np.array(env.get_state().flatten())
+obs_dim = 2
+act_dim = 5
+
+actors = {agv: Actor(obs_dim, act_dim) for agv in agv_nums}
+critic = CentralCritic(joint_obs_dim=len(agv_nums)*obs_dim)
+
+actor_optimizers = {agv: torch.optim.Adam(actors[agv].parameters(), lr=actor_lr) for agv in agv_nums}
+critic_optimizer = torch.optim.Adam(critic.parameters(), lr=critic_lr)
+
+trainer = MAPPOTrainer(actors, critic, actor_optimizers, critic_optimizer, gamma, clip_ratio)
+
+buffer = MultiAgentBuffer()
+
+for episode in tqdm(range(episodes), desc="Episodes"):
+    obs = env.reset()
+    total_rewards = {agv: 0 for agv in agv_nums}
+
+    for timestep in tqdm(range(timesteps), desc="Episode {episode}", leave=False):
+        actions = {}
+
+        for agv in agv_nums:
+            obs_tensor = torch.FloatTensor(obs[agv]).unsqueeze(0) # (1, obs_dim)
+            logits = actors[agv](obs_tensor)
+            probs = torch.softmax(logits, dim=-1)
+            action = torch.multinomial(probs, num_samples=1).item()
+            actions[agv] = action
         
-        total_reward = 0
-        episode_losses = []
-        events = {num: [0, 0, 0] for num in env.controller.agv_nums}
+        next_obs, rewards = env.step(actions)
+
+        buffer.store(obs, actions, rewards, next_obs)
+
+        obs = next_obs
         
-        for timestep in tqdm(range(timesteps), desc=f'Episode {episode}', leave=False):
-            # State & Action
-            actions = {}
-            for num in env.controller.agv_nums:
-                if timestep == 0 or not any(events[num]):
-                    actions[num] = 0
-                else:
-                    actions[num] = agent.act(state, num)
-            
-            # Reward & Next State
-            next_state, reward, events = env.step(actions, reward, events)
-            
-            next_state = np.array(next_state.flatten())
+        for agv in agv_nums:
+            total_rewards[agv] += rewards[agv]
 
-            total_reward += reward
+    trainer.update(buffer)
+    buffer.clear()
 
-            actions_list = list(actions.values())
-            agent.remember(state, actions_list, reward, next_state)
-            agent.replay(batch_size)
+    total_reward= sum(total_rewards.values())
+    print(f"Episode {episode+1}: Total reward = {total_reward}")
 
-            loss = agent.get_loss()
-            episode_losses.append(loss)
-
-            state = next_state
-
-        avg_loss_episode = np.mean(episode_losses)
-        # WandB 에피소드 단위로 기록
-        wandb.log({
-            'episode_avg_loss': avg_loss_episode,
-            'episode_total_reward': total_reward
-        })
-        
-        # 타겟 네트워크 업데이트
-        if episode % target_update_frequency == 0:
-            agent.update_target_network()
-        
-        # 최적 모델 저장
-        if total_reward > best_reward:
-            best_reward = total_reward
-            best_episode = episode
-            agent.save(f"{cfg['paths']['model']}best.pth")
-        
-        # 주기적인 모델 저장
-        if episode % 100 == 0:
-            agent.save(f"{cfg['paths']['model']}{episode}.pth")
-        
-        # 훈련 진행 상황 출력
-        print(f"\nReward: {total_reward}")
-        print(f"Avg Loss: {avg_loss_episode}\n")
-    
-    print("Train End!")
-    print(f"Best Reward: {best_reward:.2f} (Episode {best_episode})")
-    
-    # wandb 종료
-    wandb.finish()
-
-if __name__ == "__main__":
-    config = load_config('config.yaml')
-    train(config)

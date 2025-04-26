@@ -57,7 +57,8 @@ class ENV():
                         # Initialize AGV
                         self.agv_list[entity[1]] = agv((x, y), self.color.dic[entity[1]])
                         # set start point
-                        self.controller.set_start(entity[1], (x, y))    
+                        self.controller.set_start(entity[1], (x, y))
+                        self.controller.agv_pos[entity[1]] = (x, y)   
         
         # controller knows the pick-up, drop, rest position
         for x in range(len(self.map)):
@@ -76,69 +77,23 @@ class ENV():
                         # set rest point
                         self.controller.set_rest(entity[1], (x, y)) 
 
-        return 
+        return
     
-    def step2(self, actions, reward, events):
-        self.time += 1
-        total_reward = 0
-        next_events = {}
+    def reset(self):
+        self.time = 0
 
-        # Controller에게 Action 미리 전달
-        self.controller.set_actions(actions)
+        self.init_scenario()
 
-        # <1단계> 모든 AGV sensing 처리
-        for num, agv in self.agv_list.items():
-            sensing = self.network.send(agv.sensing())
-            self.controller.get_sensing(num, sensing)
-
-        # <2단계> 한 번만 control 신호 생성 및 전송
-        for num, agv in self.agv_list.items():
-            if any(events[num]):
-                control_sig = self.controller.update_control(num, events[num])
-            else:
-                control_sig = self.controller.get_control(num)
-            agv.get_control(self.network.send([control_sig[0], control_sig[1]]))
-
-        # <3단계> 모든 AGV의 이동 처리 및 보상 계산
-        for num, agv in self.agv_list.items():
-            if (self.interact(agv.next_pos()) == 0):
-                agv.move()
-
-            # Collision with wall
-            if (self.interact(agv.next_pos()) == 1):
-                pass
-                
-            # Collision with other AGVs
-            if (self.interact(agv.next_pos()) == 2):
-                pass
-
+        obs = {}
+        for num in self.controller.agv_nums:
             pos = self.controller.agv_pos[num]
-            node_arrive = int(self.map[pos[1]][pos[0]] == 6 or pos in self.controller.agv_goal[num])
-            deadlock = int(self.controller.agv_mode[num] == 1)
-            wait = int(self.controller.control_buffer[num] == (0, 0))
+            obs[num] = self.get_obs(pos)
 
-            next_events[num] = [node_arrive, deadlock, wait]
+    def get_obs(self, pos):
+        return np.array([pos[0], pos[1]], dtype=np.float32)
 
-            # Goal 도착 시 보상 및 Delay Penalty 처리
-            reward = 0
-            if pos in self.controller.agv_goal[num]:
-                reward += reward['goal']
-                actual_time = self.controller.actual_time[num]
-                optimal_time = self.controller.optimal_time[num]
-                delay_time = actual_time - optimal_time
-                if delay_time > 0:
-                    reward += delay_time * reward['delayed']
-
-            # Deadlock Penalty 처리
-            if deadlock:
-                reward += reward['deadlock']
-
-            total_reward += reward
-
-        next_states = self.get_state()
-        return next_states, total_reward, next_events
-    
     def step(self, actions):
+        # 1 time step (sec)  
         self.time += 1
 
         # <1 Step>
@@ -146,13 +101,30 @@ class ENV():
         for num, agv in self.agv_list.items():
             # Send the signal to controller through network 
             self.controller.get_sensing(num, self.network.send(agv.sensing()))
-        
+
         # <2 Step>
         # Controller sends the conntrol signal through network
-        control_sig = self.controller.update_control(actions)
+        control_sig = self.controller.action_control(actions)
         for num, agv in self.agv_list.items():
             agv.get_control(self.network.send([control_sig[0][num], control_sig[1][num]]))
-   
+
+        # <3 Step>
+        # All AGVs interacts with ENV!
+        for num, agv in self.agv_list.items():
+            # Possible Move
+            if(self.interact(agv.next_pos()) == 0):
+                agv.move()
+                
+            # Collision with wall
+            if(self.interact(agv.next_pos()) == 1):
+                pass
+                
+            # Collision with other AGVs
+            if(self.interact(agv.next_pos()) == 2):
+                pass
+
+        return self.make_info()
+
 
     # Single Process Step
     def Run(self):
