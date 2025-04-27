@@ -25,8 +25,6 @@ class ENV():
                     else:
                         self.agv_list[entity[1]] = True
                         self.agv_num += 1
-
-        self.agv_list = dict(sorted(self.agv_list.items()))
                         
         self.color = Funct.Color_dict(self.agv_num)
         
@@ -81,9 +79,6 @@ class ENV():
 
         return
     
-    def reset(self):
-        self.init_scenario()
-
     def get_state(self, num, agv):
         pos = agv.pos                                               # (2,)
         pos_type = self.position_type(pos)                          # (1,)
@@ -95,119 +90,14 @@ class ENV():
             cur_edge_occp = [0, 0, 0, 0]                            # (4,)
             near_edge_occp = self.near_node_edge_occupancy(pos)     # (16,)
         
-        planner = self.controller.planners[num]
-        planner.start = pos
-        planner.compute_shortest_path()
-        distance = planner.g[pos]                                   # (1,)
-        
         state = np.array([
             pos[0], pos[1],
             pos_type,
             *cur_edge_occp,
-            *near_edge_occp,
-            distance
+            *near_edge_occp
         ], dtype=np.float32)                                        # (24,)         
         
         return state
-    
-    def compute_reward(self, state, next_state):
-        reward = 0
-
-        for idx, (num, agv) in enumerate(self.agv_list.items()):
-            # Arrive Goal
-            if agv.pos in self.controller.agv_goal[num]:
-                print(f'{num} goal arrive! +100')
-                reward += 100
-            # Deadlock
-            if agv.mode == 1:
-                print(f'{num} deadlock! -50')
-                reward -= 50
-            # Action
-            print(f'{num} action! -1')
-            reward -= 1
-            # Distance difference
-            cur_state = state[idx*24:(idx+1)*24]
-            nxt_state = next_state[idx*24:(idx+1)*24]
-            if cur_state[-1] < nxt_state[-1]:
-                print(f'{num} go farther! -1')
-                reward -= 1
-            elif cur_state[-1] > nxt_state[-1]:
-                print(f'{num} go closer! +1')
-                reward += 1
-            else:
-                print(f'{num} go same! +0')
-
-        return reward
-
-    def step(self, state, actions):
-        # 1 time step (sec)  
-        self.time += 1
-
-        # <1 Step>
-        # All AGVs send the sensor signal
-        for num, agv in self.agv_list.items():
-            # Send the signal to controller through network 
-            self.controller.get_sensing(num, self.network.send(agv.sensing()))
-
-        # <2 Step>
-        # Controller sends the conntrol signal through network
-        control_sig = self.controller.action_control(actions)
-        for num, agv in self.agv_list.items():
-            agv.get_control(self.network.send([control_sig[0][num], control_sig[1][num]]))
-
-        # <3 Step>
-        # All AGVs interacts with ENV!
-        for num, agv in self.agv_list.items():
-            # Possible Move
-            if(self.interact(agv.next_pos()) == 0):
-                agv.move()
-            # Collision with wall
-            if(self.interact(agv.next_pos()) == 1):
-                pass
-            # Collision with other AGVs
-            if(self.interact(agv.next_pos()) == 2):
-                pass
-
-        return self.make_info()
-
-    # Single Process Step
-    def Run(self):
-        # 1 time step (sec)  
-        self.time += 1
-        
-        # Stop with 1 hour
-        if self.time == 3600:
-            return False
-
-        # <1 Step>
-        # All AGVs send the sensor signal
-        for num, agv in self.agv_list.items():
-            # Send the signal to controller through network 
-            self.controller.get_sensing(num, self.network.send(agv.sensing()))
-        
-        # <2 Step>
-        # Controller sends the conntrol signal through network
-        control_sig = self.controller.make_control()
-        for num, agv in self.agv_list.items():
-            agv.get_control(self.network.send([control_sig[0][num], control_sig[1][num]]))
-            
-        # <3 Step>
-        # All AGVs interacts with ENV!
-        for num, agv in self.agv_list.items():
-            # Possible Move
-            if(self.interact(agv.next_pos()) == 0):
-                agv.mode = 0
-                agv.move()
-                
-            # Collision with wall
-            if(self.interact(agv.next_pos()) == 1):
-                pass
-                
-            # Collision with other AGVs
-            if(self.interact(agv.next_pos()) == 2):
-                agv.mode = 1
-
-        return self.make_info()
     
     def position_type(self, pos):
         x, y = pos
@@ -235,20 +125,25 @@ class ENV():
         neighbors = self.controller.graph.get(pos)
 
         for dx, dy in directions:
+            print(dx, dy)
             found = None
             for neighbor in neighbors:
                 nx, ny = neighbor
                 diff_x, diff_y = nx - x, ny - y
                 if (dx, dy) == (0, 1) and diff_x == 0 and diff_y > 0:           # Up
+                    print('Up found: ', nx, ny)
                     found = neighbor
                     break
                 elif (dx, dy) == (0, -1) and diff_x == 0 and diff_y < 0:        # Down
+                    print('Down found: ', nx, ny)
                     found = neighbor
                     break
                 elif (dx, dy) == (1, 0) and diff_y == 0 and diff_x > 0:         # Right
+                    print('Right found:', nx, ny)
                     found = neighbor
                     break
                 elif (dx, dy) == (-1, 0) and diff_y == 0 and diff_x < 0:        # Left
+                    print('Left found: ', nx, ny)
                     found = neighbor
                     break
             
@@ -302,102 +197,18 @@ class ENV():
         
         return status
     
-    def interact(self, pos):
-        if self.map[pos[1]][pos[0]] == 1:
-            return 1
+env = ENV()
+print(env.agv_list.keys())
+print(env.controller.graph.get((45, 12)))
 
-        for agv in self.agv_list.values():
-            if (pos == agv.pos):
-                self.controller.agv_mode[agv] = 1
-                return 2
-        
-        return 0
-    
-    # Get the list of object
-    def Get_AGV(self):
-        return self.agv_list
-    
-    def make_info(self):
-        # Use for GUI
-        if (self.time != 0):
-            info_list = [self.controller.whole_product, self.controller.whole_product / self.time]
-        else:
-            info_list = [self.controller.whole_product, 0]
-        
-        # Product of AGVs
-        info_list.append(self.controller.agv_info)
-        
-        return info_list
-    
-    
-    # ======================== Use for GUI ========================
-    def find_line(self, x, y):
-        line_list = []
-        distance = 0
-        poss_x = x
-        poss_y = y
-        # up
-        while distance < 15 and 1 <= poss_y < 99 and 1 <= poss_x < 99:
-            poss_x += 1
-            distance += 1
-            if (self.map[poss_y][poss_x] == 1):
-                break
-            if (self.map[poss_y][poss_x] == 6):
-                line_list.append([poss_x, poss_y])
-                break
-            if (type(self.map[poss_y][poss_x]) == str):
-                line_list.append([poss_x, poss_y])
-                break
-                
-        distance = 0
-        poss_x = x
-        poss_y = y
-        
-        # down
-        while distance < 15 and 1 <= poss_y < 99 and 1 <= poss_x < 99:
-            poss_x -= 1
-            distance += 1
-            if (self.map[poss_y][poss_x] == 1):
-                break
-            if (self.map[poss_y][poss_x] == 6):
-                line_list.append([poss_x, poss_y])
-                break
-            if (type(self.map[poss_y][poss_x]) == str):
-                line_list.append([poss_x, poss_y])
-                break
-        
-        distance = 0
-        poss_x = x
-        poss_y = y
-        
-        # right
-        while distance < 15 and 1 <= poss_y < 99 and 1 <= poss_x < 99:
-            poss_y += 1
-            distance += 1
-            if (self.map[poss_y][poss_x] == 6):
-                line_list.append([poss_x, poss_y])
-                break
-            if (type(self.map[poss_y][poss_x]) == str):
-                line_list.append([poss_x, poss_y])
-                break
-            if (self.map[poss_y][poss_x] == 1):
-                break
-            
-        distance = 0
-        poss_x = x
-        poss_y = y
-        
-        # left
-        while distance < 15 and 1 <= poss_y < 99 and 1 <= poss_x < 99:
-            poss_y -= 1
-            distance += 1
-            if (self.map[poss_y][poss_x] == 1):
-                break
-            if (self.map[poss_y][poss_x] == 6):
-                line_list.append([poss_x, poss_y])
-                break
-            if (type(self.map[poss_y][poss_x]) == str):
-                line_list.append([poss_x, poss_y])
-                break
-            
-        return line_list
+g = env.agv_list['G']
+o = env.agv_list['O']
+h = env.agv_list['H']
+j = env.agv_list['J']
+
+g.pos = (45, 12)
+o.pos = (47, 12)
+h.pos = (48, 12)
+j.pos = (46, 12)
+
+print(env.get_state('G', g))

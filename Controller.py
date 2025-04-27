@@ -3,8 +3,7 @@ import numpy as np # use for matrix calculation
 
 import Funct
 
-class controller():
-    
+class controller():    
     def __init__(self, agv_num, map):
         self.agv_pos = {} # save the position of agv positions
         self.agv_next_pos = {} # save the next position of agv positions
@@ -19,6 +18,7 @@ class controller():
         self.agv_rout = {} # for routing of AGV
         self.agv_pre_rout = {} # previous node
         self.planners = {} # D* class for each AGV
+        self.prev_distance = {}
         
         # Whole Products
         self.whole_product = 0
@@ -45,16 +45,7 @@ class controller():
         self.make_grid()
                 
         # Time
-        self.time = 0
-
-    def get_obs(self, num):
-        pos = self.agv_pos[num]
-        x, y = pos
-
-        if (self.map[y][x] == 6) or (isinstance(self.map[y][x]), str):
-            pass
-        else:
-            dx, dy = self.action_control_buffer[num]
+        self.time = 0        
     
     # set start position
     def set_start(self, num, pos):
@@ -102,8 +93,7 @@ class controller():
                 self.agv_next_rout[num] = path[1]
             else:
                 self.agv_next_rout[num] = pos
-
-
+                
     def action_control(self, actions):
         self.time += 1
         self.dstar_action(actions)
@@ -119,16 +109,16 @@ class controller():
             if pos == goal:
                 state = self.change_state(num, state)
                 new_goal = self.agv_goal[num][state]
-                self.agv_mode[num] = 0
-                
+                self.agv_mode[num] = 0                
                 self.planners[num] = DStar(self.grid, pos, new_goal)
                 self.planners[num].compute_shortest_path()
                 path = self.planners[num].extract_path()
+                self.prev_distance[num] = self.planners[num].g.get(pos)
             else:
-                planner = self.planners[num]
-                planner.start = pos
-                planner.compute_shortest_path()
-                path = planner.extract_path()
+                self.planners[num].start = pos
+                self.planners[num].compute_shortest_path()
+                path = self.planners[num].extract_path()
+                self.prev_distance[num] = self.planners[num].g.get(pos)
 
             if len(path) >= 2:
                 next_pos = path[1]
@@ -175,16 +165,16 @@ class controller():
             if pos == goal:
                 state = self.change_state(num, state)
                 goal = self.agv_goal[num][state]
-                self.agv_mode[num] = 0
-                
+                self.agv_mode[num] = 0                
                 self.planners[num] = DStar(self.grid, pos, goal)
                 self.planners[num].compute_shortest_path()
                 path = self.planners[num].extract_path()
+                self.prev_distance[num] = self.planners[num].g.get(pos)
             else:
-                planner = self.planners[num]
-                planner.start = pos
-                planner.compute_shortest_path()
-                path = planner.extract_path()
+                self.planners[num].start = pos
+                self.planners[num].compute_shortest_path()
+                path = self.planners[num].extract_path()
+                self.prev_distance[num] = self.planners[num].g.get(pos)
 
             if len(path) >= 2:
                 next_pos = path[1]
@@ -214,30 +204,8 @@ class controller():
             if self.map[num1_pos[1]][num1_pos[0]] == 1:
                 self.agv_mode[num1] = 2
                 self.dstar_control_buffer[num1] = (0, 0)   
-
         
     # ======================== Routing Functions ============================================
-    def make_grid(self):
-        height, width = len(self.map), len(self.map[0])
-        self.grid = np.zeros((height, width), dtype=np.uint8)
-        white_cells = set(self.graph.keys())
-
-        for start, neighbors in self.graph.items():
-            for end in neighbors:
-                x0, y0 = start
-                x1, y1 = end
-                steps = max(abs(x1 - x0), abs(y1 - y0))
-                for i in range(steps + 1):
-                    xi = x0 + round((x1 - x0) * i / steps)
-                    yi = y0 + round((y1 - y0) * i / steps)
-                    white_cells.add((xi, yi))
-
-        for (x, y) in white_cells:
-            if 0 <= x < width and 0 <= y < height:
-                self.grid[y][x] = 1
-        
-        return self.grid
-
     def graphing(self):
         self.graph = {}
         for x in range (100):
@@ -274,6 +242,27 @@ class controller():
                     break
         return line_list
     
+    def make_grid(self):
+        height, width = len(self.map), len(self.map[0])
+        self.grid = np.zeros((height, width), dtype=np.uint8)
+        white_cells = set(self.graph.keys())
+
+        for start, neighbors in self.graph.items():
+            for end in neighbors:
+                x0, y0 = start
+                x1, y1 = end
+                steps = max(abs(x1 - x0), abs(y1 - y0))
+                for i in range(steps + 1):
+                    xi = x0 + round((x1 - x0) * i / steps)
+                    yi = y0 + round((y1 - y0) * i / steps)
+                    white_cells.add((xi, yi))
+
+        for (x, y) in white_cells:
+            if 0 <= x < width and 0 <= y < height:
+                self.grid[y][x] = 1
+        
+        return self.grid
+    
 # D* Lite Algorithm
 class DStar:
     def __init__(self, grid_map, start, goal):
@@ -281,9 +270,9 @@ class DStar:
         self.start = start
         self.goal = goal
 
-        self.g = {}          # 실제 비용
-        self.rhs = {}        # 예상 비용
-        self.queue = []      # 우선순위 큐
+        self.g = {}          # Actual cost
+        self.rhs = {}        # Estimated cost
+        self.queue = []      # Priority queue
 
         h, w = grid_map.shape
         for y in range(h):
