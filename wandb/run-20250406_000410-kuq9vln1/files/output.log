@@ -1,9 +1,0 @@
-Train Begin...
-Episodes:   0%|                                                  | 0/1000 [00:00<?, ?it/s]
-Traceback (most recent call last):                                                        
-  File "/home/js/DAA_CPS/train.py", line 111, in <module>
-    train(config)
-  File "/home/js/DAA_CPS/train.py", line 60, in train
-    action = agent.act(state, env, agv_id)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-TypeError: DQN_Agent.act() takes 3 positional arguments but 4 were given

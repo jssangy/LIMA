@@ -1,8 +1,0 @@
-훈련 시작...
-Traceback (most recent call last):
-  File "/home/js/DAA_CPS/train.py", line 108, in <module>
-    train(config)
-  File "/home/js/DAA_CPS/train.py", line 45, in train
-    for episode in tqdm(range(episodes), desc="Episodes"):
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-TypeError: 'module' object is not callable. Did you mean: 'tqdm.tqdm(...)'?

@@ -1,8 +1,0 @@
-훈련 시작...
-Traceback (most recent call last):
-  File "/home/js/DAA_CPS/train.py", line 109, in <module>
-    train(config)
-  File "/home/js/DAA_CPS/train.py", line 55, in train
-    if any(events[agv_id]):
-           ^^^^^^
-UnboundLocalError: cannot access local variable 'events' where it is not associated with a value

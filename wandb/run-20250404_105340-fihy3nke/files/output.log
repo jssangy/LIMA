@@ -1,8 +1,0 @@
-훈련 시작...
-Traceback (most recent call last):
-  File "/home/js/DAA_CPS/train.py", line 109, in <module>
-    train(config)
-  File "/home/js/DAA_CPS/train.py", line 61, in train
-    next_state, reward, events = env.step(goal_reward, deadlock_penalty, delayed_penalty)
-                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-TypeError: ENV.step() missing 1 required positional argument: 'delayed_penalty'

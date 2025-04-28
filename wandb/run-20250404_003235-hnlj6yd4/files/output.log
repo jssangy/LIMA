@@ -1,7 +1,0 @@
-Traceback (most recent call last):
-  File "/home/js/DAA_CPS/train.py", line 109, in <module>
-    train(config)
-  File "/home/js/DAA_CPS/train.py", line 31, in train
-    timesteps  = cfg['params']['time_step']
-                 ~~~~~~~~~~~~~^^^^^^^^^^^^^
-KeyError: 'time_step'
