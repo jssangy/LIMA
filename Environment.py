@@ -60,7 +60,7 @@ class ENV():
                         self.agv_list[entity[1]] = agv((x, y), self.color.dic[entity[1]])
                         # set start point
                         self.controller.set_start(entity[1], (x, y))
-                        self.controller.agv_pos[entity[1]] = (x, y)   
+                        self.controller.agv_pos[entity[1]] = (x, y)
         
         # controller knows the pick-up, drop, rest position
         for x in range(len(self.map)):
@@ -78,14 +78,17 @@ class ENV():
                     if (entity[0] == '5'):
                         # set rest point
                         self.controller.set_rest(entity[1], (x, y)) 
+        
+        for num in self.agv_list.keys():
+            self.controller.set_control(num)
 
         return
     
     def reset(self):
         self.init_scenario()
 
-    def get_state(self, num, agv):
-        pos = agv.pos                                               # (2,)
+    def get_state(self, num):
+        pos = self.agv_list[num].pos                                               # (2,)
         pos_type = self.position_type(pos)                          # (1,)
 
         if pos in self.controller.graph.keys():
@@ -111,37 +114,76 @@ class ENV():
         return state
     
     def compute_reward(self, state, next_state):
-        reward = 0
+        total_reward = []
 
         for idx, (num, agv) in enumerate(self.agv_list.items()):
+            reward = 0
             # Arrive Goal
             if agv.pos in self.controller.agv_goal[num]:
-                print(f'{num} goal arrive! +100')
                 reward += 100
+
             # Deadlock
             if agv.mode == 1:
-                print(f'{num} deadlock! -50')
                 reward -= 50
+
             # Action
-            print(f'{num} action! -1')
             reward -= 1
+
             # Distance difference
-            cur_state = state[idx*24:(idx+1)*24]
-            nxt_state = next_state[idx*24:(idx+1)*24]
+            cur_state = state[idx]
+            nxt_state = next_state[idx]
             if cur_state[-1] < nxt_state[-1]:
-                print(f'{num} go farther! -1')
                 reward -= 1
             elif cur_state[-1] > nxt_state[-1]:
-                print(f'{num} go closer! +1')
                 reward += 1
-            else:
-                print(f'{num} go same! +0')
+            
+            total_reward.append(reward)
 
-        return reward
+        return total_reward
 
     def step(self, state, actions):
         # 1 time step (sec)  
         self.time += 1
+
+        # <1 Step>
+        # All AGVs send the sensor signal
+        for num, agv in self.agv_list.items():
+            # Send the signal to controller through network 
+            self.controller.get_sensing(num, self.network.send(agv.sensing()))
+
+        # <2 Step>
+        # Controller sends the conntrol signal through network
+        control_sig = self.controller.action_control(actions)
+        for num, agv in self.agv_list.items():
+            agv.get_control(self.network.send([control_sig[0][num], control_sig[1][num]]))
+
+        # <3 Step>
+        # All AGVs interacts with ENV!
+        for num, agv in self.agv_list.items():
+            # Possible Move
+            if(self.interact(agv.next_pos()) == 0):
+                agv.move()
+            # Collision with wall
+            if(self.interact(agv.next_pos()) == 1):
+                pass
+            # Collision with other AGVs
+            if(self.interact(agv.next_pos()) == 2):
+                pass
+        
+        next_state = []
+        for num in self.agv_list:
+            next_state.append(self.get_state(num))
+
+        reward = self.compute_reward(state, next_state)
+
+        return next_state, reward
+    
+    def demo_step(self, actions):
+        # 1 time step (sec)  
+        self.time += 1
+
+        if self.time == 3600:
+            return False
 
         # <1 Step>
         # All AGVs send the sensor signal
@@ -301,6 +343,25 @@ class ENV():
                 status.extend(node_status)
         
         return status
+    
+    def valid_actions(self, x, y):
+        valid = [0, 0, 0, 0, 1]  # [Up, Down, Right, Left, Stop]
+        grid = self.controller.grid
+        height, width = grid.shape
+
+        # Up
+        if y < height - 1 and grid[y+1][x] == 1:
+            valid[0] = 1
+        # Down
+        if y > 0 and grid[y-1][x] == 1:
+            valid[1] = 1
+        # Right
+        if x < width - 1 and grid[y][x+1] == 1:
+            valid[2] = 1
+        if x > 0 and grid[y][x-1] == 1:
+            valid[3] = 1
+
+        return valid
     
     def interact(self, pos):
         if self.map[pos[1]][pos[0]] == 1:

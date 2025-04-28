@@ -10,8 +10,10 @@ import platform
 from tkinter import font
 import threading
 from tkinter import filedialog
+import torch
 
 import Environment
+from agent import Actor
 
 class GUI():
     def __init__(self, env):
@@ -78,7 +80,7 @@ class GUI():
         # AGV Algorithm Setting
         self.algorithm_label = tk.Label(self.setting, text = 'DAA Algorithms', font = self.font_style2)
         self.algorithm_box = ttk.Combobox(self.setting, 
-                                    values=["Not Used", "Yoo (2005)", "Moorthy (2003)", "Kim (2007)"], state = 'readonly',
+                                    values=["Not Used", "Yoo (2005)", "Moorthy (2003)", "Kim (2007)", "MADDPG"], state = 'readonly',
                                     font=self.font_style2)
         self.algorithm_box.current(0)
         self.algorithm_box.bind("<<ComboboxSelected>>", self.algorithm_changed)
@@ -136,7 +138,13 @@ class GUI():
         self.log_label.pack()
         self.log_box.pack()
         self.log.pack_propagate(0)
-        
+
+        # Load MADDPG model
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.actors = {agent: Actor(obs_dim=24, act_dim=5) for agent in self.env.agv_list.keys()}
+        for agent in self.actors:
+            self.actors[agent].load_state_dict(torch.load(f"./checkpoints/episode_1/actor_{agent}.pth", map_location='cpu'))
+            self.actors[agent].eval()        
         
         # Start pygame
         pygame.init()
@@ -178,18 +186,41 @@ class GUI():
                     pygame.draw.circle(self.win, self.env.color.dic[self.env.map[y][x][1]], ( (x + 1/2) * self.dis, (y + 1/2) * self.dis), self.dis / 2)
 
     # Run environment
-    def run_env(self, event = None):
+    def run_env(self, event=None):
         if self.running_check:
-            run = self.env.Run()
+            if hasattr(self, 'use_maddpg') and self.use_maddpg:
+                actions = []
+                for agent_id, agent in self.env.agv_list.items():
+                    state = self.env.get_state(agent_id)
+                    state_tensor = torch.FloatTensor(state).unsqueeze(0)
+                    state_tensor = state_tensor.to(next(self.actors[agent_id].parameters()).device)
+
+                    action_logits = self.actors[agent_id](state_tensor).squeeze(0)
+
+                    action_mask = self.env.valid_actions(int(state[0]), int(state[1]))
+                    action_mask_tensor = torch.tensor(action_mask, dtype=torch.float32, device=state_tensor.device)
+
+                    masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)
+
+                    action_probs = torch.softmax(masked_logits, dim=-1)
+                    action = torch.multinomial(action_probs, 1).item()
+
+                    actions.append(action)
+
+                run = self.env.demo_step(actions)
+            else:
+                run = self.env.Run()
+
             if run == False:
                 self.running_check = False
+
             self.make_state_info(run)
             self.redrawWindow(self.env.Get_AGV())
-        # https://stackoverflow.com/questions/20165492/pygame-window-not-responding-after-a-few-seconds
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
-        # After <speed_var> second, call run_env again (create a recursive loop)
+
         self.root.after(self.speed_var.get(), self.run_env)
     
     # If start button is clicked
@@ -232,12 +263,18 @@ class GUI():
         self.append_log("Changed Avoidance algorithm to {}".format(event.widget.get()))
         if event.widget.get() == "Not Used":
             self.env.controller.running_opt = 0
+            self.use_maddpg = False
         if event.widget.get() == "Yoo (2005)":
             self.env.controller.running_opt = 1
+            self.use_maddpg = False
         if event.widget.get() == "Moorthy (2003)":
             self.env.controller.running_opt = 2
+            self.use_maddpg = False
         if event.widget.get() == "Kim (2007)":
             self.env.controller.running_opt = 3
+            self.use_maddpg = False
+        if event.widget.get() == "MADDPG":
+            self.use_maddpg = True
                 
             
     def make_state_info(self, info_list):

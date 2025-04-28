@@ -43,9 +43,6 @@ class controller():
         # Make graph & grid for routing
         self.graphing()
         self.make_grid()
-                
-        # Time
-        self.time = 0        
     
     # set start position
     def set_start(self, num, pos):
@@ -73,34 +70,33 @@ class controller():
             self.whole_product += 1
         
         return self.agv_state[num]
-        
+    
+    def set_control(self, num):
+        pos = self.agv_pos[num]
+        goal = self.agv_goal[num][self.agv_state[num]]
+        self.planners[num] = DStar(self.grid, pos, goal)
+        self.planners[num].compute_shortest_path()
+
+        path = self.planners[num].extract_path()
+        self.agv_rout[num] = path
+        if len(path) >= 2:
+            self.agv_next_rout[num] = path[1]
+        else:
+            self.agv_next_rout[num] = pos
+
     # Update data from sensing of agv
     def get_sensing(self, num, data):
         if data != None:
             self.agv_pos[num] = data[0]
             self.agv_mode[num] = data[1]
             self.agv_info[num][1] = data[1]
-            
-        if self.time == 0:
-            pos = self.agv_pos[num]
-            goal = self.agv_goal[num][self.agv_state[num]]
-            self.planners[num] = DStar(self.grid, pos, goal)
-            self.planners[num].compute_shortest_path()
-
-            path = self.planners[num].extract_path()
-            self.agv_rout[num] = path
-            if len(path) >= 2:
-                self.agv_next_rout[num] = path[1]
-            else:
-                self.agv_next_rout[num] = pos
                 
     def action_control(self, actions):
-        self.time += 1
-        self.dstar_action(actions)
+        self.action(actions)
         return (self.action_control_buffer, self.agv_mode)
     
     def action(self, actions):
-        for num in self.agv_nums:
+        for idx, num in enumerate(self.agv_nums):
             control = [(0, 1), (0, -1), (1, 0), (-1, 0), (0, 0)]
             pos = self.agv_pos[num]
             state = self.agv_state[num]
@@ -125,7 +121,7 @@ class controller():
                 dx = next_pos[0] - pos[0]
                 dy = next_pos[1] - pos[1]
                 self.dstar_control_buffer[num] = (dx, dy)
-                self.action_control_buffer[num] = control[actions[num]]
+                self.action_control_buffer[num] = control[actions[idx]]
                 self.agv_next_pos[num] = pos + self.action_control_buffer[num]
             else:
                 self.dstar_control_buffer[num] = (0, 0)
@@ -152,7 +148,6 @@ class controller():
                 self.dstar_control_buffer[num1] = (0, 0) 
     
     def make_control(self):
-        self.time += 1
         self.dstar_rout()
         return (self.dstar_control_buffer, self.agv_mode)
     

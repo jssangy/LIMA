@@ -1,61 +1,115 @@
-import torch
+import numpy as np
 from tqdm import tqdm
+import torch
 
 from Environment import ENV
-from agent import Actor
-from critic import CentralCritic
-from buffer import MultiAgentBuffer
-from trainer import MAPPOTrainer
+from agent import Actor, Critic, MADDPGTrainer, ReplayBuffer
 
-episodes = 1000
+# Hyperparameters
+episodes = 100
 timesteps = 3600
+batch_size = 128
 gamma = 0.99
-clip_ratio = 0.2
+tau = 0.01
 actor_lr = 1e-3
 critic_lr = 1e-3
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+# Environment
 env = ENV()
-agent_nums = env.agv_list
 
-obs_dim = 24
+agent_nums = list(env.agv_list.keys())
+num_agents = len(agent_nums)
+
+state_dim = 24
 act_dim = 5
 
-actors = {agent: Actor(obs_dim, act_dim) for agent in agent_nums}
-critic = CentralCritic(joint_obs_dim=len(agent_nums)*obs_dim)
+# Actor, Critic Network
+actors = {agent: Actor(state_dim, act_dim).to(device) for agent in agent_nums}
+target_actors = {agent: Actor(state_dim, act_dim).to(device) for agent in agent_nums}
+critics = {agent: Critic(state_dim, act_dim, num_agents).to(device) for agent in agent_nums}
+target_critics = {agent: Critic(state_dim, act_dim, num_agents).to(device) for agent in agent_nums}
 
-actor_optimizers = {agent: torch.optim.Adam(actors[agent].parameters(), lr=actor_lr) for agent in agent_nums}
-critic_optimizer = torch.optim.Adam(critic.parameters(), lr=critic_lr)
+# Optimizers
+actor_opts = {agent: torch.optim.Adam(actors[agent].parameters(), lr=actor_lr) for agent in agent_nums}
+critic_opts = {agent: torch.optim.Adam(critics[agent].parameters(), lr=critic_lr) for agent in agent_nums}
 
-trainer = MAPPOTrainer(actors, critic, actor_optimizers, critic_optimizer, gamma, clip_ratio)
+# Target Network initialization
+for agent in agent_nums:
+    target_actors[agent].load_state_dict(actors[agent].state_dict())
+    target_critics[agent].load_state_dict(critics[agent].state_dict())
 
-buffer = MultiAgentBuffer()
+# MADDPG Trainer
+trainer = MADDPGTrainer(
+    agent_nums,
+    actor_dict=actors,
+    critic_dict=critics,
+    actor_target_dict=target_actors,
+    critic_target_dict=target_critics,
+    actor_opt_dict=actor_opts,
+    critic_opt_dict=critic_opts,
+    gamma=gamma,
+    tau=tau,
+    device=device
+)
 
-for episode in tqdm(range(episodes), desc="Episodes"):
+# Replay Buffer
+buffer = ReplayBuffer(state_dim, num_agents, max_size=int(1e6))
+
+# Train Loop
+for episode in range(episodes):
     env.reset()
-    total_rewards = {agent: 0 for agent in agent_nums}
+    total_reward = 0
+    episode_rewards = []
 
-    for timestep in tqdm(range(timesteps), desc="Episode {episode}", leave=False):
-        actions = {}
+    for timestep in tqdm(range(timesteps), desc=f"Episode {episode+1}", leave=False):
+        joint_action = []
+        joint_state = []
+        joint_next_state = []
 
         for agent in agent_nums:
-            obs_tensor = torch.FloatTensor(obs[agent]).unsqueeze(0) # (1, obs_dim)
-            logits = actors[agent](obs_tensor)
-            probs = torch.softmax(logits, dim=-1)
-            action = torch.multinomial(probs, num_samples=1).item()
-            actions[agent] = action
-        
-        next_obs, rewards = env.step(actions)
+            state = env.get_state(agent)
+            joint_state.append(state)
 
-        buffer.store(obs, actions, rewards, next_obs)
+            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)  # (1, state_dim)
 
-        obs = next_obs
-        
-        for agent in agent_nums:
-            total_rewards[agent] += rewards[agent]
+            # Action masking
+            action_mask = env.valid_actions(int(state[0]), int(state[1]))
+            action_mask_tensor = torch.tensor(action_mask, dtype=torch.float32, device=device)
+            action_logits = actors[agent](state_tensor).squeeze(0)  # (act_dim,)
 
-    trainer.update(buffer)
-    buffer.clear()
+            # Masked logits
+            masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)
 
-    total_reward= sum(total_rewards.values())
+            # multinomial sampling
+            action_probs = torch.softmax(masked_logits, dim=-1)
+            action = torch.multinomial(action_probs, 1).item()
+
+            joint_action.append(action)
+
+        # Env step joint state, joint action
+        joint_next_state, reward = env.step(joint_state, joint_action)
+
+        buffer.store(
+            np.array(joint_state),
+            np.array(joint_action),
+            np.array(reward),
+            np.array(joint_next_state)
+        )
+
+        # Update
+        if len(buffer) > batch_size:
+            trainer.update(buffer, batch_size)
+
+        timestep_reward += np.sum(reward)
+        episode_rewards.append(timestep_reward)
+
+        total_reward += timestep_reward
+
+        if (timestep + 1) % 100 == 0:
+            avg_reward = np.mean(episode_rewards[-100:])
+            print(f"[Episode {episode+1}] Timestep {timestep+1}: Avg Reward (last 100 steps) = {avg_reward:.2f}")
+
+
     print(f"Episode {episode+1}: Total reward = {total_reward}")
-
+    trainer.save_models(f"./checkpoints/episode_{episode+1}")
