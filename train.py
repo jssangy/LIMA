@@ -21,7 +21,7 @@ env = ENV()
 agent_nums = list(env.agv_list.keys())
 num_agents = len(agent_nums)
 
-state_dim = 24
+state_dim = 26
 act_dim = 5
 
 # Actor, Critic Network
@@ -101,7 +101,7 @@ for episode in range(episodes):
         if len(buffer) > batch_size:
             trainer.update(buffer, batch_size)
 
-        timestep_reward += np.sum(reward)
+        timestep_reward = np.sum(reward)
         episode_rewards.append(timestep_reward)
 
         total_reward += timestep_reward

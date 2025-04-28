@@ -81,6 +81,7 @@ class ENV():
         
         for num in self.agv_list.keys():
             self.controller.set_control(num)
+            self.agv_list[num].goal = self.controller.agv_goal[num][self.controller.agv_state[num]]
 
         return
     
@@ -88,7 +89,7 @@ class ENV():
         self.init_scenario()
 
     def get_state(self, num):
-        pos = self.agv_list[num].pos                                               # (2,)
+        pos = self.agv_list[num].pos                                # (2,)
         pos_type = self.position_type(pos)                          # (1,)
 
         if pos in self.controller.graph.keys():
@@ -102,24 +103,27 @@ class ENV():
         planner.start = pos
         planner.compute_shortest_path()
         distance = planner.g[pos]                                   # (1,)
+
+        goal = self.agv_list[num].goal                              # (2,)
         
         state = np.array([
             pos[0], pos[1],
             pos_type,
             *cur_edge_occp,
             *near_edge_occp,
-            distance
-        ], dtype=np.float32)                                        # (24,)         
+            distance,
+            goal[0], goal[1]
+        ], dtype=np.float32)                                        # (26,)         
         
         return state
     
     def compute_reward(self, state, next_state):
         total_reward = []
 
-        for idx, (num, agv) in enumerate(self.agv_list.items()):
+        for idx, agv in enumerate(self.agv_list.values()):
             reward = 0
             # Arrive Goal
-            if agv.pos in self.controller.agv_goal[num]:
+            if agv.pos == agv.goal:
                 reward += 100
 
             # Deadlock
@@ -132,7 +136,7 @@ class ENV():
             # Distance difference
             cur_state = state[idx]
             nxt_state = next_state[idx]
-            if cur_state[-1] < nxt_state[-1]:
+            if cur_state[-1] <= nxt_state[-1]:
                 reward -= 1
             elif cur_state[-1] > nxt_state[-1]:
                 reward += 1
@@ -163,6 +167,7 @@ class ENV():
             # Possible Move
             if(self.interact(agv.next_pos()) == 0):
                 agv.move()
+                agv.goal = self.controller.agv_goal[num][self.controller.agv_state[num]]
             # Collision with wall
             if(self.interact(agv.next_pos()) == 1):
                 pass
@@ -358,6 +363,7 @@ class ENV():
         # Right
         if x < width - 1 and grid[y][x+1] == 1:
             valid[2] = 1
+        # Left
         if x > 0 and grid[y][x-1] == 1:
             valid[3] = 1
 

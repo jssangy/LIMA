@@ -137,14 +137,7 @@ class GUI():
         self.log.pack()
         self.log_label.pack()
         self.log_box.pack()
-        self.log.pack_propagate(0)
-
-        # Load MADDPG model
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.actors = {agent: Actor(obs_dim=24, act_dim=5) for agent in self.env.agv_list.keys()}
-        for agent in self.actors:
-            self.actors[agent].load_state_dict(torch.load(f"./checkpoints/episode_1/actor_{agent}.pth", map_location='cpu'))
-            self.actors[agent].eval()        
+        self.log.pack_propagate(0)      
         
         # Start pygame
         pygame.init()
@@ -189,6 +182,11 @@ class GUI():
     def run_env(self, event=None):
         if self.running_check:
             if hasattr(self, 'use_maddpg') and self.use_maddpg:
+                self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                self.actors = {agent: Actor(obs_dim=24, act_dim=5) for agent in self.env.agv_list.keys()}
+                for agent in self.actors:
+                    self.actors[agent].load_state_dict(torch.load(f"./checkpoints/episode_1/actor_{agent}.pth", map_location='cpu'))
+                    self.actors[agent].eval() 
                 actions = []
                 for agent_id, agent in self.env.agv_list.items():
                     state = self.env.get_state(agent_id)

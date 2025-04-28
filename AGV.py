@@ -14,6 +14,9 @@ class agv():
         
         # current position of agv
         self.pos = pos
+
+        # goal position
+        self.goal = (0, 0)
         
         # Current control state
         self.move_x = 0
