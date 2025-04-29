@@ -101,6 +101,7 @@ class controller():
             pos = self.agv_pos[num]
             state = self.agv_state[num]
             goal = self.agv_goal[num][state]
+            action = actions[idx]
 
             if pos == goal:
                 state = self.change_state(num, state)
@@ -121,7 +122,10 @@ class controller():
                 dx = next_pos[0] - pos[0]
                 dy = next_pos[1] - pos[1]
                 self.dstar_control_buffer[num] = (dx, dy)
-                self.action_control_buffer[num] = control[actions[idx]]
+                if action == "D*":
+                    self.action_control_buffer[num] = (dx, dy)
+                else:
+                    self.action_control_buffer[num] = control[actions[idx]]
                 self.agv_next_pos[num] = pos + self.action_control_buffer[num]
             else:
                 self.dstar_control_buffer[num] = (0, 0)

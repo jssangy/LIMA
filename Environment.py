@@ -25,8 +25,6 @@ class ENV():
                     else:
                         self.agv_list[entity[1]] = True
                         self.agv_num += 1
-
-        self.agv_list = dict(sorted(self.agv_list.items()))
                         
         self.color = Funct.Color_dict(self.agv_num)
         
@@ -69,7 +67,9 @@ class ENV():
                 if type(entity) == str:
                     if (entity[0] == '3'):
                         # set pick point
-                        self.controller.set_pick(entity[1], (x, y)) 
+                        self.controller.set_pick(entity[1], (x, y))
+                        self.agv_list[entity[1]].goal = (x, y)
+                        self.controller.set_control(entity[1])
                         
                     if (entity[0] == '4'):
                         # set drop point
@@ -78,10 +78,8 @@ class ENV():
                     if (entity[0] == '5'):
                         # set rest point
                         self.controller.set_rest(entity[1], (x, y)) 
-        
-        for num in self.agv_list.keys():
-            self.controller.set_control(num)
-            self.agv_list[num].goal = self.controller.agv_goal[num][self.controller.agv_state[num]]
+
+        self.agv_list = dict(sorted(self.agv_list.items()))
 
         return
     
@@ -98,21 +96,21 @@ class ENV():
         else:
             cur_edge_occp = [0, 0, 0, 0]                            # (4,)
             near_edge_occp = self.near_node_edge_occupancy(pos)     # (16,)
+
+        goal = self.agv_list[num].goal                              # (2,)
         
         planner = self.controller.planners[num]
         planner.start = pos
-        planner.compute_shortest_path()
+        planner.compute_shortest_path()        
         distance = planner.g[pos]                                   # (1,)
-
-        goal = self.agv_list[num].goal                              # (2,)
         
         state = np.array([
             pos[0], pos[1],
             pos_type,
             *cur_edge_occp,
             *near_edge_occp,
+            goal[0], goal[1],
             distance,
-            goal[0], goal[1]
         ], dtype=np.float32)                                        # (26,)         
         
         return state
@@ -132,14 +130,6 @@ class ENV():
 
             # Action
             reward -= 1
-
-            # Distance difference
-            cur_state = state[idx]
-            nxt_state = next_state[idx]
-            if cur_state[-1] <= nxt_state[-1]:
-                reward -= 1
-            elif cur_state[-1] > nxt_state[-1]:
-                reward += 10
             
             total_reward.append(reward)
 
@@ -208,13 +198,14 @@ class ENV():
             # Possible Move
             if(self.interact(agv.next_pos()) == 0):
                 agv.move()
+                agv.goal = self.controller.agv_goal[num][self.controller.agv_state[num]]
             # Collision with wall
             if(self.interact(agv.next_pos()) == 1):
                 pass
             # Collision with other AGVs
             if(self.interact(agv.next_pos()) == 2):
                 pass
-
+        
         return self.make_info()
 
     # Single Process Step
@@ -243,13 +234,11 @@ class ENV():
         for num, agv in self.agv_list.items():
             # Possible Move
             if(self.interact(agv.next_pos()) == 0):
-                agv.mode = 0
                 agv.move()
-                
+                agv.goal = self.controller.agv_goal[num][self.controller.agv_state[num]]
             # Collision with wall
             if(self.interact(agv.next_pos()) == 1):
-                pass
-                
+                pass                
             # Collision with other AGVs
             if(self.interact(agv.next_pos()) == 2):
                 agv.mode = 1

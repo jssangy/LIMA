@@ -1,6 +1,7 @@
 import numpy as np
 from tqdm import tqdm
 import torch
+import time
 
 from Environment import ENV
 from agent import Actor, Critic, MADDPGTrainer, ReplayBuffer
@@ -19,6 +20,7 @@ epsilon_decay = 5e-5
 epsilon = epsilon_start
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 best_reward = -np.inf
+num_gpus = torch.cuda.device_count()
 
 # Environment
 env = ENV()
@@ -30,10 +32,23 @@ state_dim = 26
 act_dim = 5
 
 # Actor, Critic Network
-actors = {agent: Actor(state_dim, act_dim).to(device) for agent in agent_nums}
-target_actors = {agent: Actor(state_dim, act_dim).to(device) for agent in agent_nums}
-critics = {agent: Critic(state_dim, act_dim, num_agents).to(device) for agent in agent_nums}
-target_critics = {agent: Critic(state_dim, act_dim, num_agents).to(device) for agent in agent_nums}
+actors = {}
+target_actors = {}
+critics = {}
+target_critics = {}
+actor_opts = {}
+critic_opts = {}
+for i, agent in enumerate(agent_nums):
+    device_id = i % num_gpus
+    device = torch.device(f"cuda:{device_id}")
+
+    actors[agent] = Actor(state_dim, act_dim).to(device)
+    target_actors[agent] = Actor(state_dim, act_dim).to(device)
+    critics[agent] = Critic(state_dim, act_dim, num_agents).to(device)
+    target_critics[agent] = Critic(state_dim, act_dim, num_agents).to(device)
+
+    actor_opts[agent] = torch.optim.Adam(actors[agent].parameters(), lr=actor_lr)
+    critic_opts[agent] = torch.optim.Adam(critics[agent].parameters(), lr=critic_lr)
 
 # Optimizers
 actor_opts = {agent: torch.optim.Adam(actors[agent].parameters(), lr=actor_lr) for agent in agent_nums}
@@ -82,14 +97,11 @@ for episode in range(episodes):
             action_mask = env.valid_actions(int(state[0]), int(state[1]))
             action_mask_tensor = torch.tensor(action_mask, dtype=torch.float32, device=device)
             action_logits = actors[agent](state_tensor).squeeze(0)  # (act_dim,)
-
-            # Masked logits
             masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)
 
-            # Exploration
+            # D* soft greedy
             if np.random.rand() < epsilon:
-                valid_actions = np.where(np.array(action_mask) == 1)[0]
-                action = np.random.choice(valid_actions)
+                action = "D*"
             # Exploitation
             else:
                 action_probs = torch.softmax(masked_logits, dim=-1)
@@ -100,15 +112,30 @@ for episode in range(episodes):
         # Env step joint state, joint action
         joint_next_state, reward = env.step(joint_state, joint_action)
 
+        joint_action_corrected = []
+        for agent in agent_nums:
+            control = env.controller.action_control_buffer[agent]
+            if control == (0, 1):
+                act = 0
+            elif control == (0, -1):
+                act = 1
+            elif control == (1, 0):
+                act = 2
+            elif control == (-1, 0):
+                act = 3
+            elif control == (0, 0):
+                act = 4
+            joint_action_corrected.append(act)
+
         buffer.store(
             np.array(joint_state),
-            np.array(joint_action),
+            np.array(joint_action_corrected),
             np.array(reward),
             np.array(joint_next_state)
         )
 
         # Update
-        if len(buffer) > batch_size:
+        if len(buffer) > batch_size and timestep % 10 == 0:
             trainer.update(buffer, batch_size)
 
         timestep_reward = np.sum(reward)
@@ -122,7 +149,7 @@ for episode in range(episodes):
     if total_reward > best_reward:
         best_reward = total_reward
         trainer.save_models(f"./checkpoints/best_model")
-        print(f"Best Model Episode {episode+1}, Total Reward = {total_reward}, Avg timestep Reward = {avg_reward}")
+        print(f"Best Model Episode {episode+1}, Total Reward = {total_reward}, Avg timestep Reward = {avg_reward:.2f}")
         
     if (episode+1) % 10 == 0:
         trainer.save_models(f"./checkpoints/episode_{episode+1}")

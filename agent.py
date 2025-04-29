@@ -8,31 +8,37 @@ import torch.nn.functional as F
 class Actor(nn.Module):
     def __init__(self, obs_dim, act_dim):
         super(Actor, self).__init__()
-        self.fc1 = nn.Linear(obs_dim, 128)
-        self.fc2 = nn.Linear(128, 128)
-        self.fc3 = nn.Linear(128, act_dim)
+        self.fc1 = nn.Linear(obs_dim, 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.fc3 = nn.Linear(256, 256)
+        self.fc4 = nn.Linear(256, act_dim)
 
     def forward(self, x):
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
-        logits = self.fc3(x)
+        x = F.relu(self.fc3(x))
+        logits = self.fc4(x)
         return logits
+
 
 # Critic: (state, action) concat
 class Critic(nn.Module):
     def __init__(self, obs_dim, act_dim, num_agents):
         super(Critic, self).__init__()
         input_dim = num_agents * (obs_dim + act_dim)
-        self.fc1 = nn.Linear(input_dim, 128)
-        self.fc2 = nn.Linear(128, 128)
-        self.fc3 = nn.Linear(128, 1)
+        self.fc1 = nn.Linear(input_dim, 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.fc3 = nn.Linear(256, 256)
+        self.fc4 = nn.Linear(256, 1)
 
     def forward(self, state, action):
-        x = torch.cat([state, action], dim=-1)  # (batch_size, total_dim)
+        x = torch.cat([state, action], dim=-1)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
-        v = self.fc3(x)
+        x = F.relu(self.fc3(x))
+        v = self.fc4(x)
         return v
+
 
 class MADDPGTrainer:
     def __init__(self, agent_nums, actor_dict, critic_dict, actor_target_dict, critic_target_dict,
