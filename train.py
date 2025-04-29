@@ -13,7 +13,12 @@ gamma = 0.99
 tau = 0.01
 actor_lr = 1e-3
 critic_lr = 1e-3
+epsilon_start = 1.0
+epsilon_final = 0.05
+epsilon_decay = 5e-5
+epsilon = epsilon_start
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+best_reward = -np.inf
 
 # Environment
 env = ENV()
@@ -81,9 +86,14 @@ for episode in range(episodes):
             # Masked logits
             masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)
 
-            # multinomial sampling
-            action_probs = torch.softmax(masked_logits, dim=-1)
-            action = torch.multinomial(action_probs, 1).item()
+            # Exploration
+            if np.random.rand() < epsilon:
+                valid_actions = np.where(np.array(action_mask) == 1)[0]
+                action = np.random.choice(valid_actions)
+            # Exploitation
+            else:
+                action_probs = torch.softmax(masked_logits, dim=-1)
+                action = torch.multinomial(action_probs, 1).item()
 
             joint_action.append(action)
 
@@ -106,10 +116,13 @@ for episode in range(episodes):
 
         total_reward += timestep_reward
 
-        if (timestep + 1) % 100 == 0:
-            avg_reward = np.mean(episode_rewards[-100:])
-            print(f"[Episode {episode+1}] Timestep {timestep+1}: Avg Reward (last 100 steps) = {avg_reward:.2f}")
+        epsilon = max(epsilon_final, epsilon - epsilon_decay)
 
-
-    print(f"Episode {episode+1}: Total reward = {total_reward}")
-    trainer.save_models(f"./checkpoints/episode_{episode+1}")
+    avg_reward = np.mean(episode_rewards)
+    if total_reward > best_reward:
+        best_reward = total_reward
+        trainer.save_models(f"./checkpoints/best_model")
+        print(f"Best Model Episode {episode+1}, Total Reward = {total_reward}, Avg timestep Reward = {avg_reward}")
+        
+    if (episode+1) % 10 == 0:
+        trainer.save_models(f"./checkpoints/episode_{episode+1}")

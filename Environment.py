@@ -139,7 +139,7 @@ class ENV():
             if cur_state[-1] <= nxt_state[-1]:
                 reward -= 1
             elif cur_state[-1] > nxt_state[-1]:
-                reward += 1
+                reward += 10
             
             total_reward.append(reward)
 
