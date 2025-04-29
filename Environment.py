@@ -130,6 +130,12 @@ class ENV():
 
             # Action
             reward -= 1
+
+            # Distance difference
+            cur_state = state[idx]
+            nxt_state = next_state[idx]
+            if cur_state[-1] <= nxt_state[-1]:
+                reward -= 1
             
             total_reward.append(reward)
 
