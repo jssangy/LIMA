@@ -132,10 +132,11 @@ class ENV():
             reward -= 1
 
             # Distance difference
-            cur_state = state[idx]
-            nxt_state = next_state[idx]
-            if cur_state[-1] <= nxt_state[-1]:
-                reward -= 1
+            cur_dist = state[idx][-1]
+            next_dist = next_state[idx][-1]
+            delta = cur_dist - next_dist
+            if abs(delta) > 1e-3:
+                reward += delta * 3
             
             total_reward.append(reward)
 

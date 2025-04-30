@@ -1,5 +1,4 @@
 numpy
-scikit-learn
 pygame
 pyglet
 colorama

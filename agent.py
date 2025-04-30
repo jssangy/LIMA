@@ -61,12 +61,15 @@ class MADDPGTrainer:
         rewards = rewards.to(self.device)
         next_state = next_state.to(self.device)
 
+        actor_losses = []
+        critic_losses = []
+
         for agent in self.agent_nums:
             agent_idx = self.agent_nums.index(agent)
 
-            joint_state = state.view(batch_size, -1)         # (batch_size, num_agents * obs_dim)
-            joint_action = F.one_hot(actions.long(), num_classes=5).float().view(batch_size, -1)  # (batch_size, num_agents * act_dim)
-
+            # Critic Update
+            joint_state = state.view(batch_size, -1)
+            joint_action = F.one_hot(actions.long(), num_classes=5).float().view(batch_size, -1)
             joint_next_state = next_state.view(batch_size, -1)
 
             with torch.no_grad():
@@ -77,43 +80,48 @@ class MADDPGTrainer:
                     logits = self.actor_target_dict[other_agent](next_state_agent)
                     target_action = F.one_hot(torch.argmax(logits, dim=-1), num_classes=5).float()
                     target_next_actions.append(target_action)
-                target_next_actions = torch.cat(target_next_actions, dim=-1)  # (batch_size, num_agents * act_dim)
+                target_next_actions = torch.cat(target_next_actions, dim=-1)
 
                 target_q = rewards[:, agent_idx] + self.gamma * self.critic_target_dict[agent](
                     joint_next_state, target_next_actions
                 ).squeeze()
 
-            # Current Q
             current_q = self.critic_dict[agent](joint_state, joint_action).squeeze()
 
             critic_loss = F.mse_loss(current_q, target_q)
-
             self.critic_opt_dict[agent].zero_grad()
             critic_loss.backward()
             self.critic_opt_dict[agent].step()
+            critic_losses.append(critic_loss.item())
 
-            # Actor update
+            # Actor Update
             predicted_actions = []
             for other_agent in self.agent_nums:
                 other_idx = self.agent_nums.index(other_agent)
                 state_agent = state[:, other_idx, :]
-                logits = self.actor_dict[other_agent](state_agent)
                 if other_agent == agent:
+                    logits = self.actor_dict[agent](state_agent)
                     action = F.softmax(logits, dim=-1)
                 else:
+                    logits = self.actor_dict[other_agent](state_agent)
                     action = F.one_hot(torch.argmax(logits, dim=-1), num_classes=5).float().detach()
                 predicted_actions.append(action)
-            predicted_actions = torch.cat(predicted_actions, dim=-1)
 
+            predicted_actions = torch.cat(predicted_actions, dim=-1)
             actor_loss = -self.critic_dict[agent](joint_state, predicted_actions).mean()
 
             self.actor_opt_dict[agent].zero_grad()
             actor_loss.backward()
             self.actor_opt_dict[agent].step()
+            actor_losses.append(actor_loss.item())
 
-            # Soft update
+            # Target Update
             self.soft_update(self.actor_dict[agent], self.actor_target_dict[agent])
             self.soft_update(self.critic_dict[agent], self.critic_target_dict[agent])
+
+        avg_actor_loss = np.mean(actor_losses)
+        avg_critic_loss = np.mean(critic_losses)
+        return avg_actor_loss, avg_critic_loss
 
     def soft_update(self, online_net, target_net):
         for online_param, target_param in zip(online_net.parameters(), target_net.parameters()):

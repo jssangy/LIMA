@@ -185,7 +185,7 @@ class GUI():
                 self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
                 self.actors = {agent: Actor(obs_dim=26, act_dim=5) for agent in self.env.agv_list.keys()}
                 for agent in self.actors:
-                    self.actors[agent].load_state_dict(torch.load(f"./checkpoints/best_model/actor_{agent}.pth", map_location='cpu'))
+                    self.actors[agent].load_state_dict(torch.load(f"./checkpoints/episode_100/actor_{agent}.pth", map_location='cpu'))
                     self.actors[agent].eval() 
                 actions = []
                 for agent_id, agent in self.env.agv_list.items():

@@ -1,7 +1,7 @@
 import numpy as np
 from tqdm import tqdm
 import torch
-import time
+import wandb
 
 from Environment import ENV
 from agent import Actor, Critic, MADDPGTrainer, ReplayBuffer
@@ -21,6 +21,23 @@ epsilon = epsilon_start
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 best_reward = -np.inf
 num_gpus = torch.cuda.device_count()
+
+wandb.init(
+    project="DAA_CPS",   # 원하는 프로젝트 이름
+    name=f"train_run_{wandb.util.generate_id()}",  # 자동 유니크 이름 생성
+    config={
+        "episodes": episodes,
+        "timesteps": timesteps,
+        "batch_size": batch_size,
+        "gamma": gamma,
+        "tau": tau,
+        "actor_lr": actor_lr,
+        "critic_lr": critic_lr,
+        "epsilon_start": epsilon_start,
+        "epsilon_final": epsilon_final,
+        "epsilon_decay": epsilon_decay,
+    }
+)
 
 # Environment
 env = ENV()
@@ -81,6 +98,8 @@ for episode in range(episodes):
     env.reset()
     total_reward = 0
     episode_rewards = []
+    episode_actor_losses = []
+    episode_critic_losses = []
 
     for timestep in tqdm(range(timesteps), desc=f"Episode {episode+1}", leave=False):
         joint_action = []
@@ -136,16 +155,20 @@ for episode in range(episodes):
 
         # Update
         if len(buffer) > batch_size and timestep % 10 == 0:
-            trainer.update(buffer, batch_size)
+            actor_loss, critic_loss = trainer.update(buffer, batch_size)
+            episode_actor_losses.append(actor_loss)
+            episode_critic_losses.append(critic_loss)
 
         timestep_reward = np.sum(reward)
         episode_rewards.append(timestep_reward)
-
         total_reward += timestep_reward
 
         epsilon = max(epsilon_final, epsilon - epsilon_decay)
 
+
     avg_reward = np.mean(episode_rewards)
+    avg_actor_loss = np.mean(episode_actor_losses)
+    avg_critic_loss = np.mean(episode_critic_losses)
     if total_reward > best_reward:
         best_reward = total_reward
         trainer.save_models(f"./checkpoints/best_model")
@@ -153,3 +176,10 @@ for episode in range(episodes):
         
     if (episode+1) % 10 == 0:
         trainer.save_models(f"./checkpoints/episode_{episode+1}")
+
+    wandb.log({
+        "Total Reward": total_reward,
+        "Average Timestep Reward": avg_reward,
+        "Average Actor Loss": avg_actor_loss,
+        "Average Critic Loss": avg_critic_loss
+    }, step=episode+1)
