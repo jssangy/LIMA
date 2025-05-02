@@ -80,7 +80,7 @@ class GUI():
         # AGV Algorithm Setting
         self.algorithm_label = tk.Label(self.setting, text = 'DAA Algorithms', font = self.font_style2)
         self.algorithm_box = ttk.Combobox(self.setting, 
-                                    values=["Not Used", "Yoo (2005)", "Moorthy (2003)", "Kim (2007)", "MADDPG"], state = 'readonly',
+                                    values=["Not Used", "Dynamic Obstacle D*", "MADDPG"], state = 'readonly',
                                     font=self.font_style2)
         self.algorithm_box.current(0)
         self.algorithm_box.bind("<<ComboboxSelected>>", self.algorithm_changed)
@@ -262,14 +262,8 @@ class GUI():
         if event.widget.get() == "Not Used":
             self.env.controller.running_opt = 0
             self.use_maddpg = False
-        if event.widget.get() == "Yoo (2005)":
+        if event.widget.get() == "Dynamic Obstacle D*":
             self.env.controller.running_opt = 1
-            self.use_maddpg = False
-        if event.widget.get() == "Moorthy (2003)":
-            self.env.controller.running_opt = 2
-            self.use_maddpg = False
-        if event.widget.get() == "Kim (2007)":
-            self.env.controller.running_opt = 3
             self.use_maddpg = False
         if event.widget.get() == "MADDPG":
             self.use_maddpg = True
