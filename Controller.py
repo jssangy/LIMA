@@ -211,48 +211,38 @@ class controller():
     
     def dynamic_obstacle_dstar_rout(self):
         for num in self.agv_nums:
-                pos = self.agv_pos[num]
-                state = self.agv_state[num]
+            pos = self.agv_pos[num]
+            state = self.agv_state[num]
+            goal = self.agv_goal[num][state]
+
+            dynamic_grid = self.grid.copy()
+            for other in self.agv_nums:
+                if other != num:
+                    ox, oy = self.agv_pos[other]
+                    if 0 <= ox < dynamic_grid.shape[1] and 0 <= oy < dynamic_grid.shape[0]:
+                        if not isinstance(self.map[oy][ox], str):
+                            dynamic_grid[oy][ox] = 0
+
+            if pos == goal:
+                state = self.change_state(num, state)
                 goal = self.agv_goal[num][state]
+                self.agv_mode[num] = 0
 
-                # ---------- 1. 동적으로 grid 복사 후 다른 AGV 위치는 장애물로 처리 ----------
-                dynamic_grid = self.grid.copy()
-                for other in self.agv_nums:
-                    if other != num:
-                        ox, oy = self.agv_pos[other]
-                        if 0 <= ox < dynamic_grid.shape[1] and 0 <= oy < dynamic_grid.shape[0]:
-                            if not isinstance(self.map[oy][ox], str):
-                                dynamic_grid[oy][ox] = 0  # 장애물로 간주
+                
+            self.planners[num] = DStar(dynamic_grid, pos, goal)
+            self.planners[num].compute_shortest_path()
+            path = self.planners[num].extract_path()
+            self.agv_rout[num] = path
 
-                # ---------- 2. 목표에 도달한 경우 상태 전환 및 새 목표 설정 ----------
-                if pos == goal:
-                    state = self.change_state(num, state)
-                    goal = self.agv_goal[num][state]
-                    self.agv_mode[num] = 0
-
-                try:
-                    # ---------- 3. D* 경로 계산 ----------
-                    self.planners[num] = DStar(dynamic_grid, pos, goal)
-                    self.planners[num].compute_shortest_path()
-                    path = self.planners[num].extract_path()
-                    self.agv_rout[num] = path
-
-                    if len(path) >= 2:
-                        next_pos = path[1]
-                        dx = next_pos[0] - pos[0]
-                        dy = next_pos[1] - pos[1]
-                        self.dstar_control_buffer[num] = (dx, dy)
-                        self.agv_next_pos[num] = next_pos
-                    else:
-                        self.dstar_control_buffer[num] = (0, 0)
-                        self.agv_next_pos[num] = pos
-
-                except KeyError as e:
-                    print(f"[D* ERROR] AGV {num} 경로 계산 중 오류 발생:")
-                    print(f"  ▶ 현재 위치: {pos}, 목표 위치: {goal}")
-                    print(f"  ▶ 에러 키: {e}")
-                    print(f"  ▶ 맵 상태에서 goal이 장애물로 간주되었는지 확인 바랍니다.")
-                    raise e  # 그대로 에러를 다시 발생시켜 GUI에 전달
+            if len(path) >= 2:
+                next_pos = path[1]
+                dx = next_pos[0] - pos[0]
+                dy = next_pos[1] - pos[1]
+                self.dstar_control_buffer[num] = (dx, dy)
+                self.agv_next_pos[num] = next_pos
+            else:
+                self.dstar_control_buffer[num] = (0, 0)
+                self.agv_next_pos[num] = pos
 
         # Collision prevention => Dead Lock
         for num1 in self.agv_nums:
@@ -276,8 +266,8 @@ class controller():
     # ======================== Routing Functions ============================================
     def graphing(self):
         self.graph = {}
-        for x in range (100):
-            for y in range(100):
+        for x in range (len(self.map[0])): # 35
+            for y in range(len(self.map)): # 18
                 # normal node 
                 if self.map[y][x] == 6:
                     neighbors = self.find_neighbors(x,y)
@@ -298,7 +288,7 @@ class controller():
         for direction in ['up', 'down', 'left', 'right']:
             dx, dy = {'up': (1, 0), 'down': (-1, 0), 'right': (0, 1), 'left': (0, -1)}[direction]
             distance, poss_x, poss_y = 0, x, y
-            while distance < 15 and 1 <= poss_x < 99 and 1 <= poss_y < 99:
+            while distance < 15 and 1 <= poss_x < len(self.map[0])-1 and 1 <= poss_y < len(self.map)-1:
                 poss_x += dx
                 poss_y += dy
                 distance += 1

@@ -49,8 +49,8 @@ class ENV():
         self.controller = Controller.controller(self.agv_num, self.map)
         
         # define AGV with start position (controller knows the start position)
-        for x in range(len(self.map)):
-            for y in range(len(self.map[x])):
+        for x in range(len(self.map[0])):
+            for y in range(len(self.map)):
                 entity = self.map[y][x]
                 if type(entity) == str:
                     if (entity[0] == '2'):
@@ -61,8 +61,8 @@ class ENV():
                         self.controller.agv_pos[entity[1]] = (x, y)
         
         # controller knows the pick-up, drop, rest position
-        for x in range(len(self.map)):
-            for y in range(len(self.map[x])):
+        for x in range(len(self.map[0])):
+            for y in range(len(self.map)):
                 entity = self.map[y][x]
                 if type(entity) == str:
                     if (entity[0] == '3'):

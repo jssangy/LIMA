@@ -17,7 +17,7 @@ from agent import Actor
 
 class GUI():
     def __init__(self, env):
-        self.rows = 100
+        self.rows = 40
         self.width = 1000
         self.height = 1000
         self.dis = self.width // self.rows
@@ -166,8 +166,8 @@ class GUI():
     
     # Draw Map
     def drawMap(self):
-        for x in range (100):
-            for y in range(100):
+        for x in range (len(self.env.map[0])):
+            for y in range(len(self.env.map)):
                 if self.env.map[y][x] == 1:
                     pygame.draw.rect(self.win, (160, 160, 160), (x * self.dis+1, y * self.dis+1, self.dis-2, self.dis-2))
                 if self.env.map[y][x] == 6:
