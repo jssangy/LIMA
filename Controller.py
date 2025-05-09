@@ -8,7 +8,7 @@ class controller():
         self.agv_pos = {} # save the position of agv positions
         self.agv_next_pos = {} # save the next position of agv positions
         self.agv_next_rout = {} # save the next rout position of agv
-        self.dstar_control_buffer = {} # save the D* algorithm based control output of agvs
+        self.control_buffer = {} # save the D* algorithm based control output of agvs
         self.action_control_buffer = {} # save the action control output of agvs
         self.agv_state = {} # 0(start - pick up) 1(pick up - drop) 2(drop - rest) 3(rest - start)
         self.agv_nums = [] # agv numbers (A, B, C, ... O)
@@ -34,7 +34,7 @@ class controller():
             self.agv_mode[chr(i + 65)] = 0 # Initial mode is normal
             self.agv_goal[chr(i + 65)] = [(0, 0), (0, 0), (0, 0), (0, 0)]
             self.agv_info[chr(i + 65)] = [0, 0]
-            self.dstar_control_buffer[chr(i + 65)] = (0, 0)
+            self.control_buffer[chr(i + 65)] = (0, 0)
             self.action_control_buffer[chr(i + 65)] = (0, 0)
             self.agv_rout[chr(i + 65)] = []
             self.agv_pre_rout[chr(i + 65)] = (0, 0)
@@ -103,7 +103,6 @@ class controller():
             pos = self.agv_pos[num]
             state = self.agv_state[num]
             goal = self.agv_goal[num][state]
-            action = actions[idx]
 
             if pos == goal:
                 state = self.change_state(num, state)
@@ -123,15 +122,11 @@ class controller():
                 next_pos = path[1]
                 dx = next_pos[0] - pos[0]
                 dy = next_pos[1] - pos[1]
-                self.dstar_control_buffer[num] = (dx, dy)
-                if action == "D*":
-                    self.action_control_buffer[num] = (dx, dy)
-                else:
-                    self.action_control_buffer[num] = control[actions[idx]]
+                self.control_buffer[num] = (dx, dy)
+                self.action_control_buffer[num] = control[actions[idx]]
                 self.agv_next_pos[num] = pos + self.action_control_buffer[num]
             else:
-                self.dstar_control_buffer[num] = (0, 0)
-                self.action_control_buffer[num] = (0, 0)
+                self.control_buffer[num] = (0, 0)
                 self.agv_next_pos[num] = pos
 
         # Collision prevention => Dead Lock
@@ -151,14 +146,14 @@ class controller():
           
             if self.map[num1_pos[1]][num1_pos[0]] == 1:
                 self.agv_mode[num1] = 2
-                self.dstar_control_buffer[num1] = (0, 0) 
+                self.control_buffer[num1] = (0, 0) 
     
     def make_control(self):
         if self.running_opt == 0:
             self.dstar_rout()
         elif self.running_opt == 1:
             self.dynamic_obstacle_dstar_rout()
-        return (self.dstar_control_buffer, self.agv_mode)
+        return (self.control_buffer, self.agv_mode)
     
     def dstar_rout(self):
         for num in self.agv_nums:
@@ -184,10 +179,10 @@ class controller():
                 next_pos = path[1]
                 dx = next_pos[0] - pos[0]
                 dy = next_pos[1] - pos[1]
-                self.dstar_control_buffer[num] = (dx, dy)
+                self.control_buffer[num] = (dx, dy)
                 self.agv_next_pos[num] = next_pos
             else:
-                self.dstar_control_buffer[num] = (0, 0)
+                self.control_buffer[num] = (0, 0)
                 self.agv_next_pos[num] = pos
 
         # Collision prevention => Dead Lock
@@ -207,7 +202,7 @@ class controller():
           
             if self.map[num1_pos[1]][num1_pos[0]] == 1:
                 self.agv_mode[num1] = 2
-                self.dstar_control_buffer[num1] = (0, 0) 
+                self.control_buffer[num1] = (0, 0) 
     
     def dynamic_obstacle_dstar_rout(self):
         for num in self.agv_nums:
@@ -238,10 +233,10 @@ class controller():
                 next_pos = path[1]
                 dx = next_pos[0] - pos[0]
                 dy = next_pos[1] - pos[1]
-                self.dstar_control_buffer[num] = (dx, dy)
+                self.control_buffer[num] = (dx, dy)
                 self.agv_next_pos[num] = next_pos
             else:
-                self.dstar_control_buffer[num] = (0, 0)
+                self.control_buffer[num] = (0, 0)
                 self.agv_next_pos[num] = pos
 
         # Collision prevention => Dead Lock
@@ -261,7 +256,7 @@ class controller():
           
             if self.map[num1_pos[1]][num1_pos[0]] == 1:
                 self.agv_mode[num1] = 2
-                self.dstar_control_buffer[num1] = (0, 0)   
+                self.control_buffer[num1] = (0, 0)   
         
     # ======================== Routing Functions ============================================
     def graphing(self):

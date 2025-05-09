@@ -42,7 +42,7 @@ class Critic(nn.Module):
 
 class MADDPGTrainer:
     def __init__(self, agent_nums, actor_dict, critic_dict, actor_target_dict, critic_target_dict,
-                 actor_opt_dict, critic_opt_dict, gamma=0.99, tau=0.01, device='cpu'):
+                 actor_opt_dict, critic_opt_dict, gamma=0.99, tau=0.01, device='cuda'):
         self.agent_nums = agent_nums
         self.actor_dict = actor_dict
         self.critic_dict = critic_dict
@@ -175,3 +175,4 @@ class ReplayBuffer:
 
     def __len__(self):
         return self.size
+

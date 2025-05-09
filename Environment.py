@@ -88,16 +88,6 @@ class ENV():
 
     def get_state(self, num):
         pos = self.agv_list[num].pos                                # (2,)
-        pos_type = self.position_type(pos)                          # (1,)
-
-        if pos in self.controller.graph.keys():
-            cur_edge_occp = self.current_node_edge_occupancy(pos)   # (4,)
-            near_edge_occp = [0, 0, 0, 0] * 4                       # (16,)
-        else:
-            cur_edge_occp = [0, 0, 0, 0]                            # (4,)
-            near_edge_occp = self.near_node_edge_occupancy(pos)     # (16,)
-
-        goal = self.agv_list[num].goal                              # (2,)
         
         planner = self.controller.planners[num]
         planner.start = pos
@@ -106,12 +96,8 @@ class ENV():
         
         state = np.array([
             pos[0], pos[1],
-            pos_type,
-            *cur_edge_occp,
-            *near_edge_occp,
-            goal[0], goal[1],
             distance,
-        ], dtype=np.float32)                                        # (26,)         
+        ], dtype=np.float32)                                        # (3,)         
         
         return state
     
@@ -124,7 +110,7 @@ class ENV():
             if agv.pos == agv.goal:
                 reward += 100
 
-            # Deadlock
+            # Collision
             if agv.mode == 1:
                 reward -= 50
 

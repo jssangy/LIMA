@@ -7,14 +7,14 @@ from Environment import ENV
 from agent import Actor, Critic, MADDPGTrainer, ReplayBuffer
 
 # Hyperparameters
-episodes = 100
+episodes = 100000
 timesteps = 3600
 batch_size = 128
 gamma = 0.99
 tau = 0.01
 actor_lr = 1e-3
 critic_lr = 1e-3
-epsilon_start = 1.0
+epsilon_start = 0.8
 epsilon_final = 0.05
 epsilon_decay = 5e-5
 epsilon = epsilon_start
@@ -23,8 +23,8 @@ best_reward = -np.inf
 num_gpus = torch.cuda.device_count()
 
 wandb.init(
-    project="DAA_CPS",   # 원하는 프로젝트 이름
-    name=f"train_run_{wandb.util.generate_id()}",  # 자동 유니크 이름 생성
+    project="DAA_CPS",  
+    name=f"train_run_{wandb.util.generate_id()}",
     config={
         "episodes": episodes,
         "timesteps": timesteps,
@@ -45,7 +45,7 @@ env = ENV()
 agent_nums = list(env.agv_list.keys())
 num_agents = len(agent_nums)
 
-state_dim = 26
+state_dim = 3
 act_dim = 5
 
 # Actor, Critic Network
@@ -56,9 +56,6 @@ target_critics = {}
 actor_opts = {}
 critic_opts = {}
 for i, agent in enumerate(agent_nums):
-    device_id = i % num_gpus
-    device = torch.device(f"cuda:{device_id}")
-
     actors[agent] = Actor(state_dim, act_dim).to(device)
     target_actors[agent] = Actor(state_dim, act_dim).to(device)
     critics[agent] = Critic(state_dim, act_dim, num_agents).to(device)
@@ -118,9 +115,10 @@ for episode in range(episodes):
             action_logits = actors[agent](state_tensor).squeeze(0)  # (act_dim,)
             masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)
 
-            # D* soft greedy
+            # Exploration
             if np.random.rand() < epsilon:
-                action = "D*"
+                valid_actions = np.where(np.array(action_mask) == 1)[0]
+                action = np.random.choice(valid_actions)
             # Exploitation
             else:
                 action_probs = torch.softmax(masked_logits, dim=-1)
@@ -131,24 +129,9 @@ for episode in range(episodes):
         # Env step joint state, joint action
         joint_next_state, reward = env.step(joint_state, joint_action)
 
-        joint_action_corrected = []
-        for agent in agent_nums:
-            control = env.controller.action_control_buffer[agent]
-            if control == (0, 1):
-                act = 0
-            elif control == (0, -1):
-                act = 1
-            elif control == (1, 0):
-                act = 2
-            elif control == (-1, 0):
-                act = 3
-            elif control == (0, 0):
-                act = 4
-            joint_action_corrected.append(act)
-
         buffer.store(
             np.array(joint_state),
-            np.array(joint_action_corrected),
+            np.array(joint_action),
             np.array(reward),
             np.array(joint_next_state)
         )
@@ -172,9 +155,9 @@ for episode in range(episodes):
     if total_reward > best_reward:
         best_reward = total_reward
         trainer.save_models(f"./checkpoints/best_model")
-        print(f"Best Model Episode {episode+1}, Total Reward = {total_reward}, Avg timestep Reward = {avg_reward:.2f}")
+        print(f"Best Model Episode {episode+1}, Total Reward = {total_reward}, Avg timestep Reward = {avg_reward:.2f}, Epsilon = {epsilon:.2f}")
         
-    if (episode+1) % 10 == 0:
+    if (episode+1) % 100 == 0:
         trainer.save_models(f"./checkpoints/episode_{episode+1}")
 
     wandb.log({

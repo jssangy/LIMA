@@ -183,7 +183,7 @@ class GUI():
         if self.running_check:
             if hasattr(self, 'use_maddpg') and self.use_maddpg:
                 self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                self.actors = {agent: Actor(obs_dim=26, act_dim=5) for agent in self.env.agv_list.keys()}
+                self.actors = {agent: Actor(obs_dim=26, act_dim=4) for agent in self.env.agv_list.keys()}
                 for agent in self.actors:
                     self.actors[agent].load_state_dict(torch.load(f"./checkpoints/best_model/actor_{agent}.pth", map_location='cpu'))
                     self.actors[agent].eval() 
@@ -283,3 +283,4 @@ class GUI():
             if info[1] == 1:
                 self.update_state('{:^7} {:^7} {:^7}'.format(num, info[0], "Deadlock"))
         return 
+
