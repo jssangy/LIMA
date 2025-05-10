@@ -110,8 +110,6 @@ class ENV():
             # Collision
             if agv.mode == 1:
                 reward -= 25
-            else:
-                reward += 25
 
             # Distance difference
             cur_dist = state[idx][-1]
