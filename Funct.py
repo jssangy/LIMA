@@ -21,7 +21,7 @@ class Color_dict():
 
         self.dic = {}
 
-        for i in range(min(agv_num, 15)):  # 최대 15(A-O)까지 할당 가능
+        for i in range(min(agv_num, 15)):  # 최대 15(A-O)개 할당 가능
             self.dic[chr(i + 65)] = base_colors[i]
 
 
