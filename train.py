@@ -14,9 +14,7 @@ gamma = 0.95
 tau = 0.01
 actor_lr = 0.15
 critic_lr = 0.15
-epsilon_start = 0.95
-epsilon_final = 0
-epsilon = epsilon_start
+epsilon = 0.1
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 best_reward = -np.inf
 num_gpus = torch.cuda.device_count()
@@ -32,8 +30,7 @@ wandb.init(
         "tau": tau,
         "actor_lr": actor_lr,
         "critic_lr": critic_lr,
-        "epsilon_start": epsilon_start,
-        "epsilon_final": epsilon_final,
+        "epsilon": epsilon
     }
 )
 
@@ -144,8 +141,6 @@ for episode in range(episodes):
         episode_rewards.append(timestep_reward)
         total_reward += timestep_reward
 
-        epsilon = max(epsilon_final, epsilon_start - (epsilon_start - epsilon_final) * (episode / episodes))
-
 
     avg_reward = np.mean(episode_rewards)
     avg_actor_loss = np.mean(episode_actor_losses)
@@ -153,7 +148,7 @@ for episode in range(episodes):
     if total_reward > best_reward:
         best_reward = total_reward
         trainer.save_models(f"./checkpoints/best_model")
-        print(f"Best Model Episode {episode+1}, Total Reward = {total_reward}, Avg timestep Reward = {avg_reward:.2f}, Epsilon = {epsilon:.2f}")
+        print(f"Best Model Episode {episode+1}, Total Reward = {total_reward}, Avg timestep Reward = {avg_reward:.2f}")
         
     if (episode+1) % 100 == 0:
         trainer.save_models(f"./checkpoints/episode_{episode+1}")
@@ -161,7 +156,6 @@ for episode in range(episodes):
     wandb.log({
         "Total Reward": total_reward,
         "Average Timestep Reward": avg_reward,
-        "Epsilon": epsilon,
         "Average Actor Loss": avg_actor_loss,
         "Average Critic Loss": avg_critic_loss
     }, step=episode+1)
