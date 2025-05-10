@@ -8,7 +8,7 @@ from agent import Actor, Critic, MADDPGTrainer, ReplayBuffer
 
 # Hyperparameters
 episodes = 10000
-timesteps = 3600
+timesteps = 3000
 batch_size = 128
 gamma = 0.95
 tau = 0.01
