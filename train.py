@@ -7,16 +7,15 @@ from Environment import ENV
 from agent import Actor, Critic, MADDPGTrainer, ReplayBuffer
 
 # Hyperparameters
-episodes = 100000
+episodes = 10000
 timesteps = 3600
 batch_size = 128
-gamma = 0.99
+gamma = 0.95
 tau = 0.01
-actor_lr = 1e-3
-critic_lr = 1e-3
-epsilon_start = 0.8
-epsilon_final = 0.05
-epsilon_decay = 5e-5
+actor_lr = 0.15
+critic_lr = 0.15
+epsilon_start = 0.95
+epsilon_final = 0
 epsilon = epsilon_start
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 best_reward = -np.inf
@@ -35,7 +34,6 @@ wandb.init(
         "critic_lr": critic_lr,
         "epsilon_start": epsilon_start,
         "epsilon_final": epsilon_final,
-        "epsilon_decay": epsilon_decay,
     }
 )
 
@@ -146,7 +144,7 @@ for episode in range(episodes):
         episode_rewards.append(timestep_reward)
         total_reward += timestep_reward
 
-        epsilon = max(epsilon_final, epsilon - epsilon_decay)
+        epsilon = max(epsilon_final, epsilon_start - (epsilon_start - epsilon_final) * (episode / episodes))
 
 
     avg_reward = np.mean(episode_rewards)
@@ -163,6 +161,7 @@ for episode in range(episodes):
     wandb.log({
         "Total Reward": total_reward,
         "Average Timestep Reward": avg_reward,
+        "Epsilon": epsilon,
         "Average Actor Loss": avg_actor_loss,
         "Average Critic Loss": avg_critic_loss
     }, step=episode+1)

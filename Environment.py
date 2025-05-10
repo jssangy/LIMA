@@ -106,13 +106,12 @@ class ENV():
 
         for idx, agv in enumerate(self.agv_list.values()):
             reward = 0
-            # Arrive Goal
-            if agv.pos == agv.goal:
-                reward += 100
 
             # Collision
             if agv.mode == 1:
-                reward -= 50
+                reward -= 5
+            else:
+                reward += 5
 
             # Action
             reward -= 1
@@ -121,8 +120,7 @@ class ENV():
             cur_dist = state[idx][-1]
             next_dist = next_state[idx][-1]
             delta = cur_dist - next_dist
-            if abs(delta) > 1e-3:
-                reward += delta * 3
+            reward += delta * 0.2
             
             total_reward.append(reward)
 
