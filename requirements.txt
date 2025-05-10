@@ -1,7 +1,6 @@
 numpy
 pygame
 pyglet
-colorama
 pyyaml
 wandb
 tqdm
