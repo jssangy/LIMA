@@ -125,9 +125,6 @@ class controller():
                 self.control_buffer[num] = (dx, dy)
                 self.action_control_buffer[num] = control[actions[idx]]
                 self.agv_next_pos[num] = pos + self.action_control_buffer[num]
-            else:
-                self.control_buffer[num] = (0, 0)
-                self.agv_next_pos[num] = pos
 
         # Collision prevention => Dead Lock
         for num1 in self.agv_nums:

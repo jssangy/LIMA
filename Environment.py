@@ -87,17 +87,15 @@ class ENV():
         self.init_scenario()
 
     def get_state(self, num):
-        pos = self.agv_list[num].pos                                # (2,)
-        
-        planner = self.controller.planners[num]
-        planner.start = pos
-        planner.compute_shortest_path()        
-        distance = planner.g[pos]                                   # (1,)
+        pos = self.agv_list[num].pos                                        # (2,)
+        goal = self.agv_list[num].goal
+
+        distance = np.sqrt((pos[0]-goal[0])**2 + (pos[1]-goal[1])**2)       # (1,)
         
         state = np.array([
             pos[0], pos[1],
             distance,
-        ], dtype=np.float32)                                        # (3,)         
+        ], dtype=np.float32)                                                # (3,)         
         
         return state
     
@@ -108,14 +106,16 @@ class ENV():
             reward = 0
 
             # Collision
-            if agv.mode == 1:
-                reward -= 25
+            if agv.mode == 2:
+                reward += -5
+            else:
+                reward += 5
 
             # Distance difference
             cur_dist = state[idx][-1]
             next_dist = next_state[idx][-1]
             delta = cur_dist - next_dist
-            reward += delta
+            reward += 0.2 * delta
             
             total_reward.append(reward)
 
@@ -227,7 +227,7 @@ class ENV():
                 pass                
             # Collision with other AGVs
             if(self.interact(agv.next_pos()) == 2):
-                agv.mode = 1
+                pass
 
         return self.make_info()
     
@@ -350,7 +350,7 @@ class ENV():
 
         for agv in self.agv_list.values():
             if (pos == agv.pos):
-                self.controller.agv_mode[agv] = 1
+                agv.mode = 2
                 return 2
         
         return 0

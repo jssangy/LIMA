@@ -12,11 +12,9 @@ timesteps = 3000
 batch_size = 128
 gamma = 0.95
 tau = 0.01
-actor_lr = 1e-3
-critic_lr = 1e-3
-epsilon_start = 0.8
-epsilon_final = 0
-epsilon = epsilon_start
+actor_lr = 0.01
+critic_lr = 0.01
+epsilon = 0.1
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 best_reward = -np.inf
 num_gpus = torch.cuda.device_count()
@@ -142,8 +140,6 @@ for episode in range(episodes):
         timestep_reward = np.sum(reward)
         episode_rewards.append(timestep_reward)
         total_reward += timestep_reward
-
-    epsilon = max(epsilon_final, epsilon_start - (epsilon_start - epsilon_final) * (episode / episodes))
 
     avg_reward = np.mean(episode_rewards)
     avg_actor_loss = np.mean(episode_actor_losses)
