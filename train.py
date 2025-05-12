@@ -17,7 +17,6 @@ critic_lr = 0.01
 epsilon = 0.1
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 best_reward = -np.inf
-num_gpus = torch.cuda.device_count()
 
 wandb.init(
     project="DAA_CPS",  
@@ -104,20 +103,14 @@ for episode in range(episodes):
 
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)  # (1, state_dim)
 
-            # Action masking
-            action_mask = env.valid_actions(int(state[0]), int(state[1]))
-            action_mask_tensor = torch.tensor(action_mask, dtype=torch.float32, device=device)
-            action_logits = actors[agent](state_tensor).squeeze(0)  # (act_dim,)
-            masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)
+            action_logits = actors[agent](state_tensor).squeeze(0)
 
             # Exploration
             if np.random.rand() < epsilon:
-                valid_actions = np.where(np.array(action_mask) == 1)[0]
-                action = np.random.choice(valid_actions)
+                action = np.random.choice(act_dim)
             # Exploitation
             else:
-                action_probs = torch.softmax(masked_logits, dim=-1)
-                action = torch.multinomial(action_probs, 1).item()
+                action = torch.argmax(action_logits).item()
 
             joint_action.append(action)
 

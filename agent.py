@@ -78,7 +78,7 @@ class MADDPGTrainer:
                     other_idx = self.agent_nums.index(other_agent)
                     next_state_agent = next_state[:, other_idx, :]
                     logits = self.actor_target_dict[other_agent](next_state_agent)
-                    target_action = F.one_hot(torch.argmax(logits, dim=-1), num_classes=5).float()
+                    target_action = F.gumbel_softmax(logits, tau=1.0, hard=True)
                     target_next_actions.append(target_action)
                 target_next_actions = torch.cat(target_next_actions, dim=-1)
 
@@ -99,12 +99,11 @@ class MADDPGTrainer:
             for other_agent in self.agent_nums:
                 other_idx = self.agent_nums.index(other_agent)
                 state_agent = state[:, other_idx, :]
+                logits = self.actor_dict[other_agent](state_agent)
                 if other_agent == agent:
-                    logits = self.actor_dict[agent](state_agent)
-                    action = F.softmax(logits, dim=-1)
+                    action = F.gumbel_softmax(logits, tau=1.0, hard=True)
                 else:
-                    logits = self.actor_dict[other_agent](state_agent)
-                    action = F.one_hot(torch.argmax(logits, dim=-1), num_classes=5).float().detach()
+                    action = F.gumbel_softmax(logits, tau=1.0, hard=True).detach()
                 predicted_actions.append(action)
 
             predicted_actions = torch.cat(predicted_actions, dim=-1)

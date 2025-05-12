@@ -22,7 +22,7 @@ class agv():
         self.move_x = 0
         self.move_y = 0
         
-        # For collision (?)
+        # For collision
         self.mode = 0
         
     def get_control(self, packet):

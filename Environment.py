@@ -106,10 +106,12 @@ class ENV():
             reward = 0
 
             # Collision
-            if agv.mode == 2:
+            if agv.mode == 1 or agv.mode == 2:
                 reward += -5
-            else:
+            elif agv.mode == 0:
                 reward += 5
+            else:
+                raise ValueError
 
             # Distance difference
             cur_dist = state[idx][-1]
@@ -345,14 +347,15 @@ class ENV():
         return valid
     
     def interact(self, pos):
-        if self.map[pos[1]][pos[0]] == 1:
-            return 1
-
         for agv in self.agv_list.values():
-            if (pos == agv.pos):
+            if (self.controller.grid[pos[1]][pos[0]] == 0):
+                agv.mode = 1
+                return 1
+            elif (pos == agv.pos):
                 agv.mode = 2
                 return 2
         
+        agv.mode = 0
         return 0
     
     # Get the list of object
