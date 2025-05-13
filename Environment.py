@@ -143,14 +143,14 @@ class ENV():
         # All AGVs interacts with ENV!
         for num, agv in self.agv_list.items():
             # Possible Move
-            if(self.interact(agv.next_pos()) == 0):
+            if(self.interact(agv, agv.next_pos()) == 0):
                 agv.move()
                 agv.goal = self.controller.agv_goal[num][self.controller.agv_state[num]]
-            # Collision with wall
-            if(self.interact(agv.next_pos()) == 1):
-                pass
+            # Collision with wall or move out of line
+            if(self.interact(agv, agv.next_pos()) == 1):
+                pass                
             # Collision with other AGVs
-            if(self.interact(agv.next_pos()) == 2):
+            if(self.interact(agv, agv.next_pos()) == 2):
                 pass
         
         next_state = []
@@ -184,14 +184,14 @@ class ENV():
         # All AGVs interacts with ENV!
         for num, agv in self.agv_list.items():
             # Possible Move
-            if(self.interact(agv.next_pos()) == 0):
+            if(self.interact(agv, agv.next_pos()) == 0):
                 agv.move()
                 agv.goal = self.controller.agv_goal[num][self.controller.agv_state[num]]
-            # Collision with wall
-            if(self.interact(agv.next_pos()) == 1):
-                pass
+            # Collision with wall or move out of line
+            if(self.interact(agv, agv.next_pos()) == 1):
+                pass                
             # Collision with other AGVs
-            if(self.interact(agv.next_pos()) == 2):
+            if(self.interact(agv, agv.next_pos()) == 2):
                 pass
         
         return self.make_info()
@@ -221,18 +221,47 @@ class ENV():
         # All AGVs interacts with ENV!
         for num, agv in self.agv_list.items():
             # Possible Move
-            if(self.interact(agv.next_pos()) == 0):
+            if(self.interact(agv, agv.next_pos()) == 0):
                 agv.move()
                 agv.goal = self.controller.agv_goal[num][self.controller.agv_state[num]]
-            # Collision with wall
-            if(self.interact(agv.next_pos()) == 1):
+            # Collision with wall or move out of line
+            elif(self.interact(agv, agv.next_pos()) == 1):
                 pass                
             # Collision with other AGVs
-            if(self.interact(agv.next_pos()) == 2):
+            elif(self.interact(agv, agv.next_pos()) == 2):
                 pass
 
         return self.make_info()
     
+    def interact(self, agv, pos):
+        if self.controller.grid[pos[1]][pos[0]] == 0:
+            agv.mode = 1
+            return 1
+
+        for other_agv in self.agv_list.values():
+            if (agv != other_agv and pos == other_agv.pos):
+                agv.mode = 2
+                return 2
+        
+        agv.mode = 0
+        return 0
+    
+    # Get the list of object
+    def Get_AGV(self):
+        return self.agv_list
+    
+    def make_info(self):
+        # Use for GUI
+        if (self.time != 0):
+            info_list = [self.controller.whole_product, self.controller.whole_product / self.time]
+        else:
+            info_list = [self.controller.whole_product, 0]
+        
+        # Product of AGVs
+        info_list.append(self.controller.agv_info)
+        
+        return info_list
+
     def position_type(self, pos):
         x, y = pos
         grid = self.controller.grid
@@ -344,36 +373,7 @@ class ENV():
         if x > 0 and grid[y][x-1] == 1:
             valid[3] = 1
 
-        return valid
-    
-    def interact(self, pos):
-        for agv in self.agv_list.values():
-            if (self.controller.grid[pos[1]][pos[0]] == 0):
-                agv.mode = 1
-                return 1
-            elif (pos == agv.pos):
-                agv.mode = 2
-                return 2
-        
-        agv.mode = 0
-        return 0
-    
-    # Get the list of object
-    def Get_AGV(self):
-        return self.agv_list
-    
-    def make_info(self):
-        # Use for GUI
-        if (self.time != 0):
-            info_list = [self.controller.whole_product, self.controller.whole_product / self.time]
-        else:
-            info_list = [self.controller.whole_product, 0]
-        
-        # Product of AGVs
-        info_list.append(self.controller.agv_info)
-        
-        return info_list
-    
+        return valid    
     
     # ======================== Use for GUI ========================
     def find_line(self, x, y):

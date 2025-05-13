@@ -125,25 +125,6 @@ class controller():
                 self.control_buffer[num] = (dx, dy)
                 self.action_control_buffer[num] = control[actions[idx]]
                 self.agv_next_pos[num] = pos + self.action_control_buffer[num]
-
-        # Collision prevention => Dead Lock
-        for num1 in self.agv_nums:
-            num1_pos = self.agv_pos[num1]
-            num1_next_pos = self.agv_next_pos[num1]
-
-            self.agv_mode[num1] = 0
-            for num2 in self.agv_nums:
-                if num1 != num2:
-                    num2_pos = self.agv_pos[num2]
-                    num2_next_pos = self.agv_next_pos[num2]
-                    if (num1_next_pos == num2_next_pos):
-                        self.agv_mode[num1] = 1
-                    elif (num1_next_pos == num2_pos):
-                        self.agv_mode[num1] = 1
-          
-            if self.map[num1_pos[1]][num1_pos[0]] == 1:
-                self.agv_mode[num1] = 2
-                self.control_buffer[num1] = (0, 0) 
     
     def make_control(self):
         if self.running_opt == 0:
@@ -181,25 +162,6 @@ class controller():
             else:
                 self.control_buffer[num] = (0, 0)
                 self.agv_next_pos[num] = pos
-
-        # Collision prevention => Dead Lock
-        for num1 in self.agv_nums:
-            num1_pos = self.agv_pos[num1]
-            num1_next_pos = self.agv_next_pos[num1]
-
-            self.agv_mode[num1] = 0
-            for num2 in self.agv_nums:
-                if num1 != num2:
-                    num2_pos = self.agv_pos[num2]
-                    num2_next_pos = self.agv_next_pos[num2]
-                    if (num1_next_pos == num2_next_pos):
-                        self.agv_mode[num1] = 1
-                    elif (num1_next_pos == num2_pos):
-                        self.agv_mode[num1] = 1
-          
-            if self.map[num1_pos[1]][num1_pos[0]] == 1:
-                self.agv_mode[num1] = 2
-                self.control_buffer[num1] = (0, 0) 
     
     def dynamic_obstacle_dstar_rout(self):
         for num in self.agv_nums:
@@ -235,25 +197,6 @@ class controller():
             else:
                 self.control_buffer[num] = (0, 0)
                 self.agv_next_pos[num] = pos
-
-        # Collision prevention => Dead Lock
-        for num1 in self.agv_nums:
-            num1_pos = self.agv_pos[num1]
-            num1_next_pos = self.agv_next_pos[num1]
-
-            self.agv_mode[num1] = 0
-            for num2 in self.agv_nums:
-                if num1 != num2:
-                    num2_pos = self.agv_pos[num2]
-                    num2_next_pos = self.agv_next_pos[num2]
-                    if (num1_next_pos == num2_next_pos):
-                        self.agv_mode[num1] = 1
-                    elif (num1_next_pos == num2_pos):
-                        self.agv_mode[num1] = 1
-          
-            if self.map[num1_pos[1]][num1_pos[0]] == 1:
-                self.agv_mode[num1] = 2
-                self.control_buffer[num1] = (0, 0)   
         
     # ======================== Routing Functions ============================================
     def graphing(self):
