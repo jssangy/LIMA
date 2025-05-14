@@ -105,9 +105,9 @@ class ENV():
         for idx, agv in enumerate(self.agv_list.values()):
             reward = 0
 
-            # Collision
+            # Wall Collision & Deadlock
             if agv.mode == 1 or agv.mode == 2:
-                reward += -5
+                reward -= 5
 
             # Distance difference
             cur_dist = state[idx][-1]
@@ -229,13 +229,13 @@ class ENV():
 
         return self.make_info()
     
-    def interact(self, agv, pos):
-        if self.controller.grid[pos[1]][pos[0]] == 0:
+    def interact(self, agv, next_pos):
+        if self.controller.grid[next_pos[1]][next_pos[0]] == 0:
             agv.mode = 1
             return 1
 
         for other_agv in self.agv_list.values():
-            if (agv != other_agv and pos == other_agv.pos):
+            if (agv != other_agv and next_pos == other_agv.pos):
                 agv.mode = 2
                 return 2
         

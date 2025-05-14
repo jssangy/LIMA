@@ -8,24 +8,30 @@ from agent import Actor, Critic, MADDPGTrainer, ReplayBuffer
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-import matplotlib.colors as mcolors
-import numpy as np
+
+def rgb_to_mpl(rgb):
+    return tuple(v / 255.0 for v in rgb)
 
 class AGVGridVisualizer:
-    def __init__(self, grid, agent_nums, goal_dict=None):
+    def __init__(self, grid, agent_nums, env):
         self.grid = grid
         self.agent_nums = agent_nums
+        self.env = env  # env 참조 필요 (goal 업데이트용)
         self.agent_patches = {}
         self.goal_patches = {}
-        self.colors = list(mcolors.TABLEAU_COLORS.values())  # AGV 색상 팔레트
-        self.goal_dict = goal_dict if goal_dict else {}  # agent -> (x, y)
+        self.colors = [
+            rgb_to_mpl((255, 0, 0)),     # 빨강
+            rgb_to_mpl((0, 255, 0)),     # 초록
+            rgb_to_mpl((0, 0, 255)),     # 파랑
+            rgb_to_mpl((255, 255, 0)),   # 노랑
+            rgb_to_mpl((255, 0, 255)),   # 핑크
+        ]
         self.fig, self.ax = plt.subplots(figsize=(6, 6))
         self.init_plot()
 
     def init_plot(self):
         self.ax.clear()
         self.ax.set_xlim(0, self.grid.shape[1])
-        self.ax.set_ylim(0, self.grid.shape[0])
         self.ax.set_xticks(np.arange(0, self.grid.shape[1] + 1, 1))
         self.ax.set_yticks(np.arange(0, self.grid.shape[0] + 1, 1))
         self.ax.set_xticklabels([])
@@ -41,36 +47,45 @@ class AGVGridVisualizer:
                         patches.Rectangle((x, y), 1, 1, color="black")
                     )
 
-        # goal 표시
-        for i, agent in enumerate(self.agent_nums):
-            if agent in self.goal_dict:
-                gx, gy = self.goal_dict[agent]
-                goal_marker = patches.RegularPolygon(
-                    (gx + 0.5, gy + 0.5), numVertices=5, radius=0.3,
-                    orientation=np.pi / 2, color="green", alpha=0.6
-                )
-                self.goal_patches[agent] = goal_marker
-                self.ax.add_patch(goal_marker)
-
-        # AGV 초기 패치
+        # AGV 원 초기화
         for i, agent in enumerate(self.agent_nums):
             color = self.colors[i % len(self.colors)]
-            patch = patches.Circle((0.5, 0.5), 0.3, color=color, label=f"AGV {agent}")
+            patch = patches.Circle((0.5, 0.5), 0.3, color=color)
             self.agent_patches[agent] = patch
             self.ax.add_patch(patch)
 
-        self.ax.legend(loc='upper right')
         plt.ion()
         plt.show()
 
     def update(self, agv_states, timestep=None):
+        # AGV 위치 업데이트
         for i, agent in enumerate(self.agent_nums):
             x, y, _ = map(int, agv_states[i])
             self.agent_patches[agent].center = (x + 0.5, y + 0.5)
 
+        # goal 위치 동적 업데이트
+        # 이전 goal 마커 제거
+        for marker in self.goal_patches.values():
+            marker.remove()
+        self.goal_patches = {}
+
+        # 새 goal 마커 추가
+        for i, agent in enumerate(self.agent_nums):
+            color = self.colors[i % len(self.colors)]
+            goal_pos = self.env.controller.agv_rout.get(agent)[-1]
+            if goal_pos:
+                gx, gy = map(int, goal_pos)
+                marker = patches.RegularPolygon(
+                    (gx + 0.5, gy + 0.5), numVertices=5, radius=0.3,
+                    orientation=np.pi / 2, color=color, alpha=0.6
+                )
+                self.goal_patches[agent] = marker
+                self.ax.add_patch(marker)
+
+        # 타이틀 업데이트
         if timestep is not None:
             self.ax.set_title(f"Timestep {timestep}")
-        
+
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
         plt.pause(0.001)
@@ -155,7 +170,7 @@ trainer = MADDPGTrainer(
 # Replay Buffer
 buffer = ReplayBuffer(state_dim, num_agents, max_size=int(1e6))
 
-visualizer = AGVGridVisualizer(env.controller.grid, agent_nums)
+visualizer = AGVGridVisualizer(env.controller.grid, agent_nums, env)
 
 # Train Loop
 for episode in range(episodes):
@@ -198,11 +213,12 @@ for episode in range(episodes):
         )
 
         # 출력: 매 타임스텝마다 확인용
+        action_list = ['up', 'down', 'right', 'left', 'stop']
         print(f"\nTimestep {timestep + 1}")
         for idx, agent in enumerate(agent_nums):
             print(f"Agent {agent}:")
             print(f"  State      : {joint_state[idx]}")
-            print(f"  Action     : {joint_action[idx]}")
+            print(f"  Action     : {action_list[joint_action[idx]]}")
             print(f"  Reward     : {reward[idx]}")
             print(f"  Next State : {joint_next_state[idx]}")
         visualizer.update(joint_state, timestep+1)
