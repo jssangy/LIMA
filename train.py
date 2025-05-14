@@ -6,6 +6,77 @@ import wandb
 from Environment import ENV
 from agent import Actor, Critic, MADDPGTrainer, ReplayBuffer
 
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import matplotlib.colors as mcolors
+import numpy as np
+
+class AGVGridVisualizer:
+    def __init__(self, grid, agent_nums, goal_dict=None):
+        self.grid = grid
+        self.agent_nums = agent_nums
+        self.agent_patches = {}
+        self.goal_patches = {}
+        self.colors = list(mcolors.TABLEAU_COLORS.values())  # AGV 색상 팔레트
+        self.goal_dict = goal_dict if goal_dict else {}  # agent -> (x, y)
+        self.fig, self.ax = plt.subplots(figsize=(6, 6))
+        self.init_plot()
+
+    def init_plot(self):
+        self.ax.clear()
+        self.ax.set_xlim(0, self.grid.shape[1])
+        self.ax.set_ylim(0, self.grid.shape[0])
+        self.ax.set_xticks(np.arange(0, self.grid.shape[1] + 1, 1))
+        self.ax.set_yticks(np.arange(0, self.grid.shape[0] + 1, 1))
+        self.ax.set_xticklabels([])
+        self.ax.set_yticklabels([])
+        self.ax.grid(True)
+        self.ax.set_title("AGV 위치 및 목표")
+
+        # 장애물 표시
+        for y in range(self.grid.shape[0]):
+            for x in range(self.grid.shape[1]):
+                if self.grid[y, x] == 1:
+                    self.ax.add_patch(
+                        patches.Rectangle((x, y), 1, 1, color="black")
+                    )
+
+        # goal 표시
+        for i, agent in enumerate(self.agent_nums):
+            if agent in self.goal_dict:
+                gx, gy = self.goal_dict[agent]
+                goal_marker = patches.RegularPolygon(
+                    (gx + 0.5, gy + 0.5), numVertices=5, radius=0.3,
+                    orientation=np.pi / 2, color="green", alpha=0.6
+                )
+                self.goal_patches[agent] = goal_marker
+                self.ax.add_patch(goal_marker)
+
+        # AGV 초기 패치
+        for i, agent in enumerate(self.agent_nums):
+            color = self.colors[i % len(self.colors)]
+            patch = patches.Circle((0.5, 0.5), 0.3, color=color, label=f"AGV {agent}")
+            self.agent_patches[agent] = patch
+            self.ax.add_patch(patch)
+
+        self.ax.legend(loc='upper right')
+        plt.ion()
+        plt.show()
+
+    def update(self, agv_states, timestep=None):
+        for i, agent in enumerate(self.agent_nums):
+            x, y, _ = map(int, agv_states[i])
+            self.agent_patches[agent].center = (x + 0.5, y + 0.5)
+
+        if timestep is not None:
+            self.ax.set_title(f"Timestep {timestep}")
+        
+        self.fig.canvas.draw()
+        self.fig.canvas.flush_events()
+        plt.pause(0.001)
+
+
+
 # Hyperparameters
 episodes = 10000
 timesteps = 3000
@@ -84,6 +155,8 @@ trainer = MADDPGTrainer(
 # Replay Buffer
 buffer = ReplayBuffer(state_dim, num_agents, max_size=int(1e6))
 
+visualizer = AGVGridVisualizer(env.controller.grid, agent_nums)
+
 # Train Loop
 for episode in range(episodes):
     env.reset()
@@ -123,6 +196,17 @@ for episode in range(episodes):
             np.array(reward),
             np.array(joint_next_state)
         )
+
+        # 출력: 매 타임스텝마다 확인용
+        print(f"\nTimestep {timestep + 1}")
+        for idx, agent in enumerate(agent_nums):
+            print(f"Agent {agent}:")
+            print(f"  State      : {joint_state[idx]}")
+            print(f"  Action     : {joint_action[idx]}")
+            print(f"  Reward     : {reward[idx]}")
+            print(f"  Next State : {joint_next_state[idx]}")
+        visualizer.update(joint_state, timestep+1)
+        input("Press Enter to continue to the next timestep...")
 
         # Update
         if len(buffer) > batch_size and timestep % 10 == 0:

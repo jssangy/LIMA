@@ -189,8 +189,7 @@ class GUI():
                     action = torch.argmax(action_logits).item()
                     actions.append(action)
 
-                    action_probs = torch.softmax(action_logits, dim=-1).detach().cpu().numpy()
-                    print(f'{agent_id}: logits: {action_logits.tolist()}, probs: {action_probs.tolist()}')
+                    print(f'{agent_id}: {action_logits.tolist()}, {action}')
                 print()
 
                 run = self.env.demo_step(actions)
