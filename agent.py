@@ -54,12 +54,13 @@ class MADDPGTrainer:
         self.tau = tau
         self.device = device
 
-    def update(self, buffer, batch_size=128):
-        state, actions, rewards, next_state = buffer.sample(batch_size)
+    def update(self, buffer, batch_size):
+        state, actions, rewards, next_state, dones = buffer.sample(batch_size)
         state = state.to(self.device)
         actions = actions.to(self.device)
         rewards = rewards.to(self.device)
         next_state = next_state.to(self.device)
+        dones = dones.to(self.device)
 
         actor_losses = []
         critic_losses = []
@@ -78,13 +79,13 @@ class MADDPGTrainer:
                     other_idx = self.agent_nums.index(other_agent)
                     next_state_agent = next_state[:, other_idx, :]
                     logits = self.actor_target_dict[other_agent](next_state_agent)
-                    target_action = F.gumbel_softmax(logits, tau=1.0, hard=True)
+                    action_index = torch.argmax(logits, dim=-1)
+                    target_action = F.one_hot(action_index, num_classes=5).float()
                     target_next_actions.append(target_action)
                 target_next_actions = torch.cat(target_next_actions, dim=-1)
 
-                target_q = rewards[:, agent_idx] + self.gamma * self.critic_target_dict[agent](
-                    joint_next_state, target_next_actions
-                ).squeeze()
+                target_q_value = self.critic_target_dict[agent](joint_next_state, target_next_actions).squeeze()
+                target_q = rewards[:, agent_idx] + self.gamma * (1 - dones[:, agent_idx]) * target_q_value
 
             current_q = self.critic_dict[agent](joint_state, joint_action).squeeze()
 
@@ -101,9 +102,11 @@ class MADDPGTrainer:
                 state_agent = state[:, other_idx, :]
                 logits = self.actor_dict[other_agent](state_agent)
                 if other_agent == agent:
-                    action = F.gumbel_softmax(logits, tau=1.0, hard=True)
+                    action_probs = torch.softmax(logits, dim=-1)
+                    action = action_probs
                 else:
-                    action = F.gumbel_softmax(logits, tau=1.0, hard=True).detach()
+                    action_index = torch.argmax(logits, dim=-1)
+                    action = F.one_hot(action_index, num_classes=5).float().detach()
                 predicted_actions.append(action)
 
             predicted_actions = torch.cat(predicted_actions, dim=-1)
@@ -152,12 +155,14 @@ class ReplayBuffer:
         self.next_obs_buf = np.zeros((max_size, num_agents, obs_dim), dtype=np.float32)
         self.actions_buf = np.zeros((max_size, num_agents), dtype=np.int32)
         self.rewards_buf = np.zeros((max_size, num_agents), dtype=np.float32)
+        self.dones_buf = np.zeros((max_size, num_agents), dtype=np.float32)
 
-    def store(self, obs, action, reward, next_obs):
+    def store(self, obs, action, reward, next_obs, dones):
         self.obs_buf[self.ptr] = obs
         self.actions_buf[self.ptr] = action
         self.rewards_buf[self.ptr] = reward
         self.next_obs_buf[self.ptr] = next_obs
+        self.dones_buf[self.ptr] = dones
 
         self.ptr = (self.ptr + 1) % self.max_size
         self.size = min(self.size + 1, self.max_size)
@@ -169,8 +174,9 @@ class ReplayBuffer:
         batch_actions = torch.LongTensor(self.actions_buf[idxs])
         batch_rewards = torch.FloatTensor(self.rewards_buf[idxs])
         batch_next_obs = torch.FloatTensor(self.next_obs_buf[idxs])
+        batch_dones = torch.FloatTensor(self.dones_buf[idxs])
 
-        return batch_obs, batch_actions, batch_rewards, batch_next_obs
+        return batch_obs, batch_actions, batch_rewards, batch_next_obs, batch_dones
 
     def __len__(self):
         return self.size

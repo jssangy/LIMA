@@ -105,6 +105,10 @@ class ENV():
         for idx, agv in enumerate(self.agv_list.values()):
             reward = 0
 
+            # Arrive Goal
+            if agv.pos == agv.goal:
+                reward += 10
+
             # Wall Collision & Deadlock
             if agv.mode == 1 or agv.mode == 2:
                 reward -= 5
@@ -112,8 +116,10 @@ class ENV():
             # Distance difference
             cur_dist = state[idx][-1]
             next_dist = next_state[idx][-1]
-            delta = cur_dist - next_dist
-            reward += 0.2 * delta
+            if cur_dist > next_dist:
+                reward += 0.2 * next_dist
+            elif cur_dist <= next_dist:
+                reward -= 0.2 * next_dist
             
             total_reward.append(reward)
 
@@ -137,16 +143,20 @@ class ENV():
 
         # <3 Step>
         # All AGVs interacts with ENV!
+        dones = []
         for num, agv in self.agv_list.items():
             # Possible Move
             if (self.interact(agv, agv.next_pos()) == 0):
                 agv.move()
                 agv.goal = self.controller.agv_goal[num][self.controller.agv_state[num]]
+                dones.append(False)
             # Collision with wall or move out of line
             elif (self.interact(agv, agv.next_pos()) == 1):
+                dones.append(True)
                 pass                
             # Collision with other AGVs
             elif (self.interact(agv, agv.next_pos()) == 2):
+                dones.append(True)
                 pass
         
         next_state = []
@@ -155,7 +165,7 @@ class ENV():
 
         reward = self.compute_reward(state, next_state)
 
-        return next_state, reward
+        return next_state, reward, dones
     
     def demo_step(self, actions):
         # 1 time step (sec)  
