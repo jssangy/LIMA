@@ -139,14 +139,14 @@ class ENV():
         # All AGVs interacts with ENV!
         for num, agv in self.agv_list.items():
             # Possible Move
-            if(self.interact(agv, agv.next_pos()) == 0):
+            if (self.interact(agv, agv.next_pos()) == 0):
                 agv.move()
                 agv.goal = self.controller.agv_goal[num][self.controller.agv_state[num]]
             # Collision with wall or move out of line
-            if(self.interact(agv, agv.next_pos()) == 1):
+            elif (self.interact(agv, agv.next_pos()) == 1):
                 pass                
             # Collision with other AGVs
-            if(self.interact(agv, agv.next_pos()) == 2):
+            elif (self.interact(agv, agv.next_pos()) == 2):
                 pass
         
         next_state = []
@@ -180,14 +180,14 @@ class ENV():
         # All AGVs interacts with ENV!
         for num, agv in self.agv_list.items():
             # Possible Move
-            if(self.interact(agv, agv.next_pos()) == 0):
+            if (self.interact(agv, agv.next_pos()) == 0):
                 agv.move()
                 agv.goal = self.controller.agv_goal[num][self.controller.agv_state[num]]
             # Collision with wall or move out of line
-            if(self.interact(agv, agv.next_pos()) == 1):
+            elif (self.interact(agv, agv.next_pos()) == 1):
                 pass                
             # Collision with other AGVs
-            if(self.interact(agv, agv.next_pos()) == 2):
+            elif (self.interact(agv, agv.next_pos()) == 2):
                 pass
         
         return self.make_info()
@@ -217,14 +217,14 @@ class ENV():
         # All AGVs interacts with ENV!
         for num, agv in self.agv_list.items():
             # Possible Move
-            if(self.interact(agv, agv.next_pos()) == 0):
+            if (self.interact(agv, agv.next_pos()) == 0):
                 agv.move()
                 agv.goal = self.controller.agv_goal[num][self.controller.agv_state[num]]
             # Collision with wall or move out of line
-            elif(self.interact(agv, agv.next_pos()) == 1):
+            elif (self.interact(agv, agv.next_pos()) == 1):
                 pass                
             # Collision with other AGVs
-            elif(self.interact(agv, agv.next_pos()) == 2):
+            elif (self.interact(agv, agv.next_pos()) == 2):
                 pass
 
         return self.make_info()
