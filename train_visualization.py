@@ -16,15 +16,15 @@ class AGVGridVisualizer:
     def __init__(self, grid, agent_nums, env):
         self.grid = grid
         self.agent_nums = agent_nums
-        self.env = env  # env 참조 필요 (goal 업데이트용)
+        self.env = env 
         self.agent_patches = {}
         self.goal_patches = {}
         self.colors = [
-            rgb_to_mpl((255, 0, 0)),     # 빨강
-            rgb_to_mpl((0, 255, 0)),     # 초록
-            rgb_to_mpl((0, 0, 255)),     # 파랑
-            rgb_to_mpl((255, 255, 0)),   # 노랑
-            rgb_to_mpl((255, 0, 255)),   # 핑크
+            rgb_to_mpl((255, 0, 0)),     # Red
+            rgb_to_mpl((0, 255, 0)),     # Green
+            rgb_to_mpl((0, 0, 255)),     # Blue
+            rgb_to_mpl((255, 255, 0)),   # Yellow
+            rgb_to_mpl((255, 0, 255)),   # Pink
         ]
         self.fig, self.ax = plt.subplots(figsize=(6, 6))
         self.init_plot()
@@ -37,9 +37,8 @@ class AGVGridVisualizer:
         self.ax.set_xticklabels([])
         self.ax.set_yticklabels([])
         self.ax.grid(True)
-        self.ax.set_title("AGV 위치 및 목표")
+        self.ax.set_title("AGV position and goal")
 
-        # 장애물 표시
         for y in range(self.grid.shape[0]):
             for x in range(self.grid.shape[1]):
                 if self.grid[y, x] == 1:
@@ -47,7 +46,6 @@ class AGVGridVisualizer:
                         patches.Rectangle((x, y), 1, 1, color="black")
                     )
 
-        # AGV 원 초기화
         for i, agent in enumerate(self.agent_nums):
             color = self.colors[i % len(self.colors)]
             patch = patches.Circle((0.5, 0.5), 0.3, color=color)
@@ -58,18 +56,14 @@ class AGVGridVisualizer:
         plt.show()
 
     def update(self, agv_states, episode, timestep=None):
-        # AGV 위치 업데이트
         for i, agent in enumerate(self.agent_nums):
             x, y, _ = map(int, agv_states[i])
             self.agent_patches[agent].center = (x + 0.5, y + 0.5)
 
-        # goal 위치 동적 업데이트
-        # 이전 goal 마커 제거
         for marker in self.goal_patches.values():
             marker.remove()
         self.goal_patches = {}
 
-        # 새 goal 마커 추가
         for i, agent in enumerate(self.agent_nums):
             color = self.colors[i % len(self.colors)]
             goal_pos = self.env.controller.agv_rout.get(agent)[-1]
@@ -82,7 +76,6 @@ class AGVGridVisualizer:
                 self.goal_patches[agent] = marker
                 self.ax.add_patch(marker)
 
-        # 타이틀 업데이트
         if timestep is not None:
             self.ax.set_title(f"Episode {episode}, Timestep {timestep}")
 
@@ -173,12 +166,20 @@ visualizer = AGVGridVisualizer(env.controller.grid, agent_nums, env)
 # Train Loop
 best_reward = -np.inf
 best_episode = -1
-for episode in tqdm(range(episodes)):
+for episode in range(episodes):
     env.reset()
     total_reward = 0
     episode_rewards = []
-    episode_actor_losses = []
-    episode_critic_losses = []
+    episode_stats = {
+        agent: {
+            "episode_rewards": [],
+            "actor_loss": [],
+            "critic_loss": [],
+            "q_value": [],
+            "target_q_value": []
+        } for agent in agent_nums
+    }
+
 
     for timestep in range(timesteps):
         joint_action = []
@@ -218,7 +219,6 @@ for episode in tqdm(range(episodes)):
             np.array(dones)
         )
 
-        # 출력: 매 타임스텝마다 확인용
         action_list = ['up', 'down', 'right', 'left', 'stop']
         print(f"\nEpisode {episode}, Timestep {timestep + 1}")
         for idx, agent in enumerate(agent_nums):
@@ -231,10 +231,16 @@ for episode in tqdm(range(episodes)):
         # input("Press Enter to continue to the next timestep...")
 
         # Update
+        for i, agent in enumerate(agent_nums):
+            episode_stats[agent]["episode_rewards"].append(reward[i])
+        
         if len(buffer) > batch_size and timestep % 10 == 0:
-            actor_loss, critic_loss = trainer.update(buffer, batch_size)
-            episode_actor_losses.append(actor_loss)
-            episode_critic_losses.append(critic_loss)
+            stats = trainer.update(buffer, batch_size)
+            for agent in agent_nums:
+                episode_stats[agent]["actor_loss"].append(stats[f"{agent}/actor_loss"])
+                episode_stats[agent]["critic_loss"].append(stats[f"{agent}/critic_loss"])
+                episode_stats[agent]["q_value"].append(stats[f"{agent}/q_value"])
+                episode_stats[agent]["target_q_value"].append(stats[f"{agent}/target_q_value"])
 
         timestep_reward = np.sum(reward)
         episode_rewards.append(timestep_reward)
@@ -244,21 +250,22 @@ for episode in tqdm(range(episodes)):
             break
 
     avg_reward = np.mean(episode_rewards)
-    avg_actor_loss = np.mean(episode_actor_losses)
-    avg_critic_loss = np.mean(episode_critic_losses)
     if total_reward > best_reward:
         best_reward = total_reward
         best_episode = episode + 1
-        trainer.save_models(f"./checkpoints/best_model")
+        trainer.save_models(f"./checkpoints1/best_model")
         
     if (episode+1) % 1000 == 0:
-        trainer.save_models(f"./checkpoints/episode_{episode+1}")
+        trainer.save_models(f"./checkpoints1/episode_{episode+1}")
 
-    wandb.log({
-        "Total Reward": total_reward,
-        "Average Timestep Reward": avg_reward,
-        "Average Actor Loss": avg_actor_loss,
-        "Average Critic Loss": avg_critic_loss
-    }, step=episode+1)
+    log_data = {"Total Reward": total_reward}
+    for agent in agent_nums:
+        log_data[f"{agent}/avg_reward"] = np.mean(episode_stats[agent]["episode_rewards"])
+        log_data[f"{agent}/actor_loss"] = np.mean(episode_stats[agent]["actor_loss"])
+        log_data[f"{agent}/critic_loss"] = np.mean(episode_stats[agent]["critic_loss"])
+        log_data[f"{agent}/q_value"] = np.mean(episode_stats[agent]["q_value"])
+        log_data[f"{agent}/target_q_value"] = np.mean(episode_stats[agent]["target_q_value"])
+
+    wandb.log(log_data, step=episode+1)
 
 print(f"Best Model Episode {episode+1}, Total Reward = {total_reward:.2f}")

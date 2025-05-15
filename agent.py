@@ -62,8 +62,7 @@ class MADDPGTrainer:
         next_state = next_state.to(self.device)
         dones = dones.to(self.device)
 
-        actor_losses = []
-        critic_losses = []
+        stats = {}
 
         for agent in self.agent_nums:
             agent_idx = self.agent_nums.index(agent)
@@ -93,7 +92,6 @@ class MADDPGTrainer:
             self.critic_opt_dict[agent].zero_grad()
             critic_loss.backward()
             self.critic_opt_dict[agent].step()
-            critic_losses.append(critic_loss.item())
 
             # Actor Update
             predicted_actions = []
@@ -115,15 +113,17 @@ class MADDPGTrainer:
             self.actor_opt_dict[agent].zero_grad()
             actor_loss.backward()
             self.actor_opt_dict[agent].step()
-            actor_losses.append(actor_loss.item())
 
             # Target Update
             self.soft_update(self.actor_dict[agent], self.actor_target_dict[agent])
             self.soft_update(self.critic_dict[agent], self.critic_target_dict[agent])
 
-        avg_actor_loss = np.mean(actor_losses)
-        avg_critic_loss = np.mean(critic_losses)
-        return avg_actor_loss, avg_critic_loss
+            stats[f"{agent}/critic_loss"] = critic_loss.item()
+            stats[f"{agent}/actor_loss"] = actor_loss.item()
+            stats[f"{agent}/q_value"] = current_q.mean().item()
+            stats[f"{agent}/target_q_value"] = target_q.mean().item()
+
+        return stats
 
     def soft_update(self, online_net, target_net):
         for online_param, target_param in zip(online_net.parameters(), target_net.parameters()):

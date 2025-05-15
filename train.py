@@ -91,8 +91,16 @@ for episode in tqdm(range(episodes)):
     env.reset()
     total_reward = 0
     episode_rewards = []
-    episode_actor_losses = []
-    episode_critic_losses = []
+    episode_stats = {
+        agent: {
+            "episode_rewards": [],
+            "actor_loss": [],
+            "critic_loss": [],
+            "q_value": [],
+            "target_q_value": []
+        } for agent in agent_nums
+    }
+
 
     for timestep in tqdm(range(timesteps), desc=f"Episode {episode+1}", leave=False):
         joint_action = []
@@ -133,10 +141,16 @@ for episode in tqdm(range(episodes)):
         )
 
         # Update
+        for i, agent in enumerate(agent_nums):
+            episode_stats[agent]["episode_rewards"].append(reward[i])
+        
         if len(buffer) > batch_size and timestep % 10 == 0:
-            actor_loss, critic_loss = trainer.update(buffer, batch_size)
-            episode_actor_losses.append(actor_loss)
-            episode_critic_losses.append(critic_loss)
+            stats = trainer.update(buffer, batch_size)
+            for agent in agent_nums:
+                episode_stats[agent]["actor_loss"].append(stats[f"{agent}/actor_loss"])
+                episode_stats[agent]["critic_loss"].append(stats[f"{agent}/critic_loss"])
+                episode_stats[agent]["q_value"].append(stats[f"{agent}/q_value"])
+                episode_stats[agent]["target_q_value"].append(stats[f"{agent}/target_q_value"])
 
         timestep_reward = np.sum(reward)
         episode_rewards.append(timestep_reward)
@@ -146,8 +160,6 @@ for episode in tqdm(range(episodes)):
             break
 
     avg_reward = np.mean(episode_rewards)
-    avg_actor_loss = np.mean(episode_actor_losses)
-    avg_critic_loss = np.mean(episode_critic_losses)
     if total_reward > best_reward:
         best_reward = total_reward
         best_episode = episode + 1
@@ -156,11 +168,14 @@ for episode in tqdm(range(episodes)):
     if (episode+1) % 1000 == 0:
         trainer.save_models(f"./checkpoints1/episode_{episode+1}")
 
-    wandb.log({
-        "Total Reward": total_reward,
-        "Average Timestep Reward": avg_reward,
-        "Average Actor Loss": avg_actor_loss,
-        "Average Critic Loss": avg_critic_loss
-    }, step=episode+1)
+    log_data = {"Total Reward": total_reward}
+    for agent in agent_nums:
+        log_data[f"{agent}/avg_reward"] = np.mean(episode_stats[agent]["episode_rewards"])
+        log_data[f"{agent}/actor_loss"] = np.mean(episode_stats[agent]["actor_loss"])
+        log_data[f"{agent}/critic_loss"] = np.mean(episode_stats[agent]["critic_loss"])
+        log_data[f"{agent}/q_value"] = np.mean(episode_stats[agent]["q_value"])
+        log_data[f"{agent}/target_q_value"] = np.mean(episode_stats[agent]["target_q_value"])
+
+    wandb.log(log_data, step=episode+1)
 
 print(f"Best Model Episode {episode+1}, Total Reward = {total_reward:.2f}")

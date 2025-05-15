@@ -105,20 +105,20 @@ class ENV():
         for idx, agv in enumerate(self.agv_list.values()):
             reward = 0
 
-            # Arrive Goal
-            if agv.pos == agv.goal:
-                reward += 10
-
             # Wall Collision & Deadlock
             if agv.mode == 1 or agv.mode == 2:
                 reward -= 5
+            elif agv.mode == 0:
+                reward += 5
+            else:
+                raise ValueError
 
             # Distance difference
             cur_dist = state[idx][-1]
             next_dist = next_state[idx][-1]
             if cur_dist > next_dist:
                 reward += 0.2 * next_dist
-            elif cur_dist <= next_dist:
+            elif cur_dist <= next_dist or agv.mode == 1 or agv.mode == 2:
                 reward -= 0.2 * next_dist
             
             total_reward.append(reward)
