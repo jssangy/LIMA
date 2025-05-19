@@ -178,4 +178,4 @@ for episode in tqdm(range(episodes)):
 
     wandb.log(log_data, step=episode+1)
 
-print(f"Best Model Episode {best_episode}, Total Reward = {total_reward:.2f}")
+print(f"Best Model Episode {best_episode}, Total Reward = {best_reward:.2f}")
