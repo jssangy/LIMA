@@ -81,7 +81,6 @@ class AGVGridVisualizer:
 
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
-        plt.pause(0.001)
 
 # Hyperparameters
 episodes = 1000
@@ -233,7 +232,7 @@ for episode in range(episodes):
             print(f"  Cur State  : {joint_next_state[idx]}")
             print(f"  Dones      : {dones[idx]}")
         visualizer.update(joint_state, episode+1, timestep+1)
-        input("Press Enter to continue to the next timestep...")
+        # input("Press Enter to continue to the next timestep...")
 
         # Update
         for i, agent in enumerate(agent_nums):
