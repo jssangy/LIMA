@@ -7,7 +7,7 @@ from Environment import ENV
 from agent import Actor, Critic, MADDPGTrainer, ReplayBuffer
 
 # Hyperparameters
-episodes = 100000
+episodes = 10000
 timesteps = 3000
 batch_size = 256
 gamma = 0.95
@@ -39,7 +39,7 @@ env = ENV()
 agent_nums = list(env.agv_list.keys())
 num_agents = len(agent_nums)
 
-state_dim = 3
+state_dim = 5
 act_dim = 5
 
 # Actor, Critic Network
@@ -70,6 +70,7 @@ for agent in agent_nums:
 # MADDPG Trainer
 trainer = MADDPGTrainer(
     agent_nums,
+    act_dim,
     actor_dict=actors,
     critic_dict=critics,
     actor_target_dict=target_actors,
@@ -114,18 +115,17 @@ for episode in tqdm(range(episodes)):
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)  # (1, state_dim)
 
             # Action masking
-            action_mask = env.valid_actions(int(state[0]), int(state[1]))
-            action_mask_tensor = torch.tensor(action_mask, dtype=torch.float32, device=device)
-            action_logits = actors[agent](state_tensor).squeeze(0)
-            masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)
+            actors[agent].eval()
+            with torch.no_grad():
+                action_logits = actors[agent](state_tensor).squeeze(0)
+            actors[agent].train()
 
             # Exploration
             if np.random.rand() < epsilon:
-                valid_indices = np.where(action_mask)[0]
-                action = np.random.choice(valid_indices)
+                action = np.random.choice(act_dim)
             # Exploitation
             else:
-                action = torch.argmax(masked_logits).item()
+                action = torch.argmax(action_logits).item()
 
             joint_action.append(action)
 
@@ -163,10 +163,10 @@ for episode in tqdm(range(episodes)):
     if total_reward > best_reward:
         best_reward = total_reward
         best_episode = episode + 1
-        trainer.save_models(f"./checkpoints1/best_model")
+        trainer.save_models(f"./checkpoints/best_model")
         
     if (episode+1) % 1000 == 0:
-        trainer.save_models(f"./checkpoints1/episode_{episode+1}")
+        trainer.save_models(f"./checkpoints/episode_{episode+1}")
 
     log_data = {"Total Reward": total_reward}
     for agent in agent_nums:
@@ -178,4 +178,4 @@ for episode in tqdm(range(episodes)):
 
     wandb.log(log_data, step=episode+1)
 
-print(f"Best Model Episode {episode+1}, Total Reward = {total_reward:.2f}")
+print(f"Best Model Episode {best_episode}, Total Reward = {total_reward:.2f}")

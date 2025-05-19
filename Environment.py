@@ -88,14 +88,15 @@ class ENV():
 
     def get_state(self, num):
         pos = self.agv_list[num].pos                                        # (2,)
-        goal = self.agv_list[num].goal
+        goal = self.agv_list[num].goal                                      # (2,)
 
         distance = np.sqrt((pos[0]-goal[0])**2 + (pos[1]-goal[1])**2)       # (1,)
         
         state = np.array([
             pos[0], pos[1],
+            goal[0], goal[1],
             distance,
-        ], dtype=np.float32)                                                # (3,)         
+        ], dtype=np.float32)                                                # (5,)         
         
         return state
     
@@ -117,9 +118,9 @@ class ENV():
             cur_dist = state[idx][-1]
             next_dist = next_state[idx][-1]
             if cur_dist > next_dist:
-                reward += 0.2 * next_dist
+                reward += 0.2 
             elif cur_dist <= next_dist or agv.mode == 1 or agv.mode == 2:
-                reward -= 0.2 * next_dist
+                reward -= 0.2 
             
             total_reward.append(reward)
 

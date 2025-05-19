@@ -6,18 +6,20 @@ import torch.nn.functional as F
 
 # Actor for Discrete Action
 class Actor(nn.Module):
-    def __init__(self, obs_dim, act_dim):
+    def __init__(self, obs_dim, act_dim, hidden_dim=64):
         super(Actor, self).__init__()
-        self.fc1 = nn.Linear(obs_dim, 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.fc3 = nn.Linear(256, 256)
-        self.fc4 = nn.Linear(256, act_dim)
+        self.bn = nn.BatchNorm1d(obs_dim)
+        self.bn.weight.data.fill_(1)
+        self.bn.bias.data.fill_(0)
+
+        self.fc1 = nn.Linear(obs_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc3 = nn.Linear(hidden_dim, act_dim)
 
     def forward(self, x):
-        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc1(self.bn(x)))
         x = F.relu(self.fc2(x))
-        x = F.relu(self.fc3(x))
-        logits = self.fc4(x)
+        logits = self.fc3(x)
         return logits
 
 
@@ -26,24 +28,28 @@ class Critic(nn.Module):
     def __init__(self, obs_dim, act_dim, num_agents):
         super(Critic, self).__init__()
         input_dim = num_agents * (obs_dim + act_dim)
-        self.fc1 = nn.Linear(input_dim, 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.fc3 = nn.Linear(256, 256)
-        self.fc4 = nn.Linear(256, 1)
+
+        self.bn = nn.BatchNorm1d(input_dim)
+        self.bn.weight.data.fill_(1)
+        self.bn.bias.data.fill_(0)
+
+        self.fc1 = nn.Linear(input_dim, 64)
+        self.fc2 = nn.Linear(64, 64)
+        self.fc3 = nn.Linear(64, 1)
 
     def forward(self, state, action):
-        x = torch.cat([state, action], dim=-1)
-        x = F.relu(self.fc1(x))
+        x = torch.cat([state, action], dim=1)
+        x = F.relu(self.fc1(self.bn(x)))
         x = F.relu(self.fc2(x))
-        x = F.relu(self.fc3(x))
-        v = self.fc4(x)
+        v = self.fc3(x)
         return v
 
 
 class MADDPGTrainer:
-    def __init__(self, agent_nums, actor_dict, critic_dict, actor_target_dict, critic_target_dict,
-                 actor_opt_dict, critic_opt_dict, gamma=0.99, tau=0.01, device='cuda'):
+    def __init__(self, agent_nums, act_dim, actor_dict, critic_dict, actor_target_dict, critic_target_dict,
+                 actor_opt_dict, critic_opt_dict, gamma=0.95, tau=0.01, device='cuda'):
         self.agent_nums = agent_nums
+        self.action_space = act_dim
         self.actor_dict = actor_dict
         self.critic_dict = critic_dict
         self.actor_target_dict = actor_target_dict
@@ -69,7 +75,7 @@ class MADDPGTrainer:
 
             # Critic Update
             joint_state = state.view(batch_size, -1)
-            joint_action = F.one_hot(actions.long(), num_classes=5).float().view(batch_size, -1)
+            joint_action = F.one_hot(actions.long(), num_classes=self.action_space).float().view(batch_size, -1)
             joint_next_state = next_state.view(batch_size, -1)
 
             with torch.no_grad():
@@ -79,7 +85,7 @@ class MADDPGTrainer:
                     next_state_agent = next_state[:, other_idx, :]
                     logits = self.actor_target_dict[other_agent](next_state_agent)
                     action_index = torch.argmax(logits, dim=-1)
-                    target_action = F.one_hot(action_index, num_classes=5).float()
+                    target_action = F.one_hot(action_index, num_classes=self.action_space).float()
                     target_next_actions.append(target_action)
                 target_next_actions = torch.cat(target_next_actions, dim=-1)
 
@@ -100,18 +106,20 @@ class MADDPGTrainer:
                 state_agent = state[:, other_idx, :]
                 logits = self.actor_dict[other_agent](state_agent)
                 if other_agent == agent:
-                    action_probs = torch.softmax(logits, dim=-1)
-                    action = action_probs
+                    action = F.gumbel_softmax(logits, hard=True)
+                    self_logits = logits
                 else:
                     action_index = torch.argmax(logits, dim=-1)
-                    action = F.one_hot(action_index, num_classes=5).float().detach()
+                    action = F.one_hot(action_index, num_classes=self.action_space).float().detach()
                 predicted_actions.append(action)
 
             predicted_actions = torch.cat(predicted_actions, dim=-1)
             actor_loss = -self.critic_dict[agent](joint_state, predicted_actions).mean()
+            actor_loss += (self_logits ** 2).mean() * 1e-3
 
             self.actor_opt_dict[agent].zero_grad()
             actor_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.actor_dict[agent].parameters(), 0.5)
             self.actor_opt_dict[agent].step()
 
             # Target Update

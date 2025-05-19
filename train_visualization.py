@@ -57,7 +57,7 @@ class AGVGridVisualizer:
 
     def update(self, agv_states, episode, timestep=None):
         for i, agent in enumerate(self.agent_nums):
-            x, y, _ = map(int, agv_states[i])
+            x, y, _, __, ___ = map(int, agv_states[i])
             self.agent_patches[agent].center = (x + 0.5, y + 0.5)
 
         for marker in self.goal_patches.values():
@@ -66,7 +66,7 @@ class AGVGridVisualizer:
 
         for i, agent in enumerate(self.agent_nums):
             color = self.colors[i % len(self.colors)]
-            goal_pos = self.env.controller.agv_rout.get(agent)[-1]
+            goal_pos = self.env.agv_list[agent].goal
             if goal_pos:
                 gx, gy = map(int, goal_pos)
                 marker = patches.RegularPolygon(
@@ -84,9 +84,9 @@ class AGVGridVisualizer:
         plt.pause(0.001)
 
 # Hyperparameters
-episodes = 100000
+episodes = 1000
 timesteps = 3000
-batch_size = 256
+batch_size = 32
 gamma = 0.95
 tau = 0.01
 actor_lr = 0.01
@@ -116,7 +116,7 @@ env = ENV()
 agent_nums = list(env.agv_list.keys())
 num_agents = len(agent_nums)
 
-state_dim = 3
+state_dim = 5
 act_dim = 5
 
 # Actor, Critic Network
@@ -147,6 +147,7 @@ for agent in agent_nums:
 # MADDPG Trainer
 trainer = MADDPGTrainer(
     agent_nums,
+    act_dim,
     actor_dict=actors,
     critic_dict=critics,
     actor_target_dict=target_actors,
@@ -185,6 +186,7 @@ for episode in range(episodes):
         joint_action = []
         joint_state = []
         joint_next_state = []
+        explore_fig = []
 
         for agent in agent_nums:
             state = env.get_state(agent)
@@ -193,18 +195,19 @@ for episode in range(episodes):
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)  # (1, state_dim)
 
             # Action masking
-            action_mask = env.valid_actions(int(state[0]), int(state[1]))
-            action_mask_tensor = torch.tensor(action_mask, dtype=torch.float32, device=device)
-            action_logits = actors[agent](state_tensor).squeeze(0)
-            masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)
+            actors[agent].eval()
+            with torch.no_grad():
+                action_logits = actors[agent](state_tensor).squeeze(0)
+            actors[agent].train()
 
             # Exploration
             if np.random.rand() < epsilon:
-                valid_indices = np.where(action_mask)[0]
-                action = np.random.choice(valid_indices)
+                action = np.random.choice(act_dim)
+                explore_fig.append(True)
             # Exploitation
             else:
-                action = torch.argmax(masked_logits).item()
+                action = torch.argmax(action_logits).item()
+                explore_fig.append(False)
 
             joint_action.append(action)
 
@@ -223,12 +226,14 @@ for episode in range(episodes):
         print(f"\nEpisode {episode}, Timestep {timestep + 1}")
         for idx, agent in enumerate(agent_nums):
             print(f"Agent {agent}:")
-            print(f"  State      : {joint_state[idx]}")
+            print(f"  Prev State : {joint_state[idx]}")
+            print(f"  Explore    : {explore_fig[idx]}")
             print(f"  Action     : {action_list[joint_action[idx]]}")
             print(f"  Reward     : {reward[idx]}")
-            print(f"  Next State : {joint_next_state[idx]}")
+            print(f"  Cur State  : {joint_next_state[idx]}")
+            print(f"  Dones      : {dones[idx]}")
         visualizer.update(joint_state, episode+1, timestep+1)
-        # input("Press Enter to continue to the next timestep...")
+        input("Press Enter to continue to the next timestep...")
 
         # Update
         for i, agent in enumerate(agent_nums):
@@ -253,10 +258,10 @@ for episode in range(episodes):
     if total_reward > best_reward:
         best_reward = total_reward
         best_episode = episode + 1
-        trainer.save_models(f"./checkpoints1/best_model")
+        trainer.save_models(f"./checkpoints/best_model")
         
     if (episode+1) % 1000 == 0:
-        trainer.save_models(f"./checkpoints1/episode_{episode+1}")
+        trainer.save_models(f"./checkpoints/episode_{episode+1}")
 
     log_data = {"Total Reward": total_reward}
     for agent in agent_nums:
@@ -268,4 +273,4 @@ for episode in range(episodes):
 
     wandb.log(log_data, step=episode+1)
 
-print(f"Best Model Episode {episode+1}, Total Reward = {total_reward:.2f}")
+print(f"Best Model Episode {best_episode}, Total Reward = {total_reward:.2f}")

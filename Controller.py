@@ -32,7 +32,7 @@ class controller():
             self.agv_next_rout[chr(i + 65)] = (0, 0)
             self.agv_state[chr(i + 65)] = 0 # Initial state is 0
             self.agv_mode[chr(i + 65)] = 0 # Initial mode is normal
-            self.agv_goal[chr(i + 65)] = [(0, 0), (0, 0), (0, 0), (0, 0)]
+            self.agv_goal[chr(i + 65)] = [(0, 0), (0, 0)]
             self.agv_info[chr(i + 65)] = [0, 0]
             self.control_buffer[chr(i + 65)] = (0, 0)
             self.action_control_buffer[chr(i + 65)] = (0, 0)
@@ -48,7 +48,7 @@ class controller():
     
     # set start position
     def set_start(self, num, pos):
-        self.agv_goal[num][3] = pos
+        self.agv_goal[num][1] = pos
     
     # set pick-up position
     def set_pick(self, num, pos):
@@ -64,7 +64,7 @@ class controller():
     
     # Change the AGV's state
     def change_state(self, num, state):
-        if state != 3:
+        if state != 1:
             self.agv_state[num] = state + 1   
         else:
             self.agv_state[num] = 0
