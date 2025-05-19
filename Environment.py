@@ -90,7 +90,10 @@ class ENV():
         pos = self.agv_list[num].pos                                        # (2,)
         goal = self.agv_list[num].goal                                      # (2,)
 
-        distance = np.sqrt((pos[0]-goal[0])**2 + (pos[1]-goal[1])**2)       # (1,)
+        planner = self.controller.planners[num]
+        planner.start = pos
+        planner.compute_shortest_path()
+        distance = planner.g[pos]
         
         state = np.array([
             pos[0], pos[1],
