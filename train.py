@@ -7,7 +7,7 @@ from Environment import ENV
 from agent import Actor, Critic, MADDPGTrainer, ReplayBuffer
 
 # Hyperparameters
-episodes = 100000
+episodes = 1000
 timesteps = 3000
 batch_size = 256
 gamma = 0.95
