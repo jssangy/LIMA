@@ -254,8 +254,8 @@ for episode in range(episodes):
             break
 
     avg_reward = np.mean(episode_rewards)
-    if total_reward > best_reward:
-        best_reward = total_reward
+    if avg_reward > best_reward:
+        best_reward = avg_reward
         best_episode = episode + 1
         trainer.save_models(f"./checkpoints/best_model")
         
@@ -272,4 +272,4 @@ for episode in range(episodes):
 
     wandb.log(log_data, step=episode+1)
 
-print(f"Best Model Episode {best_episode}, Total Reward = {best_reward}")
+print(f"Best Model Episode {best_episode}, Average Reward = {best_reward}")
