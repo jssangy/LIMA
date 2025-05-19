@@ -185,11 +185,8 @@ class GUI():
                     state_tensor = torch.FloatTensor(state).unsqueeze(0)
                     state_tensor = state_tensor.to(next(self.actors[agent_id].parameters()).device)
 
-                    action_mask = self.env.valid_actions(int(state[0]), int(state[1]))
-                    action_mask_tensor = torch.tensor(action_mask, dtype=torch.float32, device=state_tensor.device)
                     action_logits = self.actors[agent_id](state_tensor).squeeze(0)
-                    masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)
-                    action = torch.argmax(masked_logits).item()
+                    action = torch.argmax(action_logits).item()
                     actions.append(action)
 
                 run = self.env.demo_step(actions)
