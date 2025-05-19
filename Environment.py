@@ -106,13 +106,13 @@ class ENV():
         for idx, agv in enumerate(self.agv_list.values()):
             reward = 0
 
+            # Arrive Goal
+            if agv.pos == agv.goal:
+                reward += 5
+
             # Wall Collision & Deadlock
             if agv.mode == 1 or agv.mode == 2:
                 reward -= 5
-            elif agv.mode == 0:
-                reward += 5
-            else:
-                raise ValueError
 
             # Distance difference
             cur_dist = state[idx][-1]
