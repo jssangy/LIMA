@@ -63,9 +63,11 @@ actor_opts = {agent: torch.optim.Adam(actors[agent].parameters(), lr=actor_lr) f
 critic_opts = {agent: torch.optim.Adam(critics[agent].parameters(), lr=critic_lr) for agent in agent_nums}
 
 # Target Network initialization
+"""
 for agent in agent_nums:
     target_actors[agent].load_state_dict(actors[agent].state_dict())
     target_critics[agent].load_state_dict(critics[agent].state_dict())
+"""
 
 # MADDPG Trainer
 trainer = MADDPGTrainer(
@@ -81,6 +83,8 @@ trainer = MADDPGTrainer(
     tau=tau,
     device=device
 )
+
+trainer.load_models("model/best_model_simple")
 
 # Replay Buffer
 buffer = ReplayBuffer(state_dim, num_agents, max_size=int(1e6))
