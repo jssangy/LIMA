@@ -24,7 +24,8 @@ gamma = 0.95
 tau = 0.01
 actor_lr = 0.01
 critic_lr = 0.01
-epsilon = 0.1
+epsilon_start = 0.8
+epsilon = epsilon_start
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 best_reward = -np.inf
 
@@ -172,6 +173,8 @@ for episode in tqdm(range(episodes)):
         if np.any(dones):
             break
 
+    epsilon = max(0.1, epsilon_start * (1 - episode / 90000))
+
     avg_reward = np.mean(episode_rewards)
     if avg_reward > best_reward:
         best_reward = avg_reward
@@ -181,7 +184,7 @@ for episode in tqdm(range(episodes)):
     if (episode+1) % 1000 == 0:
         trainer.save_models(f"./checkpoints/episode_{episode+1}")
 
-    log_data = {"Total Average Reward": avg_reward, "Timestep Duration": timestep+1}
+    log_data = {"Total Average Reward": avg_reward, "Timestep Duration": timestep+1, "Epsilon": epsilon}
     for agent in agent_nums:
         log_data[f"{agent}/avg_reward"] = np.mean(episode_stats[agent]["episode_rewards"])
         log_data[f"{agent}/actor_loss"] = np.mean(episode_stats[agent]["actor_loss"])

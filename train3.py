@@ -196,7 +196,7 @@ for episode in tqdm(range(episodes)):
     if (episode+1) % 1000 == 0:
         trainer.save_models(f"./checkpoints3/episode_{episode+1}")
 
-    log_data = {"Total Average Reward": avg_reward, "Timestep Duration": timestep+1}
+    log_data = {"Total Average Reward": avg_reward, "Timestep Duration": timestep+1, "Epsilon": epsilon}
     for agent in agent_nums:
         log_data[f"{agent}/avg_reward"] = np.mean(episode_stats[agent]["episode_rewards"])
         log_data[f"{agent}/actor_loss"] = np.mean(episode_stats[agent]["actor_loss"])
