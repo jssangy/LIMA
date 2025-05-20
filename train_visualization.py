@@ -90,7 +90,8 @@ gamma = 0.95
 tau = 0.01
 actor_lr = 0.01
 critic_lr = 0.01
-epsilon = 0.1
+epsilon_start = 0.8
+epsilon = epsilon_start
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 best_reward = -np.inf
 
@@ -158,6 +159,8 @@ trainer = MADDPGTrainer(
     device=device
 )
 
+trainer.load_models("checkpoints/best_model")
+
 # Replay Buffer
 buffer = ReplayBuffer(state_dim, num_agents, max_size=int(1e6))
 
@@ -201,7 +204,7 @@ for episode in range(episodes):
 
             # Exploration
             if np.random.rand() < epsilon:
-                action = np.random.choice(act_dim)
+                action = "D*"
                 explore_fig.append(True)
             # Exploitation
             else:
@@ -213,9 +216,24 @@ for episode in range(episodes):
         # Env step joint state, joint action
         joint_next_state, reward, dones = env.step(joint_state, joint_action)
 
+        joint_action_corrected = []
+        for agent in agent_nums:
+            control = env.controller.action_control_buffer[agent]
+            if control == (0, 1):
+                act = 0
+            elif control == (0, -1):
+                act = 1
+            elif control == (1, 0):
+                act = 2
+            elif control == (-1, 0):
+                act = 3
+            elif control == (0, 0):
+                act = 4
+            joint_action_corrected.append(act)
+
         buffer.store(
             np.array(joint_state),
-            np.array(joint_action),
+            np.array(joint_action_corrected),
             np.array(reward),
             np.array(joint_next_state),
             np.array(dones)
@@ -227,7 +245,7 @@ for episode in range(episodes):
             print(f"Agent {agent}:")
             print(f"  Prev State : {joint_state[idx]}")
             print(f"  Explore    : {explore_fig[idx]}")
-            print(f"  Action     : {action_list[joint_action[idx]]}")
+            print(f"  Action     : {action_list[joint_action_corrected[idx]]}")
             print(f"  Reward     : {reward[idx]}")
             print(f"  Cur State  : {joint_next_state[idx]}")
             print(f"  Dones      : {dones[idx]}")

@@ -111,7 +111,7 @@ class ENV():
 
             # Arrive Goal
             if agv.pos == agv.goal:
-                reward += 5
+                reward += 10
 
             # Wall Collision & Deadlock
             if agv.mode == 1 or agv.mode == 2:
@@ -153,7 +153,10 @@ class ENV():
             if (self.interact(agv, agv.next_pos()) == 0):
                 agv.move()
                 agv.goal = self.controller.agv_goal[num][self.controller.agv_state[num]]
-                dones.append(False)
+                if agv.start == agv.pos and agv.pos == agv.goal:
+                    dones.append(True)
+                else:
+                    dones.append(False)
             # Collision with wall or move out of line
             elif (self.interact(agv, agv.next_pos()) == 1):
                 dones.append(True)

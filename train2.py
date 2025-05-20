@@ -17,21 +17,20 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
 # Hyperparameters
-episodes = 10000
+episodes = 100000
 timesteps = 3000
 batch_size = 256
 gamma = 0.95
 tau = 0.01
 actor_lr = 0.01
 critic_lr = 0.01
-epsilon_start = 0.8
-epsilon = epsilon_start
+epsilon = 0.1
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 best_reward = -np.inf
 
 wandb.init(
     project="DAA_CPS",  
-    name=f"train_{wandb.util.generate_id()}",
+    name=f"train2_{wandb.util.generate_id()}",
     config={
         "episodes": episodes,
         "timesteps": timesteps,
@@ -94,7 +93,7 @@ trainer = MADDPGTrainer(
     device=device
 )
 
-# trainer.load_models("model/best_model_simple")
+# trainer.load_models("model/best_model")
 
 # Replay Buffer
 buffer = ReplayBuffer(state_dim, num_agents, max_size=int(1e6))
@@ -188,16 +187,14 @@ for episode in tqdm(range(episodes)):
         if np.any(dones):
             break
 
-    epsilon = max(0.1, epsilon_start * (1 - episode / 9000))
-
     avg_reward = np.mean(episode_rewards)
     if avg_reward > best_reward:
         best_reward = avg_reward
         best_episode = episode + 1
-        trainer.save_models(f"./checkpoints/best_model")
+        trainer.save_models(f"./checkpoints2/best_model")
         
     if (episode+1) % 1000 == 0:
-        trainer.save_models(f"./checkpoints/episode_{episode+1}")
+        trainer.save_models(f"./checkpoints2/episode_{episode+1}")
 
     log_data = {"Total Average Reward": avg_reward, "Timestep Duration": timestep+1}
     for agent in agent_nums:
