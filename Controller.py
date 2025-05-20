@@ -32,7 +32,7 @@ class controller():
             self.agv_next_rout[chr(i + 65)] = (0, 0)
             self.agv_state[chr(i + 65)] = 0 # Initial state is 0
             self.agv_mode[chr(i + 65)] = 0 # Initial mode is normal
-            self.agv_goal[chr(i + 65)] = [(0, 0), (0, 0), (0, 0), (0, 0)]
+            self.agv_goal[chr(i + 65)] = [(0, 0), (0, 0)]
             self.agv_info[chr(i + 65)] = [0, 0]
             self.control_buffer[chr(i + 65)] = (0, 0)
             self.action_control_buffer[chr(i + 65)] = (0, 0)
