@@ -135,7 +135,7 @@ for episode in tqdm(range(episodes)):
 
             # Exploration
             if np.random.rand() < epsilon:
-                action = np.random.choice(act_dim)
+                action = "D*"
             # Exploitation
             else:
                 action = torch.argmax(action_logits).item()
@@ -145,9 +145,24 @@ for episode in tqdm(range(episodes)):
         # Env step joint state, joint action
         joint_next_state, reward, dones = env.step(joint_state, joint_action)
 
+        joint_action_corrected = []
+        for agent in agent_nums:
+            control = env.controller.action_control_buffer[agent]
+            if control == (0, 1):
+                act = 0
+            elif control == (0, -1):
+                act = 1
+            elif control == (1, 0):
+                act = 2
+            elif control == (-1, 0):
+                act = 3
+            elif control == (0, 0):
+                act = 4
+            joint_action_corrected.append(act)
+
         buffer.store(
             np.array(joint_state),
-            np.array(joint_action),
+            np.array(joint_action_corrected),
             np.array(reward),
             np.array(joint_next_state),
             np.array(dones)

@@ -123,7 +123,10 @@ class controller():
                 dx = next_pos[0] - pos[0]
                 dy = next_pos[1] - pos[1]
                 self.control_buffer[num] = (dx, dy)
-                self.action_control_buffer[num] = control[actions[idx]]
+                if actions[idx] == "D*":
+                    self.action_control_buffer[num] = (dx, dy)
+                else:
+                    self.action_control_buffer[num] = control[actions[idx]]
                 self.agv_next_pos[num] = pos + self.action_control_buffer[num]
     
     def make_control(self):
