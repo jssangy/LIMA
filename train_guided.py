@@ -24,7 +24,8 @@ gamma = 0.95
 tau = 0.01
 actor_lr = 0.01
 critic_lr = 0.01
-epsilon = 0.1
+epsilon_start = 0.8
+epsilon = epsilon_start
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 best_reward = -np.inf
 
@@ -186,6 +187,8 @@ for episode in tqdm(range(episodes)):
 
         if np.any(dones):
             break
+
+    epsilon = epsilon_start * (1 - episode / episodes)
 
     avg_reward = np.mean(episode_rewards)
     if avg_reward > best_reward:
