@@ -22,7 +22,7 @@ class agv():
         self.move_x = 0
         self.move_y = 0
         
-        # For collision
+        # 0: Normal, 1: Wall Collision, 2: AGV Collision (Deadlock)
         self.mode = 0
         
     def get_control(self, packet):

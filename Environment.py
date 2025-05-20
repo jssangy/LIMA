@@ -93,7 +93,7 @@ class ENV():
         planner = self.controller.planners[num]
         planner.start = pos
         planner.compute_shortest_path()
-        distance = planner.g[pos]
+        distance = planner.g[pos]                                           # (1,)
         
         state = np.array([
             pos[0], pos[1],

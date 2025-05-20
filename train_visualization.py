@@ -257,12 +257,8 @@ for episode in range(episodes):
     if avg_reward > best_reward:
         best_reward = avg_reward
         best_episode = episode + 1
-        trainer.save_models(f"./checkpoints/best_model")
-        
-    if (episode+1) % 1000 == 0:
-        trainer.save_models(f"./checkpoints/episode_{episode+1}")
 
-    log_data = {"Total Average Reward": avg_reward}
+    log_data = {"Total Average Reward": avg_reward, "Timestep Duration": timestep+1}
     for agent in agent_nums:
         log_data[f"{agent}/avg_reward"] = np.mean(episode_stats[agent]["episode_rewards"])
         log_data[f"{agent}/actor_loss"] = np.mean(episode_stats[agent]["actor_loss"])
