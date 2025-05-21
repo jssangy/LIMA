@@ -18,7 +18,7 @@ torch.backends.cudnn.benchmark = False
 
 # Hyperparameters
 episodes = 100000
-timesteps = 3000
+timesteps = 1000
 batch_size = 256
 gamma = 0.95
 tau = 0.01
