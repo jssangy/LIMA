@@ -184,10 +184,10 @@ for episode in tqdm(range(episodes)):
     if avg_reward > best_reward:
         best_reward = avg_reward
         best_episode = episode + 1
-        trainer.save_models(f"./checkpoints/best_model")
+        trainer.save_models(f"./checkpoints1/best_model")
         
     if (episode+1) % 1000 == 0:
-        trainer.save_models(f"./checkpoints/episode_{episode+1}")
+        trainer.save_models(f"./checkpoints1/episode_{episode+1}")
 
     log_data = {"Total Average Reward": avg_reward, "Timestep Duration": timestep+1, "Epsilon": epsilon}
     for agent in agent_nums:
