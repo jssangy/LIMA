@@ -26,7 +26,7 @@ actor_lr = 0.01
 critic_lr = 0.01
 epsilon_start = 0.8
 epsilon_end = 0.1
-episode_end = 80000
+episode_end = 50000
 epsilon = epsilon_start
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 best_reward = -np.inf
@@ -151,12 +151,14 @@ for episode in tqdm(range(episodes)):
         # Env step joint state, joint action
         joint_next_state, reward, dones = env.step(joint_state, joint_action)
 
+        bool_dones = [done in ["success", "collision"] for done in dones]
+
         buffer.store(
             np.array(joint_state),
             np.array(joint_action),
             np.array(reward),
             np.array(joint_next_state),
-            np.array(dones)
+            np.array(bool_dones)
         )
 
         # Update
@@ -175,19 +177,19 @@ for episode in tqdm(range(episodes)):
         episode_rewards.append(timestep_reward)
         total_reward += timestep_reward
 
-        if np.any(dones):
+        if np.any(bool_dones):
             break
 
     epsilon = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * (episode / episode_end))
 
     avg_reward = np.mean(episode_rewards)
-    if avg_reward > best_reward:
+    if avg_reward > best_reward and episode >= 50000:
         best_reward = avg_reward
         best_episode = episode + 1
-        trainer.save_models(f"./checkpoints/best_model")
-        
-    if (episode+1) % 1000 == 0:
-        trainer.save_models(f"./checkpoints/episode_{episode+1}")
+        trainer.save_models(f"./checkpoints/best_{episode+1}")
+
+    if "success" in dones and episode >= 50000:
+        trainer.save_models(f"./checkpoints/success_{episode+1}")
 
     log_data = {"Total Average Reward": avg_reward, "Timestep Duration": timestep+1, "Epsilon": epsilon}
     for agent in agent_nums:

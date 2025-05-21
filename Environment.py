@@ -154,16 +154,16 @@ class ENV():
                 agv.move()
                 agv.goal = self.controller.agv_goal[num][self.controller.agv_state[num]]
                 if agv.start == agv.pos and agv.pos == agv.goal:
-                    dones.append(True)
+                    dones.append("success")
                 else:
-                    dones.append(False)
+                    dones.append("alive")
             # Collision with wall or move out of line
             elif (self.interact(agv, agv.next_pos()) == 1):
-                dones.append(True)
+                dones.append("collision")
                 pass                
             # Collision with other AGVs
             elif (self.interact(agv, agv.next_pos()) == 2):
-                dones.append(True)
+                dones.append("collision")
                 pass
         
         next_state = []

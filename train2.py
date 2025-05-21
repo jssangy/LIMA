@@ -24,13 +24,16 @@ gamma = 0.95
 tau = 0.01
 actor_lr = 0.01
 critic_lr = 0.01
-epsilon = 0.1
+epsilon_start = 0.8
+epsilon_end = 0.1
+episode_end = 80000
+epsilon = epsilon_start
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 best_reward = -np.inf
 
 wandb.init(
     project="DAA_CPS",  
-    name=f"train2_{wandb.util.generate_id()}",
+    name=f"train_{wandb.util.generate_id()}",
     config={
         "episodes": episodes,
         "timesteps": timesteps,
@@ -93,7 +96,7 @@ trainer = MADDPGTrainer(
     device=device
 )
 
-# trainer.load_models("model/best_model")
+# trainer.load_models("model/best_model_simple")
 
 # Replay Buffer
 buffer = ReplayBuffer(state_dim, num_agents, max_size=int(1e6))
@@ -132,13 +135,16 @@ for episode in tqdm(range(episodes)):
             with torch.no_grad():
                 action_logits = actors[agent](state_tensor).squeeze(0)
             actors[agent].train()
+            action_mask = env.valid_actions(int(state[0]), int(state[1]))
+            action_mask_tensor = torch.tensor(action_mask, dtype = torch.float32, device=device)
+            masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)
 
             # Exploration
             if np.random.rand() < epsilon:
                 action = "D*"
             # Exploitation
             else:
-                action = torch.argmax(action_logits).item()
+                action = torch.argmax(masked_logits).item()
 
             joint_action.append(action)
 
@@ -160,12 +166,14 @@ for episode in tqdm(range(episodes)):
                 act = 4
             joint_action_corrected.append(act)
 
+        bool_dones = [done in ["success", "collision"] for done in dones]
+
         buffer.store(
             np.array(joint_state),
             np.array(joint_action_corrected),
             np.array(reward),
             np.array(joint_next_state),
-            np.array(dones)
+            np.array(bool_dones)
         )
 
         # Update
@@ -187,14 +195,16 @@ for episode in tqdm(range(episodes)):
         if np.any(dones):
             break
 
+    epsilon = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * (episode / episode_end))
+
     avg_reward = np.mean(episode_rewards)
-    if avg_reward > best_reward:
+    if avg_reward > best_reward and episode >= 50000:
         best_reward = avg_reward
         best_episode = episode + 1
-        trainer.save_models(f"./checkpoints2/best_model")
-        
-    if (episode+1) % 1000 == 0:
-        trainer.save_models(f"./checkpoints2/episode_{episode+1}")
+        trainer.save_models(f"./checkpoints2/best_{episode+1}")
+
+    if "success" in dones and episode >= 50000:
+        trainer.save_models(f"./checkpoints2/success_{episode+1}")
 
     log_data = {"Total Average Reward": avg_reward, "Timestep Duration": timestep+1, "Epsilon": epsilon}
     for agent in agent_nums:

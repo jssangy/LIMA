@@ -92,7 +92,7 @@ actor_lr = 0.01
 critic_lr = 0.01
 epsilon_start = 0.1
 epsilon_end = 0.1
-episode_end = 80000
+episode_end = 50000
 epsilon = epsilon_start
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 best_reward = -np.inf
@@ -237,12 +237,14 @@ for episode in range(episodes):
                 act = 4
             joint_action_corrected.append(act)
 
+        bool_dones = [done in ["success", "collision"] for done in dones]
+
         buffer.store(
             np.array(joint_state),
             np.array(joint_action_corrected),
             np.array(reward),
             np.array(joint_next_state),
-            np.array(dones)
+            np.array(bool_dones)
         )
 
         action_list = ['up', 'down', 'right', 'left', 'stop']
@@ -274,7 +276,7 @@ for episode in range(episodes):
         episode_rewards.append(timestep_reward)
         total_reward += timestep_reward
 
-        if np.any(dones):
+        if np.any(bool_dones):
             break
 
     epsilon = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * (episode / episode_end))
@@ -284,7 +286,10 @@ for episode in range(episodes):
         best_reward = avg_reward
         best_episode = episode + 1
 
-    log_data = {"Total Average Reward": avg_reward, "Timestep Duration": timestep+1}
+    if "success" in dones:
+        print(f"Success at episode {episode+1}, Avg Reward: {avg_reward}")
+
+    log_data = {"Total Average Reward": avg_reward, "Timestep Duration": timestep+1, "Epsilon": epsilon}
     for agent in agent_nums:
         log_data[f"{agent}/avg_reward"] = np.mean(episode_stats[agent]["episode_rewards"])
         log_data[f"{agent}/actor_loss"] = np.mean(episode_stats[agent]["actor_loss"])
