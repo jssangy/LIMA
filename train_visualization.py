@@ -222,26 +222,11 @@ for episode in range(episodes):
         # Env step joint state, joint action
         joint_next_state, reward, dones = env.step(joint_state, joint_action)
 
-        joint_action_corrected = []
-        for agent in agent_nums:
-            control = env.controller.action_control_buffer[agent]
-            if control == (0, 1):
-                act = 0
-            elif control == (0, -1):
-                act = 1
-            elif control == (1, 0):
-                act = 2
-            elif control == (-1, 0):
-                act = 3
-            elif control == (0, 0):
-                act = 4
-            joint_action_corrected.append(act)
-
         bool_dones = [done in ["success", "collision"] for done in dones]
 
         buffer.store(
             np.array(joint_state),
-            np.array(joint_action_corrected),
+            np.array(joint_action),
             np.array(reward),
             np.array(joint_next_state),
             np.array(bool_dones)
@@ -253,7 +238,7 @@ for episode in range(episodes):
             print(f"Agent {agent}:")
             print(f"  Prev State : {joint_state[idx]}")
             print(f"  Explore    : {explore_fig[idx]}")
-            print(f"  Action     : {action_list[joint_action_corrected[idx]]}")
+            print(f"  Action     : {action_list[joint_action[idx]]}")
             print(f"  Reward     : {reward[idx]}")
             print(f"  Cur State  : {joint_next_state[idx]}")
             print(f"  Dones      : {dones[idx]}")
