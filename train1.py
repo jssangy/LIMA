@@ -26,14 +26,14 @@ actor_lr = 0.01
 critic_lr = 0.01
 epsilon_start = 0.1
 epsilon_end = 0.1
-episode_end = 80000
+episode_end = 50000
 epsilon = epsilon_start
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 best_reward = -np.inf
 
 wandb.init(
     project="DAA_CPS",  
-    name=f"train_{wandb.util.generate_id()}",
+    name=f"train1_{wandb.util.generate_id()}",
     config={
         "episodes": episodes,
         "timesteps": timesteps,
