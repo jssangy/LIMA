@@ -90,7 +90,9 @@ gamma = 0.95
 tau = 0.01
 actor_lr = 0.01
 critic_lr = 0.01
-epsilon_start = 0.8
+epsilon_start = 0.1
+epsilon_end = 0.1
+episode_end = 80000
 epsilon = epsilon_start
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 best_reward = -np.inf
@@ -201,14 +203,18 @@ for episode in range(episodes):
             with torch.no_grad():
                 action_logits = actors[agent](state_tensor).squeeze(0)
             actors[agent].train()
+            action_mask = env.valid_actions(int(state[0]), int(state[1]))
+            action_mask_tensor = torch.tensor(action_mask, dtype = torch.float32, device=device)
+            masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)
 
             # Exploration
             if np.random.rand() < epsilon:
-                action = "D*"
+                valid_actions = np.where(action_mask)[0]
+                action = np.random.choice(valid_actions)
                 explore_fig.append(True)
             # Exploitation
             else:
-                action = torch.argmax(action_logits).item()
+                action = torch.argmax(masked_logits).item()
                 explore_fig.append(False)
 
             joint_action.append(action)
@@ -270,6 +276,8 @@ for episode in range(episodes):
 
         if np.any(dones):
             break
+
+    epsilon = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * (episode / episode_end))
 
     avg_reward = np.mean(episode_rewards)
     if avg_reward > best_reward:

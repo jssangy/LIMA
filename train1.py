@@ -24,13 +24,16 @@ gamma = 0.95
 tau = 0.01
 actor_lr = 0.01
 critic_lr = 0.01
-epsilon = 0.1
+epsilon_start = 0.1
+epsilon_end = 0.1
+episode_end = 80000
+epsilon = epsilon_start
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 best_reward = -np.inf
 
 wandb.init(
     project="DAA_CPS",  
-    name=f"train1_{wandb.util.generate_id()}",
+    name=f"train_{wandb.util.generate_id()}",
     config={
         "episodes": episodes,
         "timesteps": timesteps,
@@ -76,7 +79,6 @@ critic_opts = {agent: torch.optim.Adam(critics[agent].parameters(), lr=critic_lr
 for agent in agent_nums:
     target_actors[agent].load_state_dict(actors[agent].state_dict())
     target_critics[agent].load_state_dict(critics[agent].state_dict())
-
 
 # MADDPG Trainer
 trainer = MADDPGTrainer(
@@ -132,13 +134,17 @@ for episode in tqdm(range(episodes)):
             with torch.no_grad():
                 action_logits = actors[agent](state_tensor).squeeze(0)
             actors[agent].train()
+            action_mask = env.valid_actions(int(state[0]), int(state[1]))
+            action_mask_tensor = torch.tensor(action_mask, dtype = torch.float32, device=device)
+            masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)
 
             # Exploration
             if np.random.rand() < epsilon:
-                action = np.random.choice(act_dim)
+                valid_actions = np.where(action_mask)[0]
+                action = np.random.choice(valid_actions)
             # Exploitation
             else:
-                action = torch.argmax(action_logits).item()
+                action = torch.argmax(masked_logits).item()
 
             joint_action.append(action)
 
@@ -172,14 +178,16 @@ for episode in tqdm(range(episodes)):
         if np.any(dones):
             break
 
+    epsilon = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * (episode / episode_end))
+
     avg_reward = np.mean(episode_rewards)
     if avg_reward > best_reward:
         best_reward = avg_reward
         best_episode = episode + 1
-        trainer.save_models(f"./checkpoints1/best_model")
+        trainer.save_models(f"./checkpoints/best_model")
         
     if (episode+1) % 1000 == 0:
-        trainer.save_models(f"./checkpoints1/episode_{episode+1}")
+        trainer.save_models(f"./checkpoints/episode_{episode+1}")
 
     log_data = {"Total Average Reward": avg_reward, "Timestep Duration": timestep+1, "Epsilon": epsilon}
     for agent in agent_nums:
