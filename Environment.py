@@ -81,6 +81,9 @@ class ENV():
 
         self.agv_list = dict(sorted(self.agv_list.items()))
 
+        # AGVs task finish flags
+        self.task_done_flags = {num: False for num in self.agv_list}
+
         return
     
     def reset(self):
@@ -155,6 +158,7 @@ class ENV():
                 agv.goal = self.controller.agv_goal[num][self.controller.agv_state[num]]
                 if agv.start == agv.pos and agv.pos == agv.goal:
                     dones.append("success")
+                    self.task_done_flags[num] = True
                 else:
                     dones.append("alive")
             # Collision with wall or move out of line
