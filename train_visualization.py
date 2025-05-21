@@ -84,13 +84,13 @@ class AGVGridVisualizer:
 
 # Hyperparameters
 episodes = 1000
-timesteps = 3000
+timesteps = 1000
 batch_size = 32
 gamma = 0.95
 tau = 0.01
 actor_lr = 0.01
 critic_lr = 0.01
-epsilon_start = 0.1
+epsilon_start = 0.8
 epsilon_end = 0.1
 episode_end = 50000
 epsilon = epsilon_start
@@ -161,7 +161,7 @@ trainer = MADDPGTrainer(
     device=device
 )
 
-trainer.load_models("checkpoints/best_model")
+# trainer.load_models("checkpoints/best_model")
 
 # Replay Buffer
 buffer = ReplayBuffer(state_dim, num_agents, max_size=int(1e6))
@@ -248,7 +248,7 @@ for episode in range(episodes):
         )
 
         action_list = ['up', 'down', 'right', 'left', 'stop']
-        print(f"\nEpisode {episode}, Timestep {timestep + 1}")
+        print(f"\nEpisode {episode+1}, Timestep {timestep + 1}")
         for idx, agent in enumerate(agent_nums):
             print(f"Agent {agent}:")
             print(f"  Prev State : {joint_state[idx]}")
