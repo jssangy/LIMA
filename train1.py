@@ -24,7 +24,7 @@ gamma = 0.95
 tau = 0.01
 actor_lr = 0.01
 critic_lr = 0.01
-epsilon_start = 0.1
+epsilon_start = 0.8
 epsilon_end = 0.1
 episode_end = 50000
 epsilon = epsilon_start
@@ -183,13 +183,10 @@ for episode in tqdm(range(episodes)):
     epsilon = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * (episode / episode_end))
 
     avg_reward = np.mean(episode_rewards)
-    if avg_reward > best_reward and episode >= 50000:
+    if avg_reward > best_reward and "success" in dones:
         best_reward = avg_reward
         best_episode = episode + 1
         trainer.save_models(f"./checkpoints1/best_{episode+1}")
-
-    if "success" in dones and episode >= 50000:
-        trainer.save_models(f"./checkpoints1/success_{episode+1}")
 
     log_data = {"Total Average Reward": avg_reward, "Timestep Duration": timestep+1, "Epsilon": epsilon}
     for agent in agent_nums:

@@ -183,7 +183,7 @@ for episode in tqdm(range(episodes)):
     epsilon = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * (episode / episode_end))
 
     avg_reward = np.mean(episode_rewards)
-    if avg_reward > best_reward and "success" in dones and episode >= 50000:
+    if avg_reward > best_reward and "success" in dones:
         best_reward = avg_reward
         best_episode = episode + 1
         trainer.save_models(f"./checkpoints0/best_{episode+1}")
