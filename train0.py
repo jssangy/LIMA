@@ -47,7 +47,7 @@ wandb.init(
 )
 
 # Environment
-env = ENV()
+env = ENV(0)
 
 agent_nums = list(env.agv_list.keys())
 num_agents = len(agent_nums)
@@ -177,13 +177,13 @@ for episode in tqdm(range(episodes)):
         episode_rewards.append(timestep_reward)
         total_reward += timestep_reward
 
-        if np.any(bool_dones):
+        if all(d == "collision" for d in dones) or all(env.task_done_flags.values()):
             break
 
     epsilon = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * (episode / episode_end))
 
     avg_reward = np.mean(episode_rewards)
-    if avg_reward > best_reward and "success" in dones:
+    if avg_reward > best_reward and all(env.task_done_flags.values()):
         best_reward = avg_reward
         best_episode = episode + 1
         trainer.save_models(f"./checkpoints0/best_{episode+1}")
