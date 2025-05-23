@@ -17,16 +17,16 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
 # Hyperparameters
-episodes = 100000
+episodes = 10000
 timesteps = 1000
 batch_size = 256
 gamma = 0.95
 tau = 0.01
-actor_lr = 0.01
-critic_lr = 0.01
-epsilon_start = 0.8
+actor_lr = 0.001
+critic_lr = 0.001
+epsilon_start = 0.1
 epsilon_end = 0.1
-episode_end = 50000
+episode_end = 10000
 epsilon = epsilon_start
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 best_reward = -np.inf
@@ -96,7 +96,7 @@ trainer = MADDPGTrainer(
     device=device
 )
 
-# trainer.load_models("model/best_model_simple")
+trainer.load_models("model")
 
 # Replay Buffer
 buffer = ReplayBuffer(state_dim, num_agents, max_size=int(1e6))
@@ -141,7 +141,8 @@ for episode in tqdm(range(episodes)):
 
             # Exploration
             if np.random.rand() < epsilon:
-                action = "D*"
+                valid_actions = np.where(action_mask)[0]
+                action = np.random.choice(valid_actions)
             # Exploitation
             else:
                 action = torch.argmax(masked_logits).item()
@@ -151,26 +152,11 @@ for episode in tqdm(range(episodes)):
         # Env step joint state, joint action
         joint_next_state, reward, dones = env.step(joint_state, joint_action)
 
-        joint_action_corrected = []
-        for agent in agent_nums:
-            control = env.controller.action_control_buffer[agent]
-            if control == (0, 1):
-                act = 0
-            elif control == (0, -1):
-                act = 1
-            elif control == (1, 0):
-                act = 2
-            elif control == (-1, 0):
-                act = 3
-            elif control == (0, 0):
-                act = 4
-            joint_action_corrected.append(act)
-
         bool_dones = [done in ["success", "collision"] for done in dones]
 
         buffer.store(
             np.array(joint_state),
-            np.array(joint_action_corrected),
+            np.array(joint_action),
             np.array(reward),
             np.array(joint_next_state),
             np.array(bool_dones)
@@ -192,13 +178,13 @@ for episode in tqdm(range(episodes)):
         episode_rewards.append(timestep_reward)
         total_reward += timestep_reward
 
-        if all(d == "collision" for d in dones) or all(env.task_done_flags.values()):
+        if all(d == "collision" for d in dones):
             break
 
     epsilon = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * (episode / episode_end))
 
     avg_reward = np.mean(episode_rewards)
-    if avg_reward > best_reward and all(env.task_done_flags.values()):
+    if avg_reward > best_reward:
         best_reward = avg_reward
         best_episode = episode + 1
         trainer.save_models(f"./checkpoint5/best_{episode+1}")

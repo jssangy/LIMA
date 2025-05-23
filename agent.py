@@ -147,10 +147,10 @@ class MADDPGTrainer:
 
     def load_models(self, path):
         for agent in self.agent_nums:
-            self.actor_dict[agent].load_state_dict(torch.load(os.path.join(path, f"actor_{agent}.pth")))
-            self.critic_dict[agent].load_state_dict(torch.load(os.path.join(path, f"critic_{agent}.pth")))
-            self.actor_target_dict[agent].load_state_dict(torch.load(os.path.join(path, f"target_actor_{agent}.pth")))
-            self.critic_target_dict[agent].load_state_dict(torch.load(os.path.join(path, f"target_critic_{agent}.pth")))
+            self.actor_dict[agent].load_state_dict(torch.load(os.path.join(path, f"best_model_{agent}/actor_{agent}.pth")))
+            # self.critic_dict[agent].load_state_dict(torch.load(os.path.join(path, f"critic_{agent}.pth")))
+            self.actor_target_dict[agent].load_state_dict(torch.load(os.path.join(path, f"best_model_{agent}/target_actor_{agent}.pth")))
+            # self.critic_target_dict[agent].load_state_dict(torch.load(os.path.join(path, f"target_critic_{agent}.pth")))
 
 
 class ReplayBuffer:
