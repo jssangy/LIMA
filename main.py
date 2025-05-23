@@ -2,7 +2,7 @@ from Environment import ENV
 from GUI import *
 
 def main():
-    env = Environment.ENV(5)
+    env = Environment.ENV()
     gui = GUI(env)
     return
 

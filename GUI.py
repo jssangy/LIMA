@@ -9,7 +9,7 @@ from agent import Actor
 
 class GUI():
     def __init__(self, env):
-        self.rows = 40
+        self.rows = 100
         self.width = 1000
         self.height = 1000
         self.dis = self.width // self.rows
@@ -221,7 +221,7 @@ class GUI():
     # If reset button is clicked
     def reset_env(self, event = None):
         self.running_check = False
-        self.env = Environment.ENV()
+        self.env.reset()
         self.redrawWindow(self.env.Get_AGV())
         self.make_state_info(self.env.make_info())
         self.append_log('Reset Simulation') 

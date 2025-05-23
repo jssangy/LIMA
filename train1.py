@@ -17,7 +17,7 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
 # Hyperparameters
-episodes = 100000
+episodes = 50000
 timesteps = 1000
 batch_size = 256
 gamma = 0.95
@@ -26,7 +26,7 @@ actor_lr = 0.01
 critic_lr = 0.01
 epsilon_start = 0.8
 epsilon_end = 0.1
-episode_end = 50000
+episode_end = 20000
 epsilon = epsilon_start
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 best_reward = -np.inf
@@ -47,7 +47,7 @@ wandb.init(
 )
 
 # Environment
-env = ENV(1)
+env = ENV()
 
 agent_nums = list(env.agv_list.keys())
 num_agents = len(agent_nums)
@@ -177,13 +177,13 @@ for episode in tqdm(range(episodes)):
         episode_rewards.append(timestep_reward)
         total_reward += timestep_reward
 
-        if all(d == "collision" for d in dones) or all(env.task_done_flags.values()):
+        if all(d == "collision" for d in dones):
             break
 
     epsilon = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * (episode / episode_end))
 
     avg_reward = np.mean(episode_rewards)
-    if avg_reward > best_reward and all(env.task_done_flags.values()):
+    if avg_reward > best_reward:
         best_reward = avg_reward
         best_episode = episode + 1
         trainer.save_models(f"./checkpoint1/best_{episode+1}")
