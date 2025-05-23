@@ -177,7 +177,7 @@ for episode in tqdm(range(episodes)):
         episode_rewards.append(timestep_reward)
         total_reward += timestep_reward
 
-        if all(d == "collision" for d in dones):
+        if any(d == "collision" for d in dones):
             break
 
     epsilon = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * (episode / episode_end))
