@@ -183,7 +183,7 @@ for episode in tqdm(range(episodes)):
     epsilon = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * (episode / episode_end))
 
     avg_reward = np.mean(episode_rewards)
-    if avg_reward > best_reward:
+    if avg_reward > best_reward and all(env.task_done_flags.values()):
         best_reward = avg_reward
         best_episode = episode + 1
         trainer.save_models(f"./checkpoint/best_{episode+1}")
