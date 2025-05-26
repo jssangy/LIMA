@@ -114,19 +114,22 @@ class ENV():
 
             # Arrive Goal
             if agv.pos == agv.goal:
-                reward += 10
+                reward += 100
 
             # Wall Collision & Deadlock
-            if agv.mode == 1 or agv.mode == 2:
-                reward -= 10
+            # if agv.mode == 1 or agv.mode == 2:
+            #     reward -= 10
 
             # Distance difference
-            cur_dist = state[idx][-1]
-            next_dist = next_state[idx][-1]
-            if cur_dist > next_dist:
-                reward += 0.2 
-            elif cur_dist <= next_dist or agv.mode == 1 or agv.mode == 2:
-                reward -= 0.2 
+            # cur_dist = state[idx][-1]
+            # next_dist = next_state[idx][-1]
+            # if cur_dist > next_dist:
+            #     reward += 0.2 
+            # elif cur_dist <= next_dist or agv.mode == 1 or agv.mode == 2:
+            #     reward -= 0.2
+
+            # Action penalty
+            reward -= 0.2 
             
             total_reward.append(reward)
 

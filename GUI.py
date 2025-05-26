@@ -185,11 +185,34 @@ class GUI():
                     state_tensor = torch.FloatTensor(state).unsqueeze(0)
                     state_tensor = state_tensor.to(next(self.actors[agent_id].parameters()).device)
 
-                    action_logits = self.actors[agent_id](state_tensor).squeeze(0)
+                    with torch.no_grad():
+                        action_logits = self.actors[agent_id](state_tensor).squeeze(0)
+                        # action_logits 출력
+                        print(f"\nAgent {agent_id} Action Logits:")
+                        print(f"Up: {action_logits[0]:.3f}, Down: {action_logits[1]:.3f}, Right: {action_logits[2]:.3f}, Left: {action_logits[3]:.3f}, Stop: {action_logits[4]:.3f}")
+                        
                     action_mask = self.env.valid_actions(int(state[0]), int(state[1]))
                     action_mask_tensor = torch.tensor(action_mask, dtype=torch.float32, device=state_tensor.device)
-                    masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)                    
-                    action = torch.argmax(masked_logits).item()
+                    masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)
+                    
+                    # argmax로 먼저 선택
+                    argmax_action = torch.argmax(masked_logits).item()
+                    
+                    # argmax가 stop(4)이거나 deadlock 상태(mode=2)일 때 multinomial 적용
+                    if argmax_action == 4 or agent.mode == 2:
+                        probs = torch.softmax(masked_logits, dim=0)
+                        action = torch.multinomial(probs, num_samples=1).item()
+                        print(f"Action Probabilities: {[f'{p:.3f}' for p in probs]}")
+                        if agent.mode == 2:
+                            print(f"Agent {agent_id} is in deadlock state (mode=2)")
+                    else:
+                        action = argmax_action
+                    
+                    # 선택된 행동과 valid actions 출력
+                    print(f"Valid Actions: {action_mask}")
+                    print(f"Selected Action: {action}")
+                    print("-" * 50)
+                    
                     actions.append(action)
 
                 run = self.env.demo_step(actions)
