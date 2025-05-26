@@ -99,8 +99,8 @@ trainer = MADDPGTrainer(
 # A, B, C 에이전트의 모델만 로드
 for agent in ["A", "B", "C"]:
     if agent in agent_nums:
-        actors[agent].load_state_dict(torch.load(f"model/best_model_{agent}/actor_{agent}.pth"))
-        target_actors[agent].load_state_dict(torch.load(f"model/best_model_{agent}/target_actor_{agent}.pth"))
+        actors[agent].load_state_dict(torch.load(f"model/best_model/actor_{agent}.pth"))
+        target_actors[agent].load_state_dict(torch.load(f"model/best_model/target_actor_{agent}.pth"))
         actors[agent].eval() 
         target_actors[agent].eval() 
 
@@ -140,7 +140,7 @@ for episode in tqdm(range(episodes)):
             actors[agent].eval()
             with torch.no_grad():
                 action_logits = actors[agent](state_tensor).squeeze(0)
-            for ag in ["D, E"]:
+            for ag in ["D", "E"]:
                 actors[ag].train()
             action_mask = env.valid_actions(int(state[0]), int(state[1]))
             action_mask_tensor = torch.tensor(action_mask, dtype = torch.float32, device=device)
