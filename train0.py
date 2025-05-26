@@ -117,7 +117,6 @@ for episode in tqdm(range(episodes)):
         } for agent in agent_nums
     }
 
-
     for timestep in tqdm(range(timesteps), desc=f"Episode {episode+1}", leave=False):
         joint_action = []
         joint_state = []
@@ -134,7 +133,7 @@ for episode in tqdm(range(episodes)):
             with torch.no_grad():
                 action_logits = actors[agent](state_tensor).squeeze(0)
             actors[agent].train()
-            action_mask = env.valid_actions(int(state[0]), int(state[1]))
+            action_mask = env.valid_actions(int(state[0]), int(state[1]), agent)
             action_mask_tensor = torch.tensor(action_mask, dtype = torch.float32, device=device)
             masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)
 

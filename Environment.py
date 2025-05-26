@@ -375,10 +375,16 @@ class ENV():
         
         return status
     
-    def valid_actions(self, x, y):
+    def valid_actions(self, x, y, agent_num):
         valid = [0, 0, 0, 0, 1]  # [Up, Down, Right, Left, Stop]
         grid = self.controller.grid
         height, width = grid.shape
+
+        for other_agent_num, other_agent in self.agv_list.items():
+            if other_agent_num != agent_num:
+                other_x, other_y = other_agent.pos
+                if other_x >= 0 and other_x < width and other_y >= 0 and other_y < height:
+                    grid[other_y][other_x] = 0
 
         # Up
         if y < height - 1 and grid[y+1][x] == 1:
