@@ -33,7 +33,7 @@ best_reward = -np.inf
 
 wandb.init(
     project="DAA_CPS",  
-    name=f"train0_{wandb.util.generate_id()}",
+    name=f"4 complex_{wandb.util.generate_id()}",
     config={
         "episodes": episodes,
         "timesteps": timesteps,
@@ -177,8 +177,8 @@ for episode in tqdm(range(episodes)):
         episode_rewards.append(timestep_reward)
         total_reward += timestep_reward
 
-        if any(d == "collision" for d in dones):
-            break
+        # if any(d == "collision" for d in dones):
+        #     break
 
     epsilon = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * (episode / episode_end))
 

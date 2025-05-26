@@ -33,7 +33,7 @@ best_reward = -np.inf
 
 wandb.init(
     project="DAA_CPS",  
-    name=f"train1_{wandb.util.generate_id()}",
+    name=f"5 ware hard_{wandb.util.generate_id()}",
     config={
         "episodes": episodes,
         "timesteps": timesteps,

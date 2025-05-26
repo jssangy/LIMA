@@ -33,7 +33,7 @@ best_reward = -np.inf
 
 wandb.init(
     project="DAA_CPS",  
-    name=f"train2_{wandb.util.generate_id()}",
+    name=f"5 ware easy_{wandb.util.generate_id()}",
     config={
         "episodes": episodes,
         "timesteps": timesteps,
@@ -96,7 +96,7 @@ trainer = MADDPGTrainer(
     device=device
 )
 
-# trainer.load_models("model")
+trainer.load_models("model")
 
 # Replay Buffer
 buffer = ReplayBuffer(state_dim, num_agents, max_size=int(1e6))
@@ -178,7 +178,7 @@ for episode in tqdm(range(episodes)):
         episode_rewards.append(timestep_reward)
         total_reward += timestep_reward
 
-        if any(d == "collision" for d in dones):
+        if all(d == "collision" for d in dones):
             break
 
     epsilon = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * (episode / episode_end))
