@@ -71,6 +71,10 @@ class MADDPGTrainer:
         stats = {}
 
         for agent in self.agent_nums:
+
+            if agent not in ["D", "E"]:
+                continue
+            
             agent_idx = self.agent_nums.index(agent)
 
             # Critic Update

@@ -33,7 +33,7 @@ best_reward = -np.inf
 
 wandb.init(
     project="DAA_CPS",  
-    name=f"train3_{wandb.util.generate_id()}",
+    name=f"5 ware easy D, E_{wandb.util.generate_id()}",
     config={
         "episodes": episodes,
         "timesteps": timesteps,
@@ -80,6 +80,7 @@ for agent in agent_nums:
     target_actors[agent].load_state_dict(actors[agent].state_dict())
     target_critics[agent].load_state_dict(critics[agent].state_dict())
 
+
 # MADDPG Trainer
 trainer = MADDPGTrainer(
     agent_nums,
@@ -95,7 +96,7 @@ trainer = MADDPGTrainer(
     device=device
 )
 
-# trainer.load_models("model/best_model_simple")
+trainer.load_models("model")
 
 # Replay Buffer
 buffer = ReplayBuffer(state_dim, num_agents, max_size=int(1e6))
@@ -114,7 +115,7 @@ for episode in tqdm(range(episodes)):
             "critic_loss": [],
             "q_value": [],
             "target_q_value": []
-        } for agent in agent_nums
+        } for agent in ["D", "E"] if agent in agent_nums
     }
 
 
@@ -167,18 +168,19 @@ for episode in tqdm(range(episodes)):
         
         if len(buffer) > batch_size and timestep % 10 == 0:
             stats = trainer.update(buffer, batch_size)
-            for agent in agent_nums:
-                episode_stats[agent]["actor_loss"].append(stats[f"{agent}/actor_loss"])
-                episode_stats[agent]["critic_loss"].append(stats[f"{agent}/critic_loss"])
-                episode_stats[agent]["q_value"].append(stats[f"{agent}/q_value"])
-                episode_stats[agent]["target_q_value"].append(stats[f"{agent}/target_q_value"])
+            for agent in ["D", "E"]:
+                if agent in agent_nums:
+                    episode_stats[agent]["actor_loss"].append(stats[f"{agent}/actor_loss"])
+                    episode_stats[agent]["critic_loss"].append(stats[f"{agent}/critic_loss"])
+                    episode_stats[agent]["q_value"].append(stats[f"{agent}/q_value"])
+                    episode_stats[agent]["target_q_value"].append(stats[f"{agent}/target_q_value"])
 
         timestep_reward = np.sum(reward)
         episode_rewards.append(timestep_reward)
         total_reward += timestep_reward
 
-        # if any(d == "collision" for d in dones):
-        #     break
+        if all(d == "collision" for d in dones):
+            break
 
     epsilon = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * (episode / episode_end))
 
@@ -189,12 +191,15 @@ for episode in tqdm(range(episodes)):
         trainer.save_models(f"./checkpoint3/best_{episode+1}")
 
     log_data = {"Total Average Reward": avg_reward, "Timestep Duration": timestep+1, "Epsilon": epsilon}
-    for agent in agent_nums:
-        log_data[f"{agent}/avg_reward"] = np.mean(episode_stats[agent]["episode_rewards"])
-        log_data[f"{agent}/actor_loss"] = np.mean(episode_stats[agent]["actor_loss"])
-        log_data[f"{agent}/critic_loss"] = np.mean(episode_stats[agent]["critic_loss"])
-        log_data[f"{agent}/q_value"] = np.mean(episode_stats[agent]["q_value"])
-        log_data[f"{agent}/target_q_value"] = np.mean(episode_stats[agent]["target_q_value"])
+    
+    # D와 E 에이전트에 대해서만 로깅
+    for agent in ["D", "E"]:
+        if agent in agent_nums:  # agent_nums에 있는 경우에만 로깅
+            log_data[f"{agent}/avg_reward"] = np.mean(episode_stats[agent]["episode_rewards"])
+            log_data[f"{agent}/actor_loss"] = np.mean(episode_stats[agent]["actor_loss"])
+            log_data[f"{agent}/critic_loss"] = np.mean(episode_stats[agent]["critic_loss"])
+            log_data[f"{agent}/q_value"] = np.mean(episode_stats[agent]["q_value"])
+            log_data[f"{agent}/target_q_value"] = np.mean(episode_stats[agent]["target_q_value"])
 
     wandb.log(log_data, step=episode+1)
 
