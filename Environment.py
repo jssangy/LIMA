@@ -380,23 +380,23 @@ class ENV():
         grid = self.controller.grid
         height, width = grid.shape
 
+        # 다른 AGV의 위치 리스트 생성
+        other_agv_positions = []
         for other_agent_num, other_agent in self.agv_list.items():
             if other_agent_num != agent_num:
-                other_x, other_y = other_agent.pos
-                if other_x >= 0 and other_x < width and other_y >= 0 and other_y < height:
-                    grid[other_y][other_x] = 0
+                other_agv_positions.append(other_agent.pos)
 
         # Up
-        if y < height - 1 and grid[y+1][x] == 1:
+        if y < height - 1 and grid[y+1][x] == 1 and (x, y+1) not in other_agv_positions:
             valid[0] = 1
         # Down
-        if y > 0 and grid[y-1][x] == 1:
+        if y > 0 and grid[y-1][x] == 1 and (x, y-1) not in other_agv_positions:
             valid[1] = 1
         # Right
-        if x < width - 1 and grid[y][x+1] == 1:
+        if x < width - 1 and grid[y][x+1] == 1 and (x+1, y) not in other_agv_positions:
             valid[2] = 1
         # Left
-        if x > 0 and grid[y][x-1] == 1:
+        if x > 0 and grid[y][x-1] == 1 and (x-1, y) not in other_agv_positions:
             valid[3] = 1
 
         return valid    
