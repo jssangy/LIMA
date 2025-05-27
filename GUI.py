@@ -187,18 +187,15 @@ class GUI():
 
                     with torch.no_grad():
                         action_logits = self.actors[agent_id](state_tensor).squeeze(0)
-                        # action_logits 출력
                         print(f"\nAgent {agent_id} Action Logits:")
                         print(f"Up: {action_logits[0]:.3f}, Down: {action_logits[1]:.3f}, Right: {action_logits[2]:.3f}, Left: {action_logits[3]:.3f}, Stop: {action_logits[4]:.3f}")
                         
-                    action_mask = self.env.valid_actions(int(state[0]), int(state[1]))
+                    action_mask = self.env.valid_actions(int(state[0]), int(state[1]), agent_id)
                     action_mask_tensor = torch.tensor(action_mask, dtype=torch.float32, device=state_tensor.device)
                     masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)
                     
-                    # argmax로 먼저 선택
                     argmax_action = torch.argmax(masked_logits).item()
                     
-                    # argmax가 stop(4)이거나 deadlock 상태(mode=2)일 때 multinomial 적용
                     if argmax_action == 4 or agent.mode == 2:
                         probs = torch.softmax(masked_logits, dim=0)
                         action = torch.multinomial(probs, num_samples=1).item()
@@ -208,7 +205,6 @@ class GUI():
                     else:
                         action = argmax_action
                     
-                    # 선택된 행동과 valid actions 출력
                     print(f"Valid Actions: {action_mask}")
                     print(f"Selected Action: {action}")
                     print("-" * 50)
