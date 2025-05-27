@@ -177,7 +177,7 @@ class GUI():
                 self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
                 self.actors = {agent: Actor(obs_dim=5, act_dim=5) for agent in self.env.agv_list.keys()}
                 for agent in self.actors:
-                    self.actors[agent].load_state_dict(torch.load(f"./checkpoints/best_model/actor_{agent}.pth", map_location='cpu'))
+                    self.actors[agent].load_state_dict(torch.load(f"./checkpoints/best_model_ezware/actor_{agent}.pth", map_location='cpu'))
                     self.actors[agent].eval() 
                 actions = []
                 for agent_id, agent in self.env.agv_list.items():
@@ -185,11 +185,30 @@ class GUI():
                     state_tensor = torch.FloatTensor(state).unsqueeze(0)
                     state_tensor = state_tensor.to(next(self.actors[agent_id].parameters()).device)
 
-                    action_logits = self.actors[agent_id](state_tensor).squeeze(0)
+                    with torch.no_grad():
+                        action_logits = self.actors[agent_id](state_tensor).squeeze(0)
+                        print(f"\nAgent {agent_id} Action Logits:")
+                        print(f"Up: {action_logits[0]:.3f}, Down: {action_logits[1]:.3f}, Right: {action_logits[2]:.3f}, Left: {action_logits[3]:.3f}, Stop: {action_logits[4]:.3f}")
+                        
                     action_mask = self.env.valid_actions(int(state[0]), int(state[1]))
                     action_mask_tensor = torch.tensor(action_mask, dtype=torch.float32, device=state_tensor.device)
-                    masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)                    
-                    action = torch.argmax(masked_logits).item()
+                    masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)
+                    
+                    argmax_action = torch.argmax(masked_logits).item()
+                    
+                    if argmax_action == 4 or agent.mode == 2:
+                        probs = torch.softmax(masked_logits, dim=0)
+                        action = torch.multinomial(probs, num_samples=1).item()
+                        print(f"Action Probabilities: {[f'{p:.3f}' for p in probs]}")
+                        if agent.mode == 2:
+                            print(f"Agent {agent_id} is in deadlock state (mode=2)")
+                    else:
+                        action = argmax_action
+                    
+                    print(f"Valid Actions: {action_mask}")
+                    print(f"Selected Action: {action}")
+                    print("-" * 50)
+                    
                     actions.append(action)
 
                 run = self.env.demo_step(actions)

@@ -184,7 +184,6 @@ class controller():
                 state = self.change_state(num, state)
                 goal = self.agv_goal[num][state]
                 self.agv_mode[num] = 0
-
                 
             self.planners[num] = DStar(dynamic_grid, pos, goal)
             self.planners[num].compute_shortest_path()
