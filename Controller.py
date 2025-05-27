@@ -19,6 +19,7 @@ class controller():
         self.agv_pre_rout = {} # previous node
         self.planners = {} # D* class for each AGV
         self.prev_distance = {}
+        self.agv_wait_counter = {}
 
         self.running_opt = 0
         
@@ -37,7 +38,8 @@ class controller():
             self.control_buffer[chr(i + 65)] = (0, 0)
             self.action_control_buffer[chr(i + 65)] = (0, 0)
             self.agv_rout[chr(i + 65)] = []
-            self.agv_pre_rout[chr(i + 65)] = (0, 0)
+            self.agv_pre_rout[chr(i + 65)] = [(0, 0)]
+            self.agv_wait_counter[chr(i + 65)] = 0
         
         # Map of warehouse digital twin
         self.map = map
@@ -167,10 +169,18 @@ class controller():
                 self.agv_next_pos[num] = pos
     
     def dynamic_obstacle_dstar_rout(self):
+        livelock_list = []
         for num in self.agv_nums:
             pos = self.agv_pos[num]
             state = self.agv_state[num]
             goal = self.agv_goal[num][state]
+
+            if self.agv_wait_counter.get(num, 0) > 0:
+                self.agv_wait_counter[num] -= 1
+                self.control_buffer[num] = (0, 0)
+                self.agv_next_pos[num] = pos
+                self.agv_pre_rout[num].append(pos)
+                continue
 
             dynamic_grid = self.grid.copy()
             for other in self.agv_nums:
@@ -184,7 +194,8 @@ class controller():
                 state = self.change_state(num, state)
                 goal = self.agv_goal[num][state]
                 self.agv_mode[num] = 0
-                
+                self.agv_pre_rout[num] = []
+
             self.planners[num] = DStar(dynamic_grid, pos, goal)
             self.planners[num].compute_shortest_path()
             path = self.planners[num].extract_path()
@@ -199,6 +210,33 @@ class controller():
             else:
                 self.control_buffer[num] = (0, 0)
                 self.agv_next_pos[num] = pos
+
+            self.agv_pre_rout[num].append(pos)
+
+            if self.detect_livelock_pattern(num):
+                livelock_list.append(num)
+
+        for num in sorted(livelock_list)[1:]:
+            self.agv_wait_counter[num] = 3
+            self.control_buffer[num] = (0, 0)
+            self.agv_next_pos[num] = self.agv_pos[num]
+
+    def detect_livelock_pattern(self, num, max_pattern_len=4, min_repeats=2):
+        path = self.agv_pre_rout[num]
+        path_len = len(path)
+
+        for pattern_len in range(1, max_pattern_len + 1):
+            if path_len < pattern_len * min_repeats:
+                continue
+            pattern = path[-pattern_len:]
+            match = True
+            for i in range(2, min_repeats + 1):
+                if path[-i*pattern_len:-(i-1)*pattern_len] != pattern:
+                    match = False
+                    break
+            if match:
+                return True
+        return False
         
     # ======================== Routing Functions ============================================
     def graphing(self):
