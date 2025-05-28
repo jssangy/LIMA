@@ -117,8 +117,8 @@ class ENV():
                 reward += 100
 
             # Wall Collision & Deadlock
-            if agv.mode == 1 or agv.mode == 2:
-                reward -= 10
+            # if agv.mode == 1 or agv.mode == 2:
+            #     reward -= 10
                 
             # Action penalty
             reward -= 0.2 
@@ -274,25 +274,24 @@ class ENV():
         
         return info_list
     
-    def valid_actions(self, x, y, agent_num):
+    def valid_actions(self, x, y, occupied_positions):
         valid = [0, 0, 0, 0, 1]  # [Up, Down, Right, Left, Stop]
         grid = self.controller.grid
         height, width = grid.shape
 
-        # Up
-        if y < height - 1 and grid[y+1][x] == 1:
+        occupied = set(occupied_positions)
+
+        if y < height - 1 and grid[y+1][x] == 1 and (x, y+1) not in occupied:
             valid[0] = 1
-        # Down
-        if y > 0 and grid[y-1][x] == 1:
+        if y > 0 and grid[y-1][x] == 1 and (x, y-1) not in occupied:
             valid[1] = 1
-        # Right
-        if x < width - 1 and grid[y][x+1] == 1:
+        if x < width - 1 and grid[y][x+1] == 1 and (x+1, y) not in occupied:
             valid[2] = 1
-        # Left
-        if x > 0 and grid[y][x-1] == 1:
+        if x > 0 and grid[y][x-1] == 1 and (x-1, y) not in occupied:
             valid[3] = 1
 
-        return valid    
+        return valid
+  
     
     # ======================== Use for GUI ========================
     def find_line(self, x, y):
