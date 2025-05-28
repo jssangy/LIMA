@@ -9,7 +9,7 @@ from agent import Actor
 
 class GUI():
     def __init__(self, env):
-        self.rows = 40
+        self.rows = 100
         self.width = 1000
         self.height = 1000
         self.dis = self.width // self.rows
