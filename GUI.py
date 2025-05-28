@@ -178,25 +178,38 @@ class GUI():
                 self.actors = {agent: Actor(obs_dim=5, act_dim=5) for agent in self.env.agv_list.keys()}
                 for agent in self.actors:
                     self.actors[agent].load_state_dict(torch.load(f"./checkpoints/best_model/actor_{agent}.pth", map_location='cpu'))
-                    self.actors[agent].eval() 
+                    self.actors[agent].eval()
+
+                predicted_next_positions = {}
                 actions = []
-                for agent_id, agent in self.env.agv_list.items():
+                agent_ids = list(self.env.agv_list.keys())
+
+                for idx, agent_id in enumerate(agent_ids):
+                    agent = self.env.agv_list[agent_id]
                     state = self.env.get_state(agent_id)
                     state_tensor = torch.FloatTensor(state).unsqueeze(0)
                     state_tensor = state_tensor.to(next(self.actors[agent_id].parameters()).device)
+                    x, y = int(state[0]), int(state[1])
+
+                    # --- Action masking with occupied positions ---
+                    occupied_positions = set(predicted_next_positions.values())
+                    for later_agent in agent_ids[idx+1:]:
+                        lx, ly = map(int, self.env.get_state(later_agent)[:2])
+                        occupied_positions.add((lx, ly))
+
+                    action_mask = self.env.valid_actions(x, y, agent_id, occupied_positions)
+                    action_mask_tensor = torch.tensor(action_mask, dtype=torch.float32, device=state_tensor.device)
 
                     with torch.no_grad():
                         action_logits = self.actors[agent_id](state_tensor).squeeze(0)
                         print(f"\nAgent {agent_id} Action Logits:")
                         print(f"Up: {action_logits[0]:.3f}, Down: {action_logits[1]:.3f}, Right: {action_logits[2]:.3f}, Left: {action_logits[3]:.3f}, Stop: {action_logits[4]:.3f}")
-                        
-                    action_mask = self.env.valid_actions(int(state[0]), int(state[1]), agent_id)
-                    action_mask_tensor = torch.tensor(action_mask, dtype=torch.float32, device=state_tensor.device)
+
                     masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)
-                    
                     argmax_action = torch.argmax(masked_logits).item()
-                    
-                    if argmax_action == 4 or agent.mode == 2:
+
+                    # If argmax is 'stop', sample probabilistically
+                    if argmax_action == 4:
                         probs = torch.softmax(masked_logits, dim=0)
                         action = torch.multinomial(probs, num_samples=1).item()
                         print(f"Action Probabilities: {[f'{p:.3f}' for p in probs]}")
@@ -204,14 +217,18 @@ class GUI():
                             print(f"Agent {agent_id} is in deadlock state (mode=2)")
                     else:
                         action = argmax_action
-                    
+
                     print(f"Valid Actions: {action_mask}")
                     print(f"Selected Action: {action}")
                     print("-" * 50)
-                    
                     actions.append(action)
 
+                    # --- 다음 위치 예측 저장 ---
+                    dx, dy = action_to_delta(action)  # 정의 필요
+                    predicted_next_positions[agent_id] = (x + dx, y + dy)
+
                 run = self.env.demo_step(actions)
+
             else:
                 run = self.env.Run()
 
@@ -292,3 +309,11 @@ class GUI():
                 self.update_state('{:^7} {:^7} {:^7}'.format(num, info[0], "Deadlock"))
         return 
 
+    def action_to_delta(action):
+        return {
+            0: (0, 1),    # Up
+            1: (0, -1),   # Down
+            2: (1, 0),    # Right
+            3: (-1, 0),   # Left
+            4: (0, 0),    # Stop
+        }[action]
