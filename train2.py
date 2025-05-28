@@ -18,7 +18,7 @@ def action_to_delta(action):
     return mapping[action]
 
 
-def init_environment(seed=7):
+def init_environment(cfg, seed=7):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -26,7 +26,7 @@ def init_environment(seed=7):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    env = ENV(0)
+    env = ENV(cfg)
     return env
 
 
@@ -121,8 +121,8 @@ def train_loop(env, actors, critics, target_actors, target_critics, actor_opts, 
             episode_rewards.append(timestep_reward)
             total_reward += timestep_reward
 
-            if all(d == "collision" for d in dones):
-                break
+            # if all(d == "collision" for d in dones):
+            #    break
 
         epsilon = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * (episode / episode_end))
         avg_reward = np.mean(episode_rewards)
@@ -145,7 +145,7 @@ def train_loop(env, actors, critics, target_actors, target_critics, actor_opts, 
 
 def main():
     device = torch.device("cuda")
-    env = init_environment()
+    env = init_environment(2)
     agent_ids = list(env.agv_list.keys())
     actors, critics, target_actors, target_critics, actor_opts, critic_opts = init_agents(
         agent_ids, state_dim=5, act_dim=5, actor_lr=0.01, critic_lr=0.01, device=device
