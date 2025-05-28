@@ -7,11 +7,11 @@ import Controller
 import Network
 
 class ENV():    
-    def __init__(self):
+    def __init__(self, cfg):
         # number of agvs
         self.agv_num = 0
         # import map
-        self.map = map
+        self.map = map[cfg]
         # agv_list[alphabet] = agv object
         self.agv_list = {}
         
@@ -117,17 +117,9 @@ class ENV():
                 reward += 100
 
             # Wall Collision & Deadlock
-            # if agv.mode == 1 or agv.mode == 2:
-            #     reward -= 10
-
-            # Distance difference
-            # cur_dist = state[idx][-1]
-            # next_dist = next_state[idx][-1]
-            # if cur_dist > next_dist:
-            #     reward += 0.2 
-            # elif cur_dist <= next_dist or agv.mode == 1 or agv.mode == 2:
-            #     reward -= 0.2
-
+            if agv.mode == 1 or agv.mode == 2:
+                reward -= 10
+                
             # Action penalty
             reward -= 0.2 
             
@@ -185,7 +177,7 @@ class ENV():
         # 1 time step (sec)  
         self.time += 1
 
-        if self.time == 3600:
+        if self.time == 1000:
             return False
 
         # <1 Step>
@@ -222,7 +214,7 @@ class ENV():
         self.time += 1
         
         # Stop with 1 hour
-        if self.time == 3600:
+        if self.time == 1000:
             return False
 
         # <1 Step>
@@ -281,122 +273,23 @@ class ENV():
         info_list.append(self.controller.agv_info)
         
         return info_list
-
-    def position_type(self, pos):
-        x, y = pos
-        grid = self.controller.grid
-        val = self.map[y][x]
-        if val == 6 or isinstance(val, str):
-            return 0
-        
-        up = (y+1 < grid.shape[0]) and (grid[y+1][x] == 1)
-        down = (y-1 >= 0) and (grid[y-1][x] == 1)
-        if up or down:
-            return 1
-
-        right = (x+1 < grid.shape[1]) and (grid[y][x+1] == 1)
-        left = (x-1 >= 0) and (grid[y][x-1] == 1)
-        if right or left:
-            return 2
-
-        raise Exception(f"[Error] Invalid AGV position: {pos}")
-    
-    def current_node_edge_occupancy(self, pos):
-        x, y = pos
-        directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
-        status = []
-        neighbors = self.controller.graph.get(pos)
-
-        for dx, dy in directions:
-            found = None
-            for neighbor in neighbors:
-                nx, ny = neighbor
-                diff_x, diff_y = nx - x, ny - y
-                if (dx, dy) == (0, 1) and diff_x == 0 and diff_y > 0:           # Up
-                    found = neighbor
-                    break
-                elif (dx, dy) == (0, -1) and diff_x == 0 and diff_y < 0:        # Down
-                    found = neighbor
-                    break
-                elif (dx, dy) == (1, 0) and diff_y == 0 and diff_x > 0:         # Right
-                    found = neighbor
-                    break
-                elif (dx, dy) == (-1, 0) and diff_y == 0 and diff_x < 0:        # Left
-                    found = neighbor
-                    break
-            
-            if found is None:
-                status.append(0)
-            else:
-                occupied = 0
-                min_x, max_x = sorted([x, found[0]])
-                min_y, max_y = sorted([y, found[1]])
-                for agv in self.agv_list.values():
-                    if min_x == max_x and max_x == agv.pos[0] and min_y < agv.pos[1] < max_y:
-                        occupied = 1
-                        break 
-                    elif min_x < agv.pos[0] < max_x and min_y == max_y and max_y == agv.pos[1]:
-                        occupied = 1
-                        break
-                status.append(occupied)
-
-        return status
-    
-    def near_node_edge_occupancy(self, pos):
-        x, y = pos
-        directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
-        candidates = []
-        status = []
-
-        for dx, dy in directions:
-            poss_x, poss_y = x, y
-            distance = 0
-            found = False
-            while distance < 15 and 1 <= poss_x < 99 and 1 <= poss_y < 99:
-                poss_x += dx
-                poss_y += dy
-                distance += 1
-                val = self.map[poss_y][poss_x]
-                if val == 1:
-                    break
-                if val == 6 or isinstance(val, str):
-                    candidates.append((poss_x, poss_y))
-                    found = True
-                    break
-            if not found:
-                candidates.append((-1, -1))
-
-        for node in candidates:
-            if node == (-1, -1):
-                status.extend([0, 0, 0, 0])
-            else:
-                node_status = self.current_node_edge_occupancy(node)
-                status.extend(node_status)
-        
-        return status
     
     def valid_actions(self, x, y, agent_num):
         valid = [0, 0, 0, 0, 1]  # [Up, Down, Right, Left, Stop]
         grid = self.controller.grid
         height, width = grid.shape
 
-        # 다른 AGV의 위치 리스트 생성
-        other_agv_positions = []
-        for other_agent_num, other_agent in self.agv_list.items():
-            if other_agent_num != agent_num:
-                other_agv_positions.append(other_agent.pos)
-
         # Up
-        if y < height - 1 and grid[y+1][x] == 1 and (x, y+1) not in other_agv_positions:
+        if y < height - 1 and grid[y+1][x] == 1:
             valid[0] = 1
         # Down
-        if y > 0 and grid[y-1][x] == 1 and (x, y-1) not in other_agv_positions:
+        if y > 0 and grid[y-1][x] == 1:
             valid[1] = 1
         # Right
-        if x < width - 1 and grid[y][x+1] == 1 and (x+1, y) not in other_agv_positions:
+        if x < width - 1 and grid[y][x+1] == 1:
             valid[2] = 1
         # Left
-        if x > 0 and grid[y][x-1] == 1 and (x-1, y) not in other_agv_positions:
+        if x > 0 and grid[y][x-1] == 1:
             valid[3] = 1
 
         return valid    

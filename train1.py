@@ -33,7 +33,7 @@ best_reward = -np.inf
 
 wandb.init(
     project="DAA_CPS",  
-    name=f"5 ware hard_{wandb.util.generate_id()}",
+    name=f"Hardware_{wandb.util.generate_id()}",
     config={
         "episodes": episodes,
         "timesteps": timesteps,
@@ -47,7 +47,7 @@ wandb.init(
 )
 
 # Environment
-env = ENV()
+env = ENV(1)
 
 agent_nums = list(env.agv_list.keys())
 num_agents = len(agent_nums)
@@ -117,7 +117,6 @@ for episode in tqdm(range(episodes)):
         } for agent in agent_nums
     }
 
-
     for timestep in tqdm(range(timesteps), desc=f"Episode {episode+1}", leave=False):
         joint_action = []
         joint_state = []
@@ -134,7 +133,7 @@ for episode in tqdm(range(episodes)):
             with torch.no_grad():
                 action_logits = actors[agent](state_tensor).squeeze(0)
             actors[agent].train()
-            action_mask = env.valid_actions(int(state[0]), int(state[1]))
+            action_mask = env.valid_actions(int(state[0]), int(state[1]), agent)
             action_mask_tensor = torch.tensor(action_mask, dtype = torch.float32, device=device)
             masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)
 
@@ -177,8 +176,8 @@ for episode in tqdm(range(episodes)):
         episode_rewards.append(timestep_reward)
         total_reward += timestep_reward
 
-        # if any(d == "collision" for d in dones):
-        #     break
+        if all(d == "collision" for d in dones):
+            break
 
     epsilon = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * (episode / episode_end))
 

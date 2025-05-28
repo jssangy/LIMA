@@ -33,7 +33,7 @@ best_reward = -np.inf
 
 wandb.init(
     project="DAA_CPS",  
-    name=f"5 ware easy_{wandb.util.generate_id()}",
+    name=f"DigitalTwin_{wandb.util.generate_id()}",
     config={
         "episodes": episodes,
         "timesteps": timesteps,
@@ -47,7 +47,7 @@ wandb.init(
 )
 
 # Environment
-env = ENV()
+env = ENV(2)
 
 agent_nums = list(env.agv_list.keys())
 num_agents = len(agent_nums)
@@ -80,7 +80,6 @@ for agent in agent_nums:
     target_actors[agent].load_state_dict(actors[agent].state_dict())
     target_critics[agent].load_state_dict(critics[agent].state_dict())
 
-
 # MADDPG Trainer
 trainer = MADDPGTrainer(
     agent_nums,
@@ -96,7 +95,7 @@ trainer = MADDPGTrainer(
     device=device
 )
 
-trainer.load_models("model")
+# trainer.load_models("model/best_model_simple")
 
 # Replay Buffer
 buffer = ReplayBuffer(state_dim, num_agents, max_size=int(1e6))
@@ -118,7 +117,6 @@ for episode in tqdm(range(episodes)):
         } for agent in agent_nums
     }
 
-
     for timestep in tqdm(range(timesteps), desc=f"Episode {episode+1}", leave=False):
         joint_action = []
         joint_state = []
@@ -135,7 +133,7 @@ for episode in tqdm(range(episodes)):
             with torch.no_grad():
                 action_logits = actors[agent](state_tensor).squeeze(0)
             actors[agent].train()
-            action_mask = env.valid_actions(int(state[0]), int(state[1]))
+            action_mask = env.valid_actions(int(state[0]), int(state[1]), agent)
             action_mask_tensor = torch.tensor(action_mask, dtype = torch.float32, device=device)
             masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)
 
@@ -187,7 +185,7 @@ for episode in tqdm(range(episodes)):
     if avg_reward > best_reward and all(env.task_done_flags.values()):
         best_reward = avg_reward
         best_episode = episode + 1
-        trainer.save_models(f"./checkpoint2/best_{episode+1}")
+        trainer.save_models(f"./checkpoint3/best_{episode+1}")
 
     log_data = {"Total Average Reward": avg_reward, "Timestep Duration": timestep+1, "Epsilon": epsilon}
     for agent in agent_nums:

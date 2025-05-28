@@ -33,7 +33,7 @@ best_reward = -np.inf
 
 wandb.init(
     project="DAA_CPS",  
-    name=f"5 ware hard_{wandb.util.generate_id()}",
+    name=f"EZware_{wandb.util.generate_id()}",
     config={
         "episodes": episodes,
         "timesteps": timesteps,
@@ -47,7 +47,7 @@ wandb.init(
 )
 
 # Environment
-env = ENV()
+env = ENV(0)
 
 agent_nums = list(env.agv_list.keys())
 num_agents = len(agent_nums)
@@ -176,8 +176,8 @@ for episode in tqdm(range(episodes)):
         episode_rewards.append(timestep_reward)
         total_reward += timestep_reward
 
-        # if any(d == "collision" for d in dones):
-        #     break
+        if all(d == "collision" for d in dones):
+            break
 
     epsilon = max(epsilon_end, epsilon_start - (epsilon_start - epsilon_end) * (episode / episode_end))
 
