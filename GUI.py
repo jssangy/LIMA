@@ -197,7 +197,7 @@ class GUI():
                         lx, ly = map(int, self.env.get_state(later_agent)[:2])
                         occupied_positions.add((lx, ly))
 
-                    action_mask = self.env.valid_actions(x, y, agent_id, occupied_positions)
+                    action_mask = self.env.valid_actions(x, y, occupied_positions)
                     action_mask_tensor = torch.tensor(action_mask, dtype=torch.float32, device=state_tensor.device)
 
                     with torch.no_grad():
@@ -224,7 +224,7 @@ class GUI():
                     actions.append(action)
 
                     # --- 다음 위치 예측 저장 ---
-                    dx, dy = action_to_delta(action)  # 정의 필요
+                    dx, dy = self.action_to_delta(action) 
                     predicted_next_positions[agent_id] = (x + dx, y + dy)
 
                 run = self.env.demo_step(actions)
@@ -309,7 +309,7 @@ class GUI():
                 self.update_state('{:^7} {:^7} {:^7}'.format(num, info[0], "Deadlock"))
         return 
 
-    def action_to_delta(action):
+    def action_to_delta(self, action):
         return {
             0: (0, 1),    # Up
             1: (0, -1),   # Down
