@@ -182,7 +182,7 @@ class ENV():
         # 1 time step (sec)  
         self.time += 1
 
-        if self.time == 3600:
+        if self.time == 1000:
             return False
 
         # <1 Step>
@@ -219,7 +219,7 @@ class ENV():
         self.time += 1
         
         # Stop with 1 hour
-        if self.time == 3600:
+        if self.time == 1000:
             return False
 
         # <1 Step>
