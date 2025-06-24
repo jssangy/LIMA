@@ -11,7 +11,7 @@ class ENV():
         # number of agvs
         self.agv_num = 0
         # import map
-        self.map = map[cfg]
+        self.map = map
         # agv_list[alphabet] = agv object
         self.agv_list = {}
         
