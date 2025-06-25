@@ -1,3 +1,4 @@
+import os
 import random
 import numpy as np
 from tqdm import tqdm
@@ -50,7 +51,7 @@ def init_agents(agent_ids, state_dim, act_dim, actor_lr, critic_lr, device):
 
 def train_loop(env, actors, critics, target_actors, target_critics, actor_opts, critic_opts,
                episodes, timesteps, batch_size, gamma, tau, epsilon_start, epsilon_end, episode_end,
-               state_dim, act_dim, device):
+               state_dim, act_dim, directory, device):
     
     agent_ids = list(env.agv_list.keys())
     buffer = ReplayBuffer(state_dim, len(agent_ids), int(1e6))
@@ -130,7 +131,8 @@ def train_loop(env, actors, critics, target_actors, target_critics, actor_opts, 
         if avg_reward > best_reward and all(env.task_done_flags.values()):
             best_reward = avg_reward
             best_episode = episode + 1
-            trainer.save_models(f"./checkpoint/best_{episode+1}")
+            os.makedirs(directory, exist_ok=True)
+            trainer.save_models(os.path.join(directory, f'best_{episode+1}'))
 
         log_data = {"Total Average Reward": avg_reward, "Timestep Duration": timestep+1, "Epsilon": epsilon}
         for agent in agent_ids:
@@ -158,7 +160,7 @@ def main():
         episodes=50000, timesteps=1000, batch_size=256,
         gamma=0.95, tau=0.01,
         epsilon_start=0.8, epsilon_end=0.1, episode_end=25000,
-        state_dim=5, act_dim=5,
+        state_dim=5, act_dim=5, directory="./checkpoint",
         device=device
     )
 
