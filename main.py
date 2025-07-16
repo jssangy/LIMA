@@ -5,7 +5,7 @@ import argparse
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        '--problem', '--p',
+        '--problem', '-p',
         type=str,
         required=True,
         help='Problem json file path (e.g. example_problems/random.domain/random_32_32_20_100.json)'

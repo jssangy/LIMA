@@ -1,19 +1,37 @@
+import os
+import json
 import numpy as np
 
 from AGV import agv
-from map import map
 import Funct
 import Controller
 import Network
+from map import map
+
+
 
 class ENV():    
-    def __init__(self, cfg):
+    def __init__(self, prob_path):
         # number of agvs
         self.agv_num = 0
-        # import map
-        self.map = map
+
+        # Load path
+        base_dir = os.path.dirname(prob_path)
+        with open(prob_path, 'r') as f:
+            data = json.load(f)
+        map_path = os.path.join(base_dir, data['mapFile'])
+        agent_path = os.path.join(base_dir, data['agentFile'])
+        task_path = os.path.join(base_dir, data['taskFile'])
+
+        # import map            
+        self.map = self.load_map(map_path)
+        
         # agv_list[alphabet] = agv object
+        # import AGV start position
         self.agv_list = {}
+
+
+        
         
         # Find number of AGVs
         for x in range(len(self.map)):
@@ -57,7 +75,7 @@ class ENV():
                         # Initialize AGV
                         self.agv_list[entity[1]] = agv((x, y), self.color.dic[entity[1]])
                         # set start point
-                        self.controller.set_start(entity[1], (x, y))
+                        self.controller.set_start(entity[1], (x, y))    
                         self.controller.agv_pos[entity[1]] = (x, y)
         
         # controller knows the pick-up, drop, rest position
@@ -67,7 +85,7 @@ class ENV():
                 if type(entity) == str:
                     if (entity[0] == '3'):
                         # set pick point
-                        self.controller.set_pick(entity[1], (x, y))
+                        self.controller.set_pick(entity[1], (x, y)) 
                         self.agv_list[entity[1]].goal = (x, y)
                         self.controller.set_control(entity[1])
                         
@@ -78,13 +96,13 @@ class ENV():
                     if (entity[0] == '5'):
                         # set rest point
                         self.controller.set_rest(entity[1], (x, y)) 
-
+        
         self.agv_list = dict(sorted(self.agv_list.items()))
 
         # AGVs task finish flags
         self.task_done_flags = {num: False for num in self.agv_list}
 
-        return
+        return 
     
     def reset(self):
         self.init_scenario()
@@ -216,7 +234,7 @@ class ENV():
         # Stop with 1 hour
         if self.time == 1000:
             return False
-
+        
         # <1 Step>
         # All AGVs send the sensor signal
         for num, agv in self.agv_list.items():
@@ -291,9 +309,49 @@ class ENV():
             valid[3] = 1
 
         return valid
-  
+    
     
     # ======================== Use for GUI ========================
+    def load_map(self, map_path):        
+        if not os.path.isfile(map_path):
+            raise FileNotFoundError(f"Map file not found")
+        
+        grid = []
+        with open(map_path, 'r') as f:
+            lines = f.readlines()
+        map_start = None
+        for idx, line in enumerate(lines):
+            if line.strip() == 'map':
+                map_start = idx + 1
+                break
+            
+        for line in lines[map_start:]:
+            row = []
+            for c in line.strip():
+                if c in ['@', 'T']:
+                    row.append(1)
+                elif c in ['.', 'E', 'S']:
+                    row.append(0)
+                else:
+                    raise ValueError(f"Invalid character in map file")
+            grid.append(row)
+        return np.array(grid)
+    
+    def load_agents(agent_path, map_width):
+        agent_positions = []
+        with open(agent_path, 'r') as f:
+            lines = f.readlines()
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            idx = int(line)
+            row = idx // map_width
+            col = idx % map_width
+            agent_positions.append((col, row))  # (x, y) = (col, row)
+        return agent_positions
+
+    
     def find_line(self, x, y):
         line_list = []
         distance = 0

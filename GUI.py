@@ -9,13 +9,17 @@ from agent import Actor
 
 class GUI():
     def __init__(self, env):
-        self.rows = 100
-        self.width = 1000
-        self.height = 1000
-        self.dis = self.width // self.rows
+        self.window_size = 1080
                 
         # Load simulation environment
         self.env = env
+        grid = self.env.map
+        height, width = grid.shape
+        self.dis = max(self.window_size // width, self.window_size // height)
+        print(self.dis)
+        self.width = self.dis * width
+        self.height = self.dis * height
+
         
         # Main window
         self.root = tk.Tk()  
@@ -171,77 +175,14 @@ class GUI():
                     pygame.draw.circle(self.win, self.env.color.dic[self.env.map[y][x][1]], ( (x + 1/2) * self.dis, (y + 1/2) * self.dis), self.dis / 2)
 
     # Run environment
-    def run_env(self, event=None):
+    def run_env(self, event = None):
         if self.running_check:
-            if hasattr(self, 'use_maddpg') and self.use_maddpg:
-                self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                self.actors = {agent: Actor(obs_dim=5, act_dim=5) for agent in self.env.agv_list.keys()}
-                for agent in self.actors:
-                    self.actors[agent].load_state_dict(torch.load(f"./checkpoints/best_model/actor_{agent}.pth", map_location='cpu'))
-                    self.actors[agent].eval()
-
-                predicted_next_positions = {}
-                actions = []
-                agent_ids = list(self.env.agv_list.keys())
-
-                for idx, agent_id in enumerate(agent_ids):
-                    agent = self.env.agv_list[agent_id]
-                    state = self.env.get_state(agent_id)
-                    state_tensor = torch.FloatTensor(state).unsqueeze(0)
-                    state_tensor = state_tensor.to(next(self.actors[agent_id].parameters()).device)
-                    x, y = int(state[0]), int(state[1])
-
-                    # --- Action masking with occupied positions ---
-                    occupied_positions = set(predicted_next_positions.values())
-                    for later_agent in agent_ids[idx+1:]:
-                        lx, ly = map(int, self.env.get_state(later_agent)[:2])
-                        occupied_positions.add((lx, ly))
-
-                    action_mask = self.env.valid_actions(x, y, occupied_positions)
-                    action_mask_tensor = torch.tensor(action_mask, dtype=torch.float32, device=state_tensor.device)
-
-                    with torch.no_grad():
-                        action_logits = self.actors[agent_id](state_tensor).squeeze(0)
-                        print(f"\nAgent {agent_id} Action Logits:")
-                        print(f"Up: {action_logits[0]:.3f}, Down: {action_logits[1]:.3f}, Right: {action_logits[2]:.3f}, Left: {action_logits[3]:.3f}, Stop: {action_logits[4]:.3f}")
-
-                    masked_logits = action_logits + (1 - action_mask_tensor) * (-1e9)
-                    argmax_action = torch.argmax(masked_logits).item()
-
-                    # If argmax is 'stop', sample probabilistically
-                    if argmax_action == 4:
-                        probs = torch.softmax(masked_logits, dim=0)
-                        action = torch.multinomial(probs, num_samples=1).item()
-                        print(f"Action Probabilities: {[f'{p:.3f}' for p in probs]}")
-                        if agent.mode == 2:
-                            print(f"Agent {agent_id} is in deadlock state (mode=2)")
-                    else:
-                        action = argmax_action
-
-                    print(f"Valid Actions: {action_mask}")
-                    print(f"Selected Action: {action}")
-                    print("-" * 50)
-                    actions.append(action)
-
-                    # --- 다음 위치 예측 저장 ---
-                    dx, dy = self.action_to_delta(action) 
-                    predicted_next_positions[agent_id] = (x + dx, y + dy)
-
-                run = self.env.demo_step(actions)
-
-            else:
-                run = self.env.Run()
-
+            run = self.env.Run()
             if run == False:
                 self.running_check = False
-
             self.make_state_info(run)
             self.redrawWindow(self.env.Get_AGV())
-
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-
+        pygame.event.get()
         self.root.after(self.speed_var.get(), self.run_env)
     
     # If start button is clicked
