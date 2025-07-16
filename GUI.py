@@ -2,7 +2,6 @@ import pygame
 import pyglet
 import tkinter as tk
 from tkinter import ttk
-import torch
 
 import Environment
 from agent import Actor

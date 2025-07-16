@@ -28,10 +28,8 @@ class ENV():
         
         # agv_list[alphabet] = agv object
         # import AGV start position
-        self.agv_list = {}
-
-
-        
+        self.load_agents(agent_path)
+               
         
         # Find number of AGVs
         for x in range(len(self.map)):
@@ -101,7 +99,7 @@ class ENV():
 
         # AGVs task finish flags
         self.task_done_flags = {num: False for num in self.agv_list}
-
+        
         return 
     
     def reset(self):
@@ -337,19 +335,21 @@ class ENV():
             grid.append(row)
         return np.array(grid)
     
-    def load_agents(agent_path, map_width):
-        agent_positions = []
+    def load_agents(self, agent_path):
+        map_height, map_width = self.map.shape
         with open(agent_path, 'r') as f:
             lines = f.readlines()
-        for line in lines:
+        for i, line in enumerate(lines):
             line = line.strip()
             if not line or line.startswith('#'):
                 continue
             idx = int(line)
             row = idx // map_width
             col = idx % map_width
-            agent_positions.append((col, row))  # (x, y) = (col, row)
-        return agent_positions
+            if self.map[row][col] != 1:
+                raise ValueError(f"Agent position ({col}, {row}) is not on a walkable cell.")
+            agent_id = str(i)
+            self.agv_list[agent_id] = agv((col, row), self.color.dic[agent_id])
 
     
     def find_line(self, x, y):
