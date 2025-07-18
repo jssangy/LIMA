@@ -7,7 +7,7 @@ class Color_dict():
             h = i / agv_num
             r, g, b = colorsys.hsv_to_rgb(h, 1, 1)
             rgb_255 = (int(r * 255), int(g * 255), int(b * 255))
-            self.dic[chr(i + 65)] = rgb_255
+            self.dic[str(i)] = rgb_255
 
 
 

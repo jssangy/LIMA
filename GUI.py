@@ -3,19 +3,17 @@ import pyglet
 import tkinter as tk
 from tkinter import ttk
 
-import Environment
-from agent import Actor
 
 class GUI():
     def __init__(self, env):
-        self.window_size = 1080
+        self.width_window = 1850
+        self.height_window = 1070
                 
         # Load simulation environment
         self.env = env
         grid = self.env.map
         height, width = grid.shape
-        self.dis = max(self.window_size // width, self.window_size // height)
-        print(self.dis)
+        self.dis = max(self.width_window // width, self.height_window // height)
         self.width = self.dis * width
         self.height = self.dis * height
 
@@ -248,12 +246,3 @@ class GUI():
             if info[1] == 2:
                 self.update_state('{:^7} {:^7} {:^7}'.format(num, info[0], "Deadlock"))
         return 
-
-    def action_to_delta(self, action):
-        return {
-            0: (0, 1),    # Up
-            1: (0, -1),   # Down
-            2: (1, 0),    # Right
-            3: (-1, 0),   # Left
-            4: (0, 0),    # Stop
-        }[action]

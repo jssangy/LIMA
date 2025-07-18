@@ -1,0 +1,8 @@
+{
+    "mapFile": "maps/cross_50.map",
+    "agentFile": "agents/cross_50_10.agents",
+    "teamSize": 10,
+    "taskFile": "tasks/cross_50_10.tasks",
+    "numTasksReveal": 1.5,
+    "version": "2024 LoRR"
+}

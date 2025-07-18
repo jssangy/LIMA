@@ -14,6 +14,7 @@ class ENV():
     def __init__(self, prob_path):
         # number of agvs
         self.agv_num = 0
+        self.agv_list = {}
 
         # Load path
         base_dir = os.path.dirname(prob_path)
@@ -22,27 +23,17 @@ class ENV():
         map_path = os.path.join(base_dir, data['mapFile'])
         agent_path = os.path.join(base_dir, data['agentFile'])
         task_path = os.path.join(base_dir, data['taskFile'])
+        
+        # number of agvs
+        self.agv_num = data['teamSize']
 
         # import map            
         self.map = self.load_map(map_path)
         
         # agv_list[alphabet] = agv object
         # import AGV start position
-        self.load_agents(agent_path)
-               
-        
-        # Find number of AGVs
-        for x in range(len(self.map)):
-            for y in range(len(self.map[x])):
-                entity = self.map[x][y]
-                if type(entity) == str:
-                    if (entity[1] in self.agv_list):
-                        pass
-                    else:
-                        self.agv_list[entity[1]] = True
-                        self.agv_num += 1
-                        
         self.color = Funct.Color_dict(self.agv_num)
+        self.load_agents(agent_path)
         
         self.network = Network.network()
         
@@ -335,21 +326,26 @@ class ENV():
             grid.append(row)
         return np.array(grid)
     
+    
     def load_agents(self, agent_path):
         map_height, map_width = self.map.shape
         with open(agent_path, 'r') as f:
             lines = f.readlines()
-        for i, line in enumerate(lines):
+
+        lines = lines[2:]
+        i = 0
+        for line in lines:
             line = line.strip()
             if not line or line.startswith('#'):
                 continue
             idx = int(line)
             row = idx // map_width
             col = idx % map_width
-            if self.map[row][col] != 1:
+            if self.map[row][col] == 1:
                 raise ValueError(f"Agent position ({col}, {row}) is not on a walkable cell.")
             agent_id = str(i)
             self.agv_list[agent_id] = agv((col, row), self.color.dic[agent_id])
+            i += 1
 
     
     def find_line(self, x, y):
