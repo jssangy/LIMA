@@ -6,14 +6,14 @@ from tkinter import ttk
 
 class GUI():
     def __init__(self, env):
-        self.width_window = 1850
+        self.width_window = 3770
         self.height_window = 1070
                 
         # Load simulation environment
         self.env = env
         grid = self.env.map
         height, width = grid.shape
-        self.dis = max(self.width_window // width, self.height_window // height)
+        self.dis = min(self.width_window // width, self.height_window // height)
         self.width = self.dis * width
         self.height = self.dis * height
 

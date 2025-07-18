@@ -6,35 +6,30 @@ from AGV import agv
 import Funct
 import Controller
 import Network
-from map import map
-
 
 
 class ENV():    
     def __init__(self, prob_path):
         # number of agvs
         self.agv_num = 0
+        # agv_list[alphabet] = agv object
         self.agv_list = {}
 
-        # Load path
+        # Load problem path
         base_dir = os.path.dirname(prob_path)
         with open(prob_path, 'r') as f:
             data = json.load(f)
         map_path = os.path.join(base_dir, data['mapFile'])
-        agent_path = os.path.join(base_dir, data['agentFile'])
-        task_path = os.path.join(base_dir, data['taskFile'])
+        self.agent_path = os.path.join(base_dir, data['agentFile'])
+        self.task_path = os.path.join(base_dir, data['taskFile'])
         
         # number of agvs
         self.agv_num = data['teamSize']
 
         # import map            
-        self.map = self.load_map(map_path)
+        self.map = self.load_map(map_path)        
         
-        # agv_list[alphabet] = agv object
-        # import AGV start position
-        self.color = Funct.Color_dict(self.agv_num)
-        self.load_agents(agent_path)
-        
+        self.color = Funct.Color_dict(self.agv_num)        
         self.network = Network.network()
         
         self.init_scenario()
@@ -42,51 +37,11 @@ class ENV():
     def init_scenario(self):
         self.time = 0
         
-        # Find number of AGVs
-        for x in range(len(self.map)):
-            for y in range(len(self.map[x])):
-                entity = self.map[x][y]
-                if type(entity) == str:
-                    if (entity[1] in self.agv_list):
-                        pass
-                    else:
-                        self.agv_list[entity[1]] = True
-
         # Set controller
         self.controller = Controller.controller(self.agv_num, self.map)
         
-        # define AGV with start position (controller knows the start position)
-        for x in range(len(self.map[0])):
-            for y in range(len(self.map)):
-                entity = self.map[y][x]
-                if type(entity) == str:
-                    if (entity[0] == '2'):
-                        # Initialize AGV
-                        self.agv_list[entity[1]] = agv((x, y), self.color.dic[entity[1]])
-                        # set start point
-                        self.controller.set_start(entity[1], (x, y))    
-                        self.controller.agv_pos[entity[1]] = (x, y)
-        
-        # controller knows the pick-up, drop, rest position
-        for x in range(len(self.map[0])):
-            for y in range(len(self.map)):
-                entity = self.map[y][x]
-                if type(entity) == str:
-                    if (entity[0] == '3'):
-                        # set pick point
-                        self.controller.set_pick(entity[1], (x, y)) 
-                        self.agv_list[entity[1]].goal = (x, y)
-                        self.controller.set_control(entity[1])
-                        
-                    if (entity[0] == '4'):
-                        # set drop point
-                        self.controller.set_drop(entity[1], (x, y)) 
-                        
-                    if (entity[0] == '5'):
-                        # set rest point
-                        self.controller.set_rest(entity[1], (x, y)) 
-        
-        self.agv_list = dict(sorted(self.agv_list.items()))
+        # import AGV start position
+        self.load_agents(self.agent_path)
 
         # AGVs task finish flags
         self.task_done_flags = {num: False for num in self.agv_list}
@@ -343,8 +298,7 @@ class ENV():
             col = idx % map_width
             if self.map[row][col] == 1:
                 raise ValueError(f"Agent position ({col}, {row}) is not on a walkable cell.")
-            agent_id = str(i)
-            self.agv_list[agent_id] = agv((col, row), self.color.dic[agent_id])
+            self.agv_list[i] = agv((col, row), self.color.dic[i])
             i += 1
 
     
