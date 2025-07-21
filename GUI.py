@@ -141,20 +141,36 @@ class GUI():
         
     # Update windows
     def redrawWindow(self, agv_list):
-        # self.win = pygame.display.set_mode((self.width, self.height))
         pygame.display.set_caption('Warehouse Digital Twin')
         self.win.fill((32,32,32))
-        
-        # Draw AGVs !
+        self.drawMap()
+
+        # Draw active tasks as rectangles (with AGV color)
+        active_tasks = self.env.get_active_tasks()  # {agv_id: (row, col)}
+        for num, (row, col) in active_tasks.items():
+            color = self.env.color.dic[num]
+            pygame.draw.rect(
+                self.win,
+                color,
+                (
+                    int((row + 0.5) * self.dis - self.dis / 2),
+                    int((col + 0.5) * self.dis - self.dis / 2),
+                    int(self.dis),
+                    int(self.dis)
+                )
+            )
+
+        # Draw AGVs as circles
         for num, agv in agv_list.items():
             x, y = agv.pos[0], agv.pos[1]
-            pygame.draw.rect(self.win, agv.color, (x * self.dis +1, y * self.dis+1, self.dis - 2, self.dis - 2))
-        
-        # Draw Maps !
-        self.drawMap()
-            
-        # pygame.display.update()
+            pygame.draw.circle(
+                self.win,
+                agv.color,
+                (int((x + 0.5) * self.dis), int((y + 0.5) * self.dis)),
+                int(self.dis / 2) - 2
+            )
         pygame.display.flip()
+        
         return
     
     # Draw Map
@@ -169,7 +185,7 @@ class GUI():
                         pygame.draw.line(self.win, (51, 153, 255), [(x + 1/2) * self.dis, (y + 1/2) * self.dis] , [(line[0] + 1/2) * self.dis, (line[1] + 1/2) * self.dis] , 1)
                         # pygame.draw.circle(self.win, (0, 0, 255), ( (x + 1/2) * self.dis, (y + 1/2) * self.dis), self.dis / 2, 1)
                 if type(self.env.map[y][x]) == str:
-                    pygame.draw.circle(self.win, self.env.color.dic[self.env.map[y][x][1]], ( (x + 1/2) * self.dis, (y + 1/2) * self.dis), self.dis / 2)
+                    pygame.draw.rect(self.win, self.env.color.dic[self.env.map[y][x][1]], ((x + 1/2) * self.dis, (y + 1/2) * self.dis), self.dis / 2)
 
     # Run environment
     def run_env(self, event = None):

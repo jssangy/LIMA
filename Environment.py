@@ -35,16 +35,21 @@ class ENV():
         self.init_scenario()
     
     def init_scenario(self):
-        self.time = 0
+        self.task_count = 0
         
         # Set controller
         self.controller = Controller.controller(self.agv_num, self.map)
         
-        # import AGV start position
-        self.load_agents(self.agent_path)
+        # Import AGV start position
+        self.agv_list = self.load_agents(self.agent_path)
 
-        # AGVs task finish flags
-        self.task_done_flags = {num: False for num in self.agv_list}
+        # Import tasks [[task_pick 0, task_drop 0], ...]
+        self.tasks = self.load_tasks(self.task_path)
+
+        # Define pick-up, drop position
+        for agv_id, task in zip(self.agv_list.keys(), self.tasks):
+            self.controller.set_pick(agv_id, task[0])
+            self.controller.set_drop(agv_id, task[1])
         
         return 
     
@@ -88,87 +93,6 @@ class ENV():
             total_reward.append(reward)
 
         return total_reward
-
-    def step(self, state, actions):
-        # 1 time step (sec)  
-        self.time += 1
-
-        # <1 Step>
-        # All AGVs send the sensor signal
-        for num, agv in self.agv_list.items():
-            # Send the signal to controller through network 
-            self.controller.get_sensing(num, self.network.send(agv.sensing()))
-
-        # <2 Step>
-        # Controller sends the conntrol signal through network
-        control_sig = self.controller.action_control(actions)
-        for num, agv in self.agv_list.items():
-            agv.get_control(self.network.send([control_sig[0][num], control_sig[1][num]]))
-
-        # <3 Step>
-        # All AGVs interacts with ENV!
-        dones = []
-        for num, agv in self.agv_list.items():
-            # Possible Move
-            if (self.interact(agv, agv.next_pos()) == 0):
-                agv.move()
-                agv.goal = self.controller.agv_goal[num][self.controller.agv_state[num]]
-                if agv.start == agv.pos and agv.pos == agv.goal:
-                    dones.append("success")
-                    self.task_done_flags[num] = True
-                else:
-                    dones.append("alive")
-            # Collision with wall or move out of line
-            elif (self.interact(agv, agv.next_pos()) == 1):
-                dones.append("collision")
-                pass                
-            # Collision with other AGVs
-            elif (self.interact(agv, agv.next_pos()) == 2):
-                dones.append("collision")
-                pass
-        
-        next_state = []
-        for num in self.agv_list:
-            next_state.append(self.get_state(num))
-
-        reward = self.compute_reward(state, next_state)
-
-        return next_state, reward, dones
-    
-    def demo_step(self, actions):
-        # 1 time step (sec)  
-        self.time += 1
-
-        if self.time == 1000:
-            return False
-
-        # <1 Step>
-        # All AGVs send the sensor signal
-        for num, agv in self.agv_list.items():
-            # Send the signal to controller through network 
-            self.controller.get_sensing(num, self.network.send(agv.sensing()))
-
-        # <2 Step>
-        # Controller sends the conntrol signal through network
-        control_sig = self.controller.action_control(actions)
-        for num, agv in self.agv_list.items():
-            agv.get_control(self.network.send([control_sig[0][num], control_sig[1][num]]))
-
-        # <3 Step>
-        # All AGVs interacts with ENV!
-        for num, agv in self.agv_list.items():
-            # Possible Move
-            if (self.interact(agv, agv.next_pos()) == 0):
-                agv.move()
-                agv.goal = self.controller.agv_goal[num][self.controller.agv_state[num]]
-            # Collision with wall or move out of line
-            elif (self.interact(agv, agv.next_pos()) == 1):
-                pass                
-            # Collision with other AGVs
-            elif (self.interact(agv, agv.next_pos()) == 2):
-                pass
-        
-        return self.make_info()
 
     # Single Process Step
     def Run(self):
@@ -256,6 +180,9 @@ class ENV():
     
     
     # ======================== Use for GUI ========================
+    def get_active_tasks(self):
+        return self.controller.get_active_tasks()
+
     def load_map(self, map_path):        
         if not os.path.isfile(map_path):
             raise FileNotFoundError(f"Map file not found")
@@ -283,13 +210,13 @@ class ENV():
     
     
     def load_agents(self, agent_path):
-        map_height, map_width = self.map.shape
+        _, map_width = self.map.shape
+        agv_list = {}
         with open(agent_path, 'r') as f:
             lines = f.readlines()
 
         lines = lines[2:]
-        i = 0
-        for line in lines:
+        for i, line in enumerate(lines):
             line = line.strip()
             if not line or line.startswith('#'):
                 continue
@@ -298,8 +225,30 @@ class ENV():
             col = idx % map_width
             if self.map[row][col] == 1:
                 raise ValueError(f"Agent position ({col}, {row}) is not on a walkable cell.")
-            self.agv_list[i] = agv((col, row), self.color.dic[i])
-            i += 1
+            agv_list[i] = agv((col, row), self.color.dic[i])
+
+        return agv_list
+
+    def load_tasks(self, task_path):
+        _, map_width = self.map.shape
+        tasks = []
+        with open(task_path, 'r') as f:
+            lines = f.readlines()
+
+        lines = lines[2:]
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            indices = [int(x) for x in line.replace(',', ' ').strip().split()]
+            path = [(idx // map_width, idx % map_width) for idx in indices]
+            if self.map[path[0][0]][path[0][1]] == 1:
+                raise ValueError(f"Task position ({path[0][0]}, {path[0][1]}) is not on a walkable cell.")
+            elif self.map[path[1][0]][path[1][1]] == 1:
+                raise ValueError(f"Task position ({path[1][0]}, {path[1][1]}) is not on a walkable cell.")
+            tasks.append(path)
+
+        return tasks
 
     
     def find_line(self, x, y):

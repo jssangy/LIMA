@@ -11,7 +11,7 @@ class controller():
         self.control_buffer = {} # save the D* algorithm based control output of agvs
         self.action_control_buffer = {} # save the action control output of agvs
         self.agv_state = {} # 0(start - pick up) 1(pick up - drop) 2(drop - rest) 3(rest - start)
-        self.agv_nums = [] # agv numbers (A, B, C, ... O)
+        self.agv_nums = [] # agv numbers (0, 1, 2, ...)
         self.agv_mode = {} # 0 (normal) 1 (Danger)
         self.agv_goal = {} # goal position of all agvs
         self.agv_info = {} # for GUI infomation
@@ -27,17 +27,17 @@ class controller():
             
         # Initialization
         for i in range (agv_num):
-            self.agv_nums.append(chr(i + 65))
-            self.agv_pos[chr(i + 65)] = (0, 0)
-            self.agv_next_rout[chr(i + 65)] = (0, 0)
-            self.agv_state[chr(i + 65)] = 0 # Initial state is 0
-            self.agv_mode[chr(i + 65)] = 0 # Initial mode is normal
-            self.agv_goal[chr(i + 65)] = [(0, 0), (0, 0), (0, 0), (0, 0)]
-            self.agv_info[chr(i + 65)] = [0, 0]
-            self.control_buffer[chr(i + 65)] = (0, 0)
-            self.action_control_buffer[chr(i + 65)] = (0, 0)
-            self.agv_rout[chr(i + 65)] = []
-            self.agv_pre_rout[chr(i + 65)] = (0, 0)
+            self.agv_nums.append(i)
+            self.agv_pos[i] = (0, 0)
+            self.agv_next_rout[i] = (0, 0)
+            self.agv_state[i] = 0 # Initial state is 0
+            self.agv_mode[i] = 0 # Initial mode is normal
+            self.agv_goal[i] = [(0, 0), (0, 0), (0, 0), (0, 0)]
+            self.agv_info[i] = [0, 0]
+            self.control_buffer[i] = (0, 0)
+            self.action_control_buffer[i] = (0, 0)
+            self.agv_rout[i] = []
+            self.agv_pre_rout[i] = (0, 0)
         
         # Map of warehouse digital twin
         self.map = map
@@ -64,7 +64,7 @@ class controller():
     
     # Change the AGV's state
     def change_state(self, num, state):
-        if state != 3:
+        if state != 1:
             self.agv_state[num] = state + 1   
         else:
             self.agv_state[num] = 0
@@ -202,6 +202,15 @@ class controller():
                 self.agv_next_pos[num] = pos
         
     # ======================== Routing Functions ============================================
+    def get_active_tasks(self):
+        active_tasks = {}
+        for num in self.agv_nums:
+            state = self.agv_state[num]
+            goal = self.agv_goal[num][state]
+            active_tasks[num] = goal
+
+        return active_tasks
+
     def graphing(self):
         self.graph = {}
         for x in range (len(self.map[0])): # 35
@@ -240,7 +249,7 @@ class controller():
     
     def make_grid(self):
         height, width = len(self.map), len(self.map[0])
-        self.grid = np.zeros((height, width), dtype=np.uint8)
+        self.grid = np.ones((height, width), dtype=np.uint8)  # Initialize all as 1 (non-walkable)
         white_cells = set(self.graph.keys())
 
         for start, neighbors in self.graph.items():
@@ -255,7 +264,7 @@ class controller():
 
         for (x, y) in white_cells:
             if 0 <= x < width and 0 <= y < height:
-                self.grid[y][x] = 1
+                self.grid[y][x] = 0  # Set walkable cells to 0
         
         return self.grid
     
@@ -289,7 +298,7 @@ class DStar:
         for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
             nx, ny = x + dx, y + dy
             if 0 <= nx < self.map.shape[1] and 0 <= ny < self.map.shape[0]:
-                if self.map[ny][nx] == 1:
+                if self.map[ny][nx] == 0:
                     neighbors.append((nx, ny))
         return neighbors
 
