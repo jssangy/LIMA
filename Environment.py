@@ -35,16 +35,15 @@ class ENV():
         self.init_scenario()
     
     def init_scenario(self):
-        self.task_count = 0
+        # Import tasks [[task_pick 0, task_drop 0], ...]
+        self.tasks = self.load_tasks(self.task_path)
         
         # Set controller
-        self.controller = Controller.controller(self.agv_num, self.map)
+        self.controller = Controller.controller(self.agv_num, self.map, self.tasks)
         
         # Import AGV start position
         self.agv_list = self.load_agents(self.agent_path)
 
-        # Import tasks [[task_pick 0, task_drop 0], ...]
-        self.tasks = self.load_tasks(self.task_path)
 
         # Define pick-up, drop position
         for agv_id, task in zip(self.agv_list.keys(), self.tasks):

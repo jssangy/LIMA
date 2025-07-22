@@ -4,7 +4,7 @@ import numpy as np # use for matrix calculation
 import Funct
 
 class controller():    
-    def __init__(self, agv_num, map):
+    def __init__(self, agv_num, map, tasks):
         self.agv_pos = {} # save the position of agv positions
         self.agv_next_pos = {} # save the next position of agv positions
         self.agv_next_rout = {} # save the next rout position of agv
@@ -41,12 +41,22 @@ class controller():
         
         # Map of warehouse digital twin
         self.map = map
+
+        # AGV tasks
+        self.tasks = tasks
+        self.task_count = 0
         
         # Make graph & grid for routing
         self.graphing()
         self.make_grid()
+
+        # Set pick-up & drop tasks
+        for num, task in zip(agv_num, self.tasks):
+            self.set_pick(num, task[0])
+            self.set_drop(num, task[1])
+            self.task_count += 1
     
-    # set start position
+    # set start position - not used
     def set_start(self, num, pos):
         self.agv_goal[num][3] = pos
     
@@ -58,7 +68,7 @@ class controller():
     def set_drop(self, num, pos):
         self.agv_goal[num][1] = pos
         
-    # set rest position
+    # set rest position - not used
     def set_rest(self, num, pos):
         self.agv_goal[num][2] = pos
     
@@ -67,9 +77,18 @@ class controller():
         if state != 1:
             self.agv_state[num] = state + 1   
         else:
-            self.agv_state[num] = 0
-            self.agv_info[num][0] += 1
-            self.whole_product += 1
+            if self.task_count <= len(self.tasks):
+                self.agv_state[num] = 0
+                self.agv_info[num][0] += 1
+                self.whole_product += 1
+
+                self.set_pick(num, self.tasks[self.task_count][0])
+                self.set_drop(num, self.tasks[self.task_count][1])
+                self.task_count += 1
+
+            else:
+                pass
+            
         
         return self.agv_state[num]
     
