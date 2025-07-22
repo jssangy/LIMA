@@ -43,12 +43,6 @@ class ENV():
         
         # Import AGV start position
         self.agv_list = self.load_agents(self.agent_path)
-
-
-        # Define pick-up, drop position
-        for agv_id, task in zip(self.agv_list.keys(), self.tasks):
-            self.controller.set_pick(agv_id, task[0])
-            self.controller.set_drop(agv_id, task[1])
         
         return 
     
