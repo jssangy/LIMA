@@ -2,8 +2,8 @@ import heapq
 
 # D* Lite Algorithm
 class DStar:
-    def __init__(self, grid_map, start, goal):
-        self.map = grid_map
+    def __init__(self, map, start, goal):
+        self.map = map
         self.start = start
         self.goal = goal
 
@@ -11,10 +11,10 @@ class DStar:
         self.rhs = {}        # Estimated cost
         self.queue = []      # Priority queue
 
-        h, w = grid_map.shape
+        h, w = map.shape
         for y in range(h):
             for x in range(w):
-                if grid_map[y][x] == 1:
+                if map[y][x] == 0:  # Assuming 0 is free space
                     self.g[(x, y)] = float('inf')
                     self.rhs[(x, y)] = float('inf')
 

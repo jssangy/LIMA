@@ -94,8 +94,8 @@ class ENV():
         self.time += 1
         
         # Stop with 1 hour
-        if self.time == 1000:
-            return False
+        # if self.time == 1000:
+        #     return False
         
         # <1 Step>
         # All AGVs send the sensor signal
@@ -126,7 +126,7 @@ class ENV():
         return self.make_info()
     
     def interact(self, agv, next_pos):
-        if self.controller.grid[next_pos[1]][next_pos[0]] == 0:
+        if self.map[next_pos[1]][next_pos[0]] == 1:
             agv.mode = 1
             return 1
 
@@ -153,24 +153,6 @@ class ENV():
         info_list.append(self.controller.agv_info)
         
         return info_list
-    
-    def valid_actions(self, x, y, occupied_positions):
-        valid = [0, 0, 0, 0, 1]  # [Up, Down, Right, Left, Stop]
-        grid = self.controller.grid
-        height, width = grid.shape
-
-        occupied = set(occupied_positions)
-
-        if y < height - 1 and grid[y+1][x] == 1 and (x, y+1) not in occupied:
-            valid[0] = 1
-        if y > 0 and grid[y-1][x] == 1 and (x, y-1) not in occupied:
-            valid[1] = 1
-        if x < width - 1 and grid[y][x+1] == 1 and (x+1, y) not in occupied:
-            valid[2] = 1
-        if x > 0 and grid[y][x-1] == 1 and (x-1, y) not in occupied:
-            valid[3] = 1
-
-        return valid
     
     
     # ======================== Use for GUI ========================
