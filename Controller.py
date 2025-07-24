@@ -2,6 +2,7 @@ import heapq
 import numpy as np # use for matrix calculation
 
 import Funct
+from global_planning import DStar
 
 class controller():    
     def __init__(self, agv_num, map, tasks):
@@ -45,13 +46,9 @@ class controller():
         # AGV tasks
         self.tasks = tasks
         self.task_count = 0
-        
-        # Make graph & grid for routing
-        self.graphing()
-        self.make_grid()
 
         # Set pick-up & drop tasks
-        for num, task in zip(agv_num, self.tasks):
+        for num, task in zip(range(agv_num), self.tasks):
             self.set_pick(num, task[0])
             self.set_drop(num, task[1])
             self.task_count += 1
@@ -95,7 +92,7 @@ class controller():
     def set_control(self, num):
         pos = self.agv_pos[num]
         goal = self.agv_goal[num][self.agv_state[num]]
-        self.planners[num] = DStar(self.grid, pos, goal)
+        self.planners[num] = DStar(self.map, pos, goal)
         self.planners[num].compute_shortest_path()
 
         path = self.planners[num].extract_path()
@@ -127,7 +124,7 @@ class controller():
                 state = self.change_state(num, state)
                 new_goal = self.agv_goal[num][state]
                 self.agv_mode[num] = 0                
-                self.planners[num] = DStar(self.grid, pos, new_goal)
+                self.planners[num] = DStar(self.map, pos, new_goal)
                 self.planners[num].compute_shortest_path()
                 path = self.planners[num].extract_path()
                 self.prev_distance[num] = self.planners[num].g.get(pos)
@@ -165,7 +162,7 @@ class controller():
                 state = self.change_state(num, state)
                 goal = self.agv_goal[num][state]
                 self.agv_mode[num] = 0                
-                self.planners[num] = DStar(self.grid, pos, goal)
+                self.planners[num] = DStar(self.map, pos, goal)
                 self.planners[num].compute_shortest_path()
                 path = self.planners[num].extract_path()
                 self.prev_distance[num] = self.planners[num].g.get(pos)
@@ -191,7 +188,7 @@ class controller():
             state = self.agv_state[num]
             goal = self.agv_goal[num][state]
 
-            dynamic_grid = self.grid.copy()
+            dynamic_grid = self.map.copy()
             for other in self.agv_nums:
                 if other != num:
                     ox, oy = self.agv_pos[other]
@@ -229,68 +226,11 @@ class controller():
             active_tasks[num] = goal
 
         return active_tasks
-
-    def graphing(self):
-        self.graph = {}
-        for x in range (len(self.map[0])): # 35
-            for y in range(len(self.map)): # 18
-                # normal node 
-                if self.map[y][x] == 6:
-                    neighbors = self.find_neighbors(x,y)
-                    nodes = {}
-                    for neighbor in neighbors:
-                        nodes[neighbor] = Funct.get_distance((x,y), neighbor)
-                    self.graph[(x,y)] = nodes
-                    
-                if type(self.map[y][x]) == str:
-                    neighbors = self.find_neighbors(x,y, False)
-                    nodes = {}
-                    for neighbor in neighbors:
-                        nodes[neighbor] = Funct.get_distance((x,y), neighbor)
-                    self.graph[(x,y)] = nodes  
-    
-    def find_neighbors(self, x, y, rout=True):
-        line_list = []
-        for direction in ['up', 'down', 'left', 'right']:
-            dx, dy = {'up': (1, 0), 'down': (-1, 0), 'right': (0, 1), 'left': (0, -1)}[direction]
-            distance, poss_x, poss_y = 0, x, y
-            while distance < 15 and 1 <= poss_x < len(self.map[0])-1 and 1 <= poss_y < len(self.map)-1:
-                poss_x += dx
-                poss_y += dy
-                distance += 1
-                val = self.map[poss_y][poss_x]
-                if val == 1:
-                    break
-                if val == 6 or (isinstance(val, str) and rout):
-                    line_list.append((poss_x, poss_y))
-                    break
-        return line_list
-    
-    def make_grid(self):
-        height, width = len(self.map), len(self.map[0])
-        self.grid = np.ones((height, width), dtype=np.uint8)  # Initialize all as 1 (non-walkable)
-        white_cells = set(self.graph.keys())
-
-        for start, neighbors in self.graph.items():
-            for end in neighbors:
-                x0, y0 = start
-                x1, y1 = end
-                steps = max(abs(x1 - x0), abs(y1 - y0))
-                for i in range(steps + 1):
-                    xi = x0 + round((x1 - x0) * i / steps)
-                    yi = y0 + round((y1 - y0) * i / steps)
-                    white_cells.add((xi, yi))
-
-        for (x, y) in white_cells:
-            if 0 <= x < width and 0 <= y < height:
-                self.grid[y][x] = 0  # Set walkable cells to 0
-        
-        return self.grid
     
 # D* Lite Algorithm
 class DStar:
-    def __init__(self, grid_map, start, goal):
-        self.map = grid_map
+    def __init__(self, map, start, goal):
+        self.map = map
         self.start = start
         self.goal = goal
 
@@ -298,10 +238,10 @@ class DStar:
         self.rhs = {}        # Estimated cost
         self.queue = []      # Priority queue
 
-        h, w = grid_map.shape
+        h, w = map.shape
         for y in range(h):
             for x in range(w):
-                if grid_map[y][x] == 1:
+                if map[y][x] == 1:
                     self.g[(x, y)] = float('inf')
                     self.rhs[(x, y)] = float('inf')
 

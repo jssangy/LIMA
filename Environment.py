@@ -35,6 +35,7 @@ class ENV():
         self.init_scenario()
     
     def init_scenario(self):
+        self.time = 0
         # Import tasks [[task_pick 0, task_drop 0], ...]
         self.tasks = self.load_tasks(self.task_path)
         
@@ -244,73 +245,3 @@ class ENV():
         return tasks
 
     
-    def find_line(self, x, y):
-        line_list = []
-        distance = 0
-        poss_x = x
-        poss_y = y
-        # up
-        while distance < 15 and 1 <= poss_y < 99 and 1 <= poss_x < 99:
-            poss_x += 1
-            distance += 1
-            if (self.map[poss_y][poss_x] == 1):
-                break
-            if (self.map[poss_y][poss_x] == 6):
-                line_list.append([poss_x, poss_y])
-                break
-            if (type(self.map[poss_y][poss_x]) == str):
-                line_list.append([poss_x, poss_y])
-                break
-                
-        distance = 0
-        poss_x = x
-        poss_y = y
-        
-        # down
-        while distance < 15 and 1 <= poss_y < 99 and 1 <= poss_x < 99:
-            poss_x -= 1
-            distance += 1
-            if (self.map[poss_y][poss_x] == 1):
-                break
-            if (self.map[poss_y][poss_x] == 6):
-                line_list.append([poss_x, poss_y])
-                break
-            if (type(self.map[poss_y][poss_x]) == str):
-                line_list.append([poss_x, poss_y])
-                break
-        
-        distance = 0
-        poss_x = x
-        poss_y = y
-        
-        # right
-        while distance < 15 and 1 <= poss_y < 99 and 1 <= poss_x < 99:
-            poss_y += 1
-            distance += 1
-            if (self.map[poss_y][poss_x] == 6):
-                line_list.append([poss_x, poss_y])
-                break
-            if (type(self.map[poss_y][poss_x]) == str):
-                line_list.append([poss_x, poss_y])
-                break
-            if (self.map[poss_y][poss_x] == 1):
-                break
-            
-        distance = 0
-        poss_x = x
-        poss_y = y
-        
-        # left
-        while distance < 15 and 1 <= poss_y < 99 and 1 <= poss_x < 99:
-            poss_y -= 1
-            distance += 1
-            if (self.map[poss_y][poss_x] == 1):
-                break
-            if (self.map[poss_y][poss_x] == 6):
-                line_list.append([poss_x, poss_y])
-                break
-            if (type(self.map[poss_y][poss_x]) == str):
-                line_list.append([poss_x, poss_y])
-                break
-            
-        return line_list

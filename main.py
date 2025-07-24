@@ -7,8 +7,8 @@ def main():
     parser.add_argument(
         '--problem', '-p',
         type=str,
-        required=True,
-        help='Problem json file path (e.g. example_problems/random.domain/random_32_32_20_100.json)'
+        default='problems/cross/cross_1.json',
+        help='Problem json file path (e.g. problems/cross/cross_1.json)'
     )
     args = parser.parse_args()
 

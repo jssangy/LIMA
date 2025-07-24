@@ -7,7 +7,7 @@ from tkinter import ttk
 class GUI():
     def __init__(self, env):
         self.width_window = 3770
-        self.height_window = 1070
+        self.height_window = 1040
                 
         # Load simulation environment
         self.env = env
