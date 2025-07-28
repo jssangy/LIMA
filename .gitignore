@@ -7,3 +7,5 @@ checkpoints/
 *.pth
 
 .vscode/
+
+.DS_Store
