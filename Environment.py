@@ -1,6 +1,7 @@
 import os
 import json
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 
 from AGV import agv
 import Funct
@@ -27,7 +28,10 @@ class ENV():
         self.agv_num = data['teamSize']
 
         # import map            
-        self.map = self.load_map(map_path)        
+        self.map = self.load_map(map_path)    
+
+        # Find intersections in the map (x, y, len_N, len_E, len_S, len_W)
+        self.intersections = self.find_intersections()     
         
         self.color = Funct.Color_dict(self.agv_num)        
         self.network = Network.network()
@@ -40,32 +44,16 @@ class ENV():
         self.tasks = self.load_tasks(self.task_path)
         
         # Set controller
-        self.controller = Controller.controller(self.agv_num, self.map, self.tasks)
+        self.controller = Controller.controller(self.agv_num, self.map, self.tasks, self.intersections)
         
         # Import AGV start position
-        self.agv_list = self.load_agents(self.agent_path)
+        self.agv_list = self.load_agents(self.agent_path)        
         
         return 
     
     def reset(self):
         self.init_scenario()
 
-    def get_state(self, num):
-        pos = self.agv_list[num].pos                                        # (2,)
-        goal = self.agv_list[num].goal                                      # (2,)
-
-        planner = self.controller.planners[num]
-        planner.start = pos
-        planner.compute_shortest_path()
-        distance = planner.g[pos]                                           # (1,)
-        
-        state = np.array([
-            pos[0], pos[1],
-            goal[0], goal[1],
-            distance,
-        ], dtype=np.float32)                                                # (5,)         
-        
-        return state
     
     def compute_reward(self, state, next_state):
         total_reward = []
@@ -163,7 +151,7 @@ class ENV():
         if not os.path.isfile(map_path):
             raise FileNotFoundError(f"Map file not found")
         
-        grid = []
+        map = []
         with open(map_path, 'r') as f:
             lines = f.readlines()
         map_start = None
@@ -181,8 +169,9 @@ class ENV():
                     row.append(0)
                 else:
                     raise ValueError(f"Invalid character in map file")
-            grid.append(row)
-        return np.array(grid)
+            map.append(row)
+            
+        return np.array(map)
     
     
     def load_agents(self, agent_path):
@@ -217,13 +206,57 @@ class ENV():
             if not line or line.startswith('#'):
                 continue
             indices = [int(x) for x in line.replace(',', ' ').strip().split()]
-            path = [(idx // map_width, idx % map_width) for idx in indices]
-            if self.map[path[0][0]][path[0][1]] == 1:
-                raise ValueError(f"Task position ({path[0][0]}, {path[0][1]}) is not on a walkable cell.")
-            elif self.map[path[1][0]][path[1][1]] == 1:
-                raise ValueError(f"Task position ({path[1][0]}, {path[1][1]}) is not on a walkable cell.")
+            path = [(idx % map_width, idx // map_width) for idx in indices]                
+
+            for col, row in path:
+                if self.map[row][col] == 1:
+                    raise ValueError(f"Task path ({col}, {row}) is not on a walkable cell.")
+                
             tasks.append(path)
 
         return tasks
 
+    def find_intersection_center(self):
+        kernel = np.array([[1, 0, 1],
+                           [0, 0, 0],
+                           [1, 0, 1]])
+
+        windows = sliding_window_view(self.map, kernel.shape)
+        matches = np.all(windows == kernel, axis=(2, 3))
+        centers = (np.argwhere(matches) + 1).tolist()
+
+        return centers
+        
+    def ray_len(self, r, c, dr, dc):
+        H, W = self.map.shape
+        length = 0
+        rr, cc = r + dr, c + dc
+
+        while 0 <= rr < H and 0 <= cc < W and self.map[rr][cc] == 0:
+            if dr != 0:
+                left_wall = (cc - 1 < 0) or (self.map[rr][cc - 1] == 1)
+                right_wall = (cc + 1 >= W) or (self.map[rr][cc + 1] == 1)
+                if not (left_wall or right_wall):
+                    break
+            else:
+                up_wall = (rr - 1 < 0) or (self.map[rr - 1][cc] == 1)
+                down_wall = (rr + 1 >= H) or (self.map[rr + 1][cc] == 1)
+                if not (up_wall or down_wall):
+                    break
+            length += 1
+            rr += dr
+            cc += dc
+        return length
     
+    def find_intersections(self):
+        intersections = []
+        for r, c in self.find_intersection_center():
+            len_N = self.ray_len(r, c, -1, 0)   # North
+            len_E = self.ray_len(r, c, 0, 1)    # East
+            len_S = self.ray_len(r, c, 1, 0)    # South
+            len_W = self.ray_len(r, c, 0, -1)   # West
+
+            if min(len_N, len_E, len_S, len_W) > 0:
+                intersections.append((c, r, len_N, len_E, len_S, len_W))
+
+        return intersections

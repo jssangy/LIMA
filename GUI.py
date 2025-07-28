@@ -71,12 +71,23 @@ class GUI():
         self.speed_scale.set(100)
         
         # AGV Algorithm Setting
-        self.algorithm_label = tk.Label(self.setting, text = 'DAA Algorithms', font = self.font_style2)
+        self.algorithm_label = tk.Label(self.setting, text = 'Algorithms', font = self.font_style2)
         self.algorithm_box = ttk.Combobox(self.setting, 
-                                    values=["Not Used", "Dynamic Obstacle D*", "MADDPG"], state = 'readonly',
+                                    values=["D*", "PIBT", "MADDPG"], state = 'readonly',
                                     font=self.font_style2)
         self.algorithm_box.current(0)
         self.algorithm_box.bind("<<ComboboxSelected>>", self.algorithm_changed)
+
+        # RL Agent Setting
+        self.rl_agent_var = tk.BooleanVar()
+        self.rl_agent_check = tk.Checkbutton(
+            self.setting,
+            text="Intersection RL Agent",
+            variable=self.rl_agent_var,
+            font=self.font_style2,
+            command=self.rl_agent_toggled
+        )
+        self.rl_agent_var.set(False)
         
         # State (Right side)
         self.state = tk.Frame(self.win_frame, width = 400, height = 350, highlightbackground = '#595959', highlightthickness=2)   
@@ -120,6 +131,7 @@ class GUI():
         self.speed_scale.pack()
         self.algorithm_label.pack()
         self.algorithm_box.pack()
+        self.rl_agent_check.pack()
         self.setting.pack_propagate(0)
         
         self.state.pack()
@@ -236,15 +248,12 @@ class GUI():
     # When trajectory algorithm is changed
     def algorithm_changed(self, event):
         self.append_log("Changed Avoidance algorithm to {}".format(event.widget.get()))
-        if event.widget.get() == "Not Used":
+        if event.widget.get() == "D*":
             self.env.controller.running_opt = 0
-            self.use_maddpg = False
-        if event.widget.get() == "Dynamic Obstacle D*":
+        if event.widget.get() == "PIBT":
             self.env.controller.running_opt = 1
-            self.use_maddpg = False
         if event.widget.get() == "MADDPG":
-            self.use_maddpg = True
-                
+            self.use_maddpg = True                
             
     def make_state_info(self, info_list):
         if info_list == False:
@@ -262,3 +271,10 @@ class GUI():
             if info[1] == 2:
                 self.update_state('{:^7} {:^7} {:^7}'.format(num, info[0], "Deadlock"))
         return 
+
+    def rl_agent_toggled(self):
+        if self.rl_agent_var.get():
+            self.append_log("Intersection RL Agent ON")
+        else:
+            self.append_log("Intersection RL Agent OFF")
+        self.env.controller.use_rl = self.rl_agent_var.get()
