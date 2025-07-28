@@ -7,15 +7,15 @@ class Intersection:
         - intersection_data: (x, y, len_N, len_E, len_S, len_W)
         - controller_ref: AGV 데이터에 접근하기 위한 컨트롤러 참조
         """
-        self.x, self.y, self.len_N, self.len_E, self.len_S, self.len_W = intersection_data
+        self.center_x, self.center_y, self.len_N, self.len_E, self.len_S, self.len_W = intersection_data
         self.controller = controller_ref
         
         # 각 방향별 레인 좌표를 미리 계산하여 Set으로 저장 (효율적인 조회를 위해)
         self.lane_coords = {
-            'N': {(self.x, self.y - i) for i in range(1, self.len_N + 1)},
-            'E': {(self.x + i, self.y) for i in range(1, self.len_E + 1)},
-            'S': {(self.x, self.y + i) for i in range(1, self.len_S + 1)},
-            'W': {(self.x - i, self.y) for i in range(1, self.len_W + 1)}
+            'N': {(self.center_x, self.center_y - i) for i in range(1, self.len_N + 1)},
+            'E': {(self.center_x + i, self.center_y) for i in range(1, self.len_E + 1)},
+            'S': {(self.center_x, self.center_y + i) for i in range(1, self.len_S + 1)},
+            'W': {(self.center_x - i, self.center_y) for i in range(1, self.len_W + 1)}
         }
         # self.rl_agent = ... # 여기에 각 교차로의 RL 에이전트를 초기화할 수 있습니다.
 
@@ -48,19 +48,20 @@ class Intersection:
             goal_onehot = [0, 0, 0, 0]
             deadlock = 0
             min_dist = -1
+            center = (self.center_x, self.center_y)
 
             if closest_agv_num is not None:
                 pos = self.controller.agv_pos[closest_agv_num]
-                min_dist = abs(pos[0] - self.x) + abs(pos[1] - self.y)
+                min_dist = abs(pos[0] - center[0]) + abs(pos[1] - center[1])
 
                 goal = self.controller.agv_goal[closest_agv_num][self.controller.agv_state[closest_agv_num]]
-                goal_dx, goal_dy = goal[0] - self.x, goal[1] - self.y
+                goal_dx, goal_dy = goal[0] - self.center_x, goal[1] - self.center_y
                 if goal_dy < 0: goal_onehot[0] = 1
                 elif goal_dx > 0: goal_onehot[1] = 1
                 elif goal_dy > 0: goal_onehot[2] = 1
                 elif goal_dx < 0: goal_onehot[3] = 1
             
-            state_vector.extend(goal_onehot + [deadlock, min_dist])
+            state_vector.extend(goal_onehot + [min_dist, deadlock])
 
         return np.array(state_vector, dtype=np.float32)
 

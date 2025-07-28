@@ -42,39 +42,17 @@ class ENV():
         self.time = 0
         # Import tasks [[task_pick 0, task_drop 0], ...]
         self.tasks = self.load_tasks(self.task_path)
+
+        # Import AGV start position
+        self.agv_list = self.load_agents(self.agent_path)
         
         # Set controller
-        self.controller = Controller.controller(self.agv_num, self.map, self.tasks, self.intersections)
-        
-        # Import AGV start position
-        self.agv_list = self.load_agents(self.agent_path)        
-        
-        return 
-    
+        self.controller = Controller.controller(self.agv_num, self.map, self.agv_list, self.tasks, self.intersections)
+
+        return
+
     def reset(self):
         self.init_scenario()
-
-    
-    def compute_reward(self, state, next_state):
-        total_reward = []
-
-        for idx, agv in enumerate(self.agv_list.values()):
-            reward = 0
-
-            # Arrive Goal
-            if agv.pos == agv.goal:
-                reward += 100
-
-            # Wall Collision & Deadlock
-            # if agv.mode == 1 or agv.mode == 2:
-            #     reward -= 10
-                
-            # Action penalty
-            reward -= 0.2 
-            
-            total_reward.append(reward)
-
-        return total_reward
 
     # Single Process Step
     def Run(self):

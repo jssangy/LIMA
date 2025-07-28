@@ -15,15 +15,26 @@ class DStar:
         self.rhs = {}        # Estimated cost
         self.queue = []      # Priority queue
 
-        h, w = map.shape
+        self.initialize_graph()
+
+    def initialize_graph(self):
+        self.g.clear()
+        self.rhs.clear()
+        self.queue.clear()
+
+        h, w = self.map.shape
         for y in range(h):
             for x in range(w):
-                if map[y][x] == 0:  # Assuming 0 is free space
+                if self.map[y][x] == 0:
                     self.g[(x, y)] = float('inf')
                     self.rhs[(x, y)] = float('inf')
 
         self.rhs[self.goal] = 0
         self.insert(self.goal)
+
+    def update_goal(self, new_goal):
+        self.goal = new_goal
+        self.initialize_graph()
 
     def manhattan(self, a, b):
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
