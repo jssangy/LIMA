@@ -5,15 +5,15 @@ from Intersection import Intersection
 
 class controller():    
     def __init__(self, agv_num, map, agv_list, tasks, intersections):
-        self.agv_pos = {} # save the position of agv positions
-        self.control_buffer = {} # save the D* algorithm based control output of agvs
-        self.agv_state = {} # 0(start - pick up) 1(pick up - drop) 2(drop - rest) 3(rest - start)
-        self.agv_nums = [] # agv numbers (0, 1, 2, ...)
-        self.agv_mode = {} # 0 (normal) 1 (Danger)
-        self.agv_goal = {} # goal position of all agvs
-        self.agv_info = {} # for GUI information
-        self.planners = {} # D* class for each AGV
-        self.agv_path = {} # save the path of each AGV
+        self.agv_pos = {}               # save the position of agv positions
+        self.control_buffer = {}        # save the D* algorithm based control output of agvs
+        self.agv_state = {}             # 0(start - pick up) 1(pick up - drop) 2(drop - rest) 3(rest - start)
+        self.agv_nums = []              # agv numbers (0, 1, 2, ...)
+        self.agv_mode = {}              # 0 (normal) 1 (Danger)
+        self.agv_goal = {}              # goal position of all agvs
+        self.agv_info = {}              # for GUI information
+        self.planners = {}              # D* class for each AGV
+        self.agv_path = {}              # save the path of each AGV
 
         self.running_opt = 0
         self.use_rl = False # Use RL agent for intersection control
@@ -122,7 +122,7 @@ class controller():
                 self.control_buffer[num] = (dx, dy)
             # If RL agent is used
             else:                   
-                self.control_buffer[num] = (0, 0)
+                
 
     def pibt_rout(self):
         agv_nums = self.agv_nums
