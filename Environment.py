@@ -5,8 +5,9 @@ from numpy.lib.stride_tricks import sliding_window_view
 
 from AGV import agv
 import Funct
-import Controller
 import Network
+from Controller import controller
+from Intersection import Intersection
 
 
 class ENV():    
@@ -31,28 +32,76 @@ class ENV():
         self.map = self.load_map(map_path)    
 
         # Find intersections in the map (x, y, len_N, len_E, len_S, len_W)
-        self.intersections = self.find_intersections()     
+        self.intersection_centers = self.find_intersections()
+        self.intersections = {}
         
         self.color = Funct.Color_dict(self.agv_num)        
         self.network = Network.network()
+
+        # Import tasks [[task_pick 0, task_drop 0], ...]
+        self.tasks = self.load_tasks(self.task_path)
         
         self.init_scenario()
     
     def init_scenario(self):
         self.time = 0
-        # Import tasks [[task_pick 0, task_drop 0], ...]
-        self.tasks = self.load_tasks(self.task_path)
-
+        
         # Import AGV start position
         self.agv_list = self.load_agents(self.agent_path)
         
         # Set controller
-        self.controller = Controller.controller(self.agv_num, self.map, self.agv_list, self.tasks, self.intersections)
+        self.controller = controller(self.agv_num, self.map, self.agv_list, self.tasks, self.intersection_centers)
+
+        # Set Intersection controller
+        for data in self.intersection_centers:
+            self.intersections[data] = Intersection(data, self.controller)
+
 
         return
 
     def reset(self):
         self.init_scenario()
+
+    def step(self, actions_dict):
+        # 1 time step (sec)  
+        self.time += 1
+        
+        # Stop with 1 hour
+        # if self.time == 1000:
+        #     return False
+        
+        # <1 Step>
+        # All AGVs send the sensor signal
+        for num, agv in self.agv_list.items():
+            # Send the signal to controller through network 
+            self.controller.get_sensing(num, self.network.send(agv.sensing()))
+        
+        # <2 Step>
+        # Controller sends the conntrol signal through network
+        self.controller.make_control()
+        
+        for id, action in actions_dict.items():
+            self.intersections[id].action_control(action)
+
+        control_sig = self.controller.get_control_sig()
+        for num, agv in self.agv_list.items():
+            agv.get_control(self.network.send([control_sig[0][num], control_sig[1][num]]))
+            
+        # <3 Step>
+        # All AGVs interacts with ENV!
+        for num, agv in self.agv_list.items():
+            # Possible Move
+            if (self.interact(agv, agv.next_pos()) == 0):
+                agv.move()
+                agv.goal = self.controller.agv_goal[num][self.controller.agv_state[num]]
+            # Collision with wall or move out of line
+            elif (self.interact(agv, agv.next_pos()) == 1):
+                pass                
+            # Collision with other AGVs
+            elif (self.interact(agv, agv.next_pos()) == 2):
+                pass
+
+        return self.make_info()
 
     # Single Process Step
     def Run(self):
@@ -71,7 +120,8 @@ class ENV():
         
         # <2 Step>
         # Controller sends the conntrol signal through network
-        control_sig = self.controller.make_control()
+        self.controller.make_control()
+        control_sig = self.controller.get_control_sig()
         for num, agv in self.agv_list.items():
             agv.get_control(self.network.send([control_sig[0][num], control_sig[1][num]]))
             
@@ -120,8 +170,6 @@ class ENV():
         
         return info_list
     
-    
-    # ======================== Use for GUI ========================
     def get_active_tasks(self):
         return self.controller.get_active_tasks()
 
@@ -238,3 +286,12 @@ class ENV():
                 intersections.append((c, r, len_N, len_E, len_S, len_W))
 
         return intersections
+    
+    def get_active_intersections(self):
+        active_ids = set()
+        for agv in self.agv_list.values():
+            for intersection in self.intersections.values():
+                if agv.pos in intersection.all_lane_coords:
+                    active_ids.add(intersection.id)
+
+        return [self.intersections[id] for id in active_ids]

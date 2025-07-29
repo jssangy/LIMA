@@ -13,10 +13,9 @@ class controller():
         self.agv_goal = {}              # goal position of all agvs
         self.agv_info = {}              # for GUI information
         self.planners = {}              # D* class for each AGV
-        self.agv_path = {}              # save the path of each AGV
+        self.agv_path = {}              # save the path of each AGV        
 
         self.running_opt = 0
-        self.use_rl = False # Use RL agent for intersection control
         
         # Whole Products
         self.whole_product = 0
@@ -94,6 +93,8 @@ class controller():
             self.dstar_rout()
         elif self.running_opt == 1:
             self.pibt_rout()
+
+    def get_control_sig(self):       
         return (self.control_buffer, self.agv_mode)
     
     def dstar_rout(self):
@@ -114,16 +115,12 @@ class controller():
             path = planner.extract_path()
             self.agv_path[num] = path
 
-            # If RL agent is not used
-            if self.use_rl == False: 
-                next_pos = path[1]
-                dx = next_pos[0] - pos[0]
-                dy = next_pos[1] - pos[1]
-                self.control_buffer[num] = (dx, dy)
-            # If RL agent is used
-            else:                   
-                
+            next_pos = path[1]
+            dx = next_pos[0] - pos[0]
+            dy = next_pos[1] - pos[1]
+            self.control_buffer[num] = (dx, dy)
 
+        
     def pibt_rout(self):
         agv_nums = self.agv_nums
         starts = [self.agv_pos[num] for num in agv_nums]

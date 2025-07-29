@@ -2,6 +2,7 @@ import numpy as np
 
 class Intersection:
     def __init__(self, intersection_data, controller_ref):
+        self.id = intersection_data
         self.center_x, self.center_y, self.len_N, self.len_E, self.len_S, self.len_W = intersection_data
         self.controller = controller_ref
         
@@ -24,27 +25,31 @@ class Intersection:
         state_vector = []
         center = (self.center_x, self.center_y)
 
-        agvs_on_lanes = {
+        self.agv_on_lanes = {
             num: pos for num, pos in self.controller.agv_pos.items()
             if pos in self.all_lane_coords
         }
 
+        self.agv_in_dir = {
+            'N': {}, 'E': {}, 'S': {}, 'W': {}
+        }
+
         for dir_name in directions:
-            agvs_in_dir = {
-                num: pos for num, pos in agvs_on_lanes.items() 
+            self.agv_in_dir[dir_name] = {
+                num: pos for num, pos in self.agv_on_lanes.items()
                 if pos in self.lane_coords[dir_name]
             }
 
             closest_agv_num = None
-            if agvs_in_dir:
+            if self.agv_in_dir[dir_name]:
                 if dir_name == 'N':
-                    closest_agv_num = max(agvs_in_dir, key=lambda num: agvs_in_dir[num][1])
+                    closest_agv_num = max(self.agv_in_dir[dir_name], key=lambda num: self.agv_in_dir[dir_name][num][1])
                 elif dir_name == 'E':
-                    closest_agv_num = min(agvs_in_dir, key=lambda num: agvs_in_dir[num][0])
+                    closest_agv_num = min(self.agv_in_dir[dir_name], key=lambda num: self.agv_in_dir[dir_name][num][0])
                 elif dir_name == 'S':
-                    closest_agv_num = min(agvs_in_dir, key=lambda num: agvs_in_dir[num][1])
+                    closest_agv_num = min(self.agv_in_dir[dir_name], key=lambda num: self.agv_in_dir[dir_name][num][1])
                 elif dir_name == 'W':
-                    closest_agv_num = max(agvs_in_dir, key=lambda num: agvs_in_dir[num][0])
+                    closest_agv_num = max(self.agv_in_dir[dir_name], key=lambda num: self.agv_in_dir[dir_name][num][0])
 
             exit_onehot = [0, 0, 0, 0]
             deadlock = 0
@@ -87,12 +92,15 @@ class Intersection:
 
         center_occupied = 0
         center_agv_direction = [0, 0, 0, 0]
+        self.center_agv = None
 
-        for num, pos in agvs_on_lanes.items():
+        for num, pos in self.agv_on_lanes.items():
             if pos == center:
+                self.center_agv = num
                 center_occupied = 1
                 path = self.controller.agv_path.get(num, [])
                 dx, dy = path[1][0] - center[0], path[1][1] - center[1]
+
                 if dx == 0 and dy > 0:
                     center_agv_direction[0] = 1
                 elif dx > 0 and dy == 0:
@@ -101,11 +109,49 @@ class Intersection:
                     center_agv_direction[2] = 1
                 elif dx < 0 and dy == 0:
                     center_agv_direction[3] = 1
+                
+                break
 
         state_vector.append(center_occupied)
         state_vector.extend(center_agv_direction)
 
         return np.array(state_vector, dtype=np.float32)
     
-    def step(self):
-        pass
+    def action_control(self, actions):
+        repulsive_forces = actions[:4]
+        center_direction_onehot = actions[4:]
+
+        center = (self.center_x, self.center_y)
+        attractive_force = -1
+        force_map = {'N': repulsive_forces[0], 'E': repulsive_forces[1], 
+                     'S': repulsive_forces[2], 'W': repulsive_forces[3]}
+
+        for dir_name, agvs in self.agv_in_dir.items():
+            repulsive_force = force_map[dir_name]
+            total_force = repulsive_force + attractive_force
+
+            for agv_num, agv_pos in agvs.items():
+                if total_force == 0: 
+                    self.controller.control_buffer[agv_num] = (0, 0)
+                elif total_force > 0: 
+                    dx = agv_pos[0] - center[0]
+                    dy = agv_pos[1] - center[1]
+                    move_dx = 1 if dx > 0 else -1 if dx < 0 else 0
+                    move_dy = 1 if dy > 0 else -1 if dy < 0 else 0
+                    self.controller.control_buffer[agv_num] = (move_dx, move_dy)
+
+        if self.center_agv is not None:
+            agv_num = self.center_agv
+            
+            center_direction_action = np.argmax(center_direction_onehot)
+
+            if center_direction_action == 0: # North
+                move = (0, 1)
+            elif center_direction_action == 1: # East
+                move = (1, 0)
+            elif center_direction_action == 2: # South
+                move = (0, -1)
+            elif center_direction_action == 3: # West
+                move = (-1, 0)
+            
+            self.controller.control_buffer[agv_num] = move

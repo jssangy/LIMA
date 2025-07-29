@@ -277,4 +277,4 @@ class GUI():
             self.append_log("Intersection RL Agent ON")
         else:
             self.append_log("Intersection RL Agent OFF")
-        self.env.controller.use_rl = self.rl_agent_var.get()
+        self.env.use_rl = self.rl_agent_var.get()
