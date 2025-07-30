@@ -122,8 +122,20 @@ class Intersection:
         attractive_force = -1
         force_map = {'N': repulsive_forces[0], 'E': repulsive_forces[1], 
                      'S': repulsive_forces[2], 'W': repulsive_forces[3]}
+        
+        agv_on_lanes = {
+            num: pos for num, pos in self.controller.agv_pos.items()
+            if pos in self.all_lane_coords
+        }
 
-        for dir_name, agvs in self.agv_in_dir.items():
+        agv_in_dir = {'N': {}, 'E': {}, 'S': {}, 'W': {}}
+        for dir_name in ['N', 'E', 'S', 'W']:
+            agv_in_dir[dir_name] = {
+                num: pos for num, pos in agv_on_lanes.items()
+                if pos in self.lane_coords[dir_name]
+            }
+
+        for dir_name, agvs in agv_in_dir.items():
             repulsive_force = force_map[dir_name]
             total_force = repulsive_force + attractive_force
 

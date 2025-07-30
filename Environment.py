@@ -76,10 +76,8 @@ class ENV():
         
         # <2 Step>
         # Controller sends the conntrol signal through network
-        self.controller.make_control()
-        
+        self.controller.make_control()        
         self.intersection.action_control(action)
-
         control_sig = self.controller.get_control_sig()
         for num, agv in self.agv_list.items():
             agv.get_control(self.network.send([control_sig[0][num], control_sig[1][num]]))

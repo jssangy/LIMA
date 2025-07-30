@@ -1,6 +1,7 @@
 import torch
 import argparse
 from tqdm import tqdm
+import numpy as np
 
 # TorchRL 모듈 임포트
 from torchrl.collectors import SyncDataCollector
@@ -74,6 +75,7 @@ def main(args):
     policy = actor_value_module.get_policy_operator()
     value_module = actor_value_module.get_value_operator()
 
+
     # --- 4. 데이터 수집기 및 리플레이 버퍼 설정 ---
     collector = SyncDataCollector(
         env,
@@ -81,11 +83,11 @@ def main(args):
         frames_per_batch=args.frames_per_batch,
         total_frames=args.total_frames,
         device=DEVICE,
-        storing_device=DEVICE,
+        storing_device=DEVICE
     )
 
     replay_buffer = TensorDictReplayBuffer(
-        storage=LazyTensorStorage(max_size=args.frames_per_batch),
+        storage=LazyTensorStorage(max_size=args.frames_per_batch, device=DEVICE),
         batch_size=args.mini_batch_size,
     )
 
@@ -153,7 +155,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PPO Training Script for DAA-CPS")
     parser.add_argument('--problem', '-p', type=str, default='problems/cross/cross_1.json', help='Path to the problem file')
     parser.add_argument("--total_frames", type=int, default=500_000, help="Total frames to train for")
-    parser.add_argument("--frames_per_batch", type=int, default=2048, help="Frames collected per data collection phase")
+    parser.add_argument("--frames_per_batch", type=int, default=128, help="Frames collected per data collection phase")
     parser.add_argument("--mini_batch_size", type=int, default=64, help="Mini-batch size for training updates")
     parser.add_argument("--num_epochs", type=int, default=10, help="Number of epochs to train on each batch of data")
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
