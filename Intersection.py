@@ -53,7 +53,7 @@ class Intersection:
 
             exit_onehot = [0, 0, 0, 0]
             deadlock = 0
-            min_dist = -1
+            min_dist = 0
             path = self.controller.agv_path.get(closest_agv_num, [])
 
             if closest_agv_num is not None:
@@ -90,14 +90,12 @@ class Intersection:
 
             state_vector.extend(exit_onehot + [min_dist, deadlock])
 
-        center_occupied = 0
         center_agv_direction = [0, 0, 0, 0]
         self.center_agv = None
 
         for num, pos in self.agv_on_lanes.items():
             if pos == center:
                 self.center_agv = num
-                center_occupied = 1
                 path = self.controller.agv_path.get(num, [])
                 dx, dy = path[1][0] - center[0], path[1][1] - center[1]
 
@@ -112,14 +110,13 @@ class Intersection:
                 
                 break
 
-        state_vector.append(center_occupied)
         state_vector.extend(center_agv_direction)
 
         return np.array(state_vector, dtype=np.float32)
     
     def action_control(self, actions):
         repulsive_forces = actions[:4]
-        center_direction_onehot = actions[4:]
+        center_direction_action = actions[4]
 
         center = (self.center_x, self.center_y)
         attractive_force = -1
@@ -142,8 +139,6 @@ class Intersection:
 
         if self.center_agv is not None:
             agv_num = self.center_agv
-            
-            center_direction_action = np.argmax(center_direction_onehot)
 
             if center_direction_action == 0: # North
                 move = (0, 1)

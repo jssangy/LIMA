@@ -33,7 +33,6 @@ class ENV():
 
         # Find intersections in the map (x, y, len_N, len_E, len_S, len_W)
         self.intersection_centers = self.find_intersections()
-        self.intersections = {}
         
         self.color = Funct.Color_dict(self.agv_num)        
         self.network = Network.network()
@@ -53,8 +52,7 @@ class ENV():
         self.controller = controller(self.agv_num, self.map, self.agv_list, self.tasks, self.intersection_centers)
 
         # Set Intersection controller
-        for data in self.intersection_centers:
-            self.intersections[data] = Intersection(data, self.controller)
+        self.intersection = Intersection(self.intersection_centers[0], self.controller)
 
 
         return
@@ -62,13 +60,13 @@ class ENV():
     def reset(self):
         self.init_scenario()
 
-    def step(self, actions_dict):
+    def step(self, action):
         # 1 time step (sec)  
         self.time += 1
-        
-        # Stop with 1 hour
-        # if self.time == 1000:
-        #     return False
+
+        if self.controller.task_count >= len(self.tasks):
+            print("All tasks completed.")
+            return False
         
         # <1 Step>
         # All AGVs send the sensor signal
@@ -80,8 +78,7 @@ class ENV():
         # Controller sends the conntrol signal through network
         self.controller.make_control()
         
-        for id, action in actions_dict.items():
-            self.intersections[id].action_control(action)
+        self.intersection.action_control(action)
 
         control_sig = self.controller.get_control_sig()
         for num, agv in self.agv_list.items():
@@ -107,10 +104,10 @@ class ENV():
     def Run(self):
         # 1 time step (sec)  
         self.time += 1
-        
-        # Stop with 1 hour
-        # if self.time == 1000:
-        #     return False
+
+        if self.controller.task_count >= len(self.tasks):
+            print("All tasks completed.")
+            return False
         
         # <1 Step>
         # All AGVs send the sensor signal
@@ -288,10 +285,6 @@ class ENV():
         return intersections
     
     def get_active_intersections(self):
-        active_ids = set()
-        for agv in self.agv_list.values():
-            for intersection in self.intersections.values():
-                if agv.pos in intersection.all_lane_coords:
-                    active_ids.add(intersection.id)
-
-        return [self.intersections[id] for id in active_ids]
+        # Since we assume a single intersection, we just return it in a list
+        # to maintain compatibility with gym_env.
+        return [self.intersection]

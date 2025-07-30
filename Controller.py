@@ -77,8 +77,8 @@ class controller():
                 self.set_drop(num, self.tasks[self.task_count][1])
                 self.task_count += 1
             else:
-                return      
-        
+                raise ValueError("No more tasks available for AGV {}".format(num))
+
         return self.agv_state[num]
 
     # Update data from sensing of agv

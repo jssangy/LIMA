@@ -10,5 +10,6 @@ matplotlib
 torchrl
 tensordict
 torch
+gymnasium=0.29
 # --extra-index-url https://download.pytorch.org/whl/cu128
 # torch==2.7.1+cu128
