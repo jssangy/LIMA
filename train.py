@@ -1,12 +1,12 @@
 import torch
 import argparse
 from tqdm import tqdm
-import numpy as np
 
 # TorchRL 모듈 임포트
 from torchrl.collectors import SyncDataCollector
 from torchrl.data.replay_buffers import TensorDictReplayBuffer
 from torchrl.data.replay_buffers.storages import LazyTensorStorage
+from torchrl.data.replay_buffers.samplers import SamplerWithoutReplacement
 from torchrl.envs.libs.gym import GymWrapper
 from torchrl.modules import ActorValueOperator, ProbabilisticActor
 from torchrl.modules.distributions import OneHotCategorical
@@ -35,12 +35,14 @@ def main(args):
 
     # 3.1 각 모듈을 생성하고 TensorDictModule으로 래핑합니다.
     # CommonNet은 교차로의 상태를 입력받아 공통 특징 벡터(hidden)를 출력합니다.
+    # Input: (B, 28) -> Output: (B, 128)
     common_net = CommonNet(state_dim).to(DEVICE)
     common_operator = TensorDictModule(
         module=common_net, in_keys=["observation"], out_keys=["hidden"]
     )
 
     # PolicyHead는 특징 벡터를 입력받아 교차로 제어를 위한 행동의 로짓(logits)을 출력합니다.
+    # Input: (B, 128) -> Output: (B, 5, 4)
     policy_net = PolicyHead().to(DEVICE)
     policy_logits = TensorDictModule(
         module=policy_net, in_keys=["hidden"], out_keys=["logits"]
@@ -54,7 +56,8 @@ def main(args):
         in_keys=["logits"],
         out_keys=["action"],
         distribution_class=OneHotCategorical,
-        return_log_prob=True
+        return_log_prob=True,
+        log_prob_key="log_prob",
     )
 
     # ValueHead는 특징 벡터를 입력받아 현재 상태의 가치(state_value)를 출력합니다.
@@ -83,12 +86,13 @@ def main(args):
         frames_per_batch=args.frames_per_batch,
         total_frames=args.total_frames,
         device=DEVICE,
-        storing_device=DEVICE
+        storing_device=DEVICE,
     )
 
     replay_buffer = TensorDictReplayBuffer(
         storage=LazyTensorStorage(max_size=args.frames_per_batch, device=DEVICE),
         batch_size=args.mini_batch_size,
+        sampler=SamplerWithoutReplacement(),
     )
 
     # --- 5. 손실 함수 및 옵티마이저 설정 ---
@@ -105,6 +109,7 @@ def main(args):
         clip_epsilon=args.clip_epsilon,
         entropy_coeff=args.entropy_coeff,
         loss_critic_type="l2",
+        log_prob_key="log_prob",
     )
     
     optimizer = torch.optim.Adam(loss_module.parameters(), lr=args.lr)
@@ -121,8 +126,8 @@ def main(args):
         with torch.no_grad():
             advantage_module(tensordict_data)
 
-        # 수집된 데이터를 리플레이 버퍼에 추가
-        replay_buffer.add(tensordict_data.view(-1))
+        replay_buffer.extend(tensordict_data.squeeze().reshape(-1))
+
 
         # PPO 업데이트
         for _ in range(args.num_epochs):
@@ -155,7 +160,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PPO Training Script for DAA-CPS")
     parser.add_argument('--problem', '-p', type=str, default='problems/cross/cross_1.json', help='Path to the problem file')
     parser.add_argument("--total_frames", type=int, default=500_000, help="Total frames to train for")
-    parser.add_argument("--frames_per_batch", type=int, default=128, help="Frames collected per data collection phase")
+    parser.add_argument("--frames_per_batch", type=int, default=256, help="Frames collected per data collection phase")
     parser.add_argument("--mini_batch_size", type=int, default=64, help="Mini-batch size for training updates")
     parser.add_argument("--num_epochs", type=int, default=10, help="Number of epochs to train on each batch of data")
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
