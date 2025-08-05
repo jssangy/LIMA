@@ -16,7 +16,6 @@ from torchrl.objectives.value import GAE
 from tensordict.nn import TensorDictModule
 
 # 직접 만든 환경 및 분리된 모델 임포트
-# 이 환경들은 이제 단일 교차로를 제어하는 것을 전제로 합니다.
 from gym_env import GymEnv
 from model import CommonNet, PolicyHead, ValueHead
 
@@ -32,96 +31,77 @@ def main(args):
 
     # --- 3. 액터-크리틱 모델 설정 ---
     state_dim = env.observation_spec["observation"].shape[-1]
-
     common_net = CommonNet(state_dim).to(DEVICE)
     common_operator = TensorDictModule(module=common_net, in_keys=["observation"], out_keys=["hidden"])
-
     policy_net = PolicyHead().to(DEVICE)
     policy_logits = TensorDictModule(module=policy_net, in_keys=["hidden"], out_keys=["logits"])
-
     policy_operator = ProbabilisticActor(
-        module=policy_logits,
-        spec=env.action_spec,
-        in_keys=["logits"],
-        out_keys=["action"],
-        distribution_class=OneHotCategorical,
-        return_log_prob=True,
-        log_prob_key="sample_log_prob",
+        module=policy_logits, spec=env.action_spec, in_keys=["logits"], out_keys=["action"],
+        distribution_class=OneHotCategorical, return_log_prob=True, log_prob_key="sample_log_prob",
     )
-
     value_net = ValueHead().to(DEVICE)
     value_operator = TensorDictModule(module=value_net, in_keys=["hidden"], out_keys=["state_value"])
-
     actor_value_module = ActorValueOperator(
-        common_operator=common_operator,
-        policy_operator=policy_operator,
-        value_operator=value_operator,
+        common_operator=common_operator, policy_operator=policy_operator, value_operator=value_operator,
     )
     policy = actor_value_module.get_policy_operator()
     value_module = actor_value_module.get_value_operator()
 
     # --- 4. 데이터 수집 및 버퍼 설정 ---
     collector = SyncDataCollector(
-        env,
-        policy,
-        frames_per_batch=args.frames_per_batch,
-        total_frames=args.total_frames,
-        device=DEVICE,
-        storing_device=DEVICE,
+        env, policy, frames_per_batch=args.frames_per_batch,
+        total_frames=args.total_frames, device=DEVICE, storing_device=DEVICE,
     )
-
     replay_buffer = TensorDictReplayBuffer(
         storage=LazyTensorStorage(max_size=args.frames_per_batch, device=DEVICE),
-        batch_size=args.mini_batch_size,
-        sampler=SamplerWithoutReplacement(),
+        batch_size=args.mini_batch_size, sampler=SamplerWithoutReplacement(),
     )
 
     # --- 5. 손실 함수 및 옵티마이저 설정 ---
     advantage_module = GAE(
-        gamma=args.gamma, 
-        lmbda=args.lmbda, 
-        value_network=value_module, 
-        average_gae=True
+        gamma=args.gamma, lmbda=args.lmbda, value_network=value_module, average_gae=True
     )
-
     loss_module = ClipPPOLoss(
-        actor=policy, 
-        critic=value_module, 
-        clip_epsilon=args.clip_epsilon, 
-        entropy_coeff=args.entropy_coeff, 
-        loss_critic_type="l2",
+        actor=policy, critic=value_module, clip_epsilon=args.clip_epsilon,
+        entropy_coeff=args.entropy_coeff, loss_critic_type="l2",
     )
-    
     optimizer = torch.optim.Adam(loss_module.parameters(), lr=args.lr)
 
-    # --- 6. 훈련 루프 (튜토리얼 기반) ---
+    # --- 6. 훈련 루프 ---
     logs = defaultdict(list)
     pbar = tqdm(total=args.total_frames)
-    eval_str = ""
     total_collected_frames = 0
 
     for i, tensordict_data in enumerate(collector):
-        # tensordict_data shape: [frames_per_batch, 1]
         total_collected_frames += tensordict_data.numel()
 
+        # 상태 벡터를 기반으로 교차로에 AGV가 있는 데이터만 필터링합니다.
+        obs = tensordict_data.get("observation")
+        is_active_mask = (
+            (obs[..., 4] > 0) | 
+            (obs[..., 10] > 0) | 
+            (obs[..., 16] > 0) | 
+            (obs[..., 22] > 0) | 
+            (torch.sum(obs[..., 24:28], dim=-1) > 0)
+        )
+        
+        processed_data = tensordict_data[is_active_mask]
+
+        # 필터링된 데이터가 없는 경우 훈련을 건너뜁니다.
+        if processed_data.numel() == 0:
+            pbar.update(tensordict_data.numel())
+            pbar.set_description(f"Iter {i+1}, Reward: N/A (Skipped Training)")
+            continue
+
+        # --- 훈련 로직 ---
         for _ in range(args.num_epochs):
-            keys_to_squeeze = ["action", "logits", "sample_log_prob"]
-            for key in keys_to_squeeze:
-                # tensordict_data[key]는 [256, 1, ...] 형태를 가집니다.
-                # .squeeze(1)을 통해 [256, ...] 형태로 바꿉니다.
-                tensordict_data.set(key, tensordict_data.get(key).squeeze(1))
-
-            # GAE는 매 에포크마다 재계산 (가치 함수가 업데이트되므로)
             with torch.no_grad():
-                advantage_module(tensordict_data)
+                advantage_module(processed_data)
 
-            # [핵심 수정] 튜토리얼 방식: 데이터를 1차원으로 펼쳐서 버퍼에 추가
-            # [256, 1] -> [256]
-            data_view = tensordict_data.reshape(-1)
+            data_view = processed_data.reshape(-1)
             replay_buffer.extend(data_view)
 
             for sub_data in replay_buffer:
-                # sub_data shape: [mini_batch_size]
                 loss_vals = loss_module(sub_data)
                 loss = (
                     loss_vals["loss_objective"]
@@ -133,16 +113,13 @@ def main(args):
                 optimizer.step()
                 optimizer.zero_grad()
             
-            # 다음 에포크를 위해 버퍼 비우기
             replay_buffer.empty()
 
-        # 로깅 및 진행 상황 업데이트
+        # --- 로깅 ---
         pbar.update(tensordict_data.numel())
-        reward = tensordict_data["next", "reward"].mean().item()
+        reward = processed_data["next", "reward"].mean().item()
         logs["reward"].append(reward)
-        
-        if (i + 1) % 10 == 0:
-            pbar.set_description(f"Iter {i+1}, Reward: {reward:.4f}")
+        pbar.set_description(f"Iter {i+1}, Reward: {reward:.4f}")
 
     collector.shutdown()
     pbar.close()

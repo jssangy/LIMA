@@ -286,3 +286,7 @@ class ENV():
         # Since we assume a single intersection, we just return it in a list
         # to maintain compatibility with gym_env.
         return [self.intersection]
+    
+    def is_intersection_empty(self):
+        """교차로가 비어있는지 여부를 반환합니다."""
+        return self.intersection.is_empty

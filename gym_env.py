@@ -38,8 +38,10 @@ class GymEnv(gym.Env):
         return obs, info
 
     def step(self, action):
-        print(f"Action taken: {action}")
         env_info = self.env.step(action[0])
+
+        for num, agv in self.env.agv_list.items():
+            self.env.controller.get_sensing(num, self.env.network.send(agv.sensing()))
 
         observation = self._get_observation()
         reward = self._calculate_reward(env_info)
@@ -54,7 +56,20 @@ class GymEnv(gym.Env):
         return np.array(state, dtype=np.float32)
 
     def _calculate_reward(self, env_info):
+        # 기본 타임스텝 페널티
         reward = -0.01
+
+        # Intersection 객체에서 발생한 탈출 이벤트들을 가져옴
+        for event in self.env.intersection.exit_events:
+            if event["correct"]:
+                # 올바른 방향으로 탈출 시 +1.0 보상
+                reward += 1.0
+            else:
+                # 잘못된 방향으로 탈출 시 -0.5 페널티
+                reward -= 0.5
+        
+        # 보상 계산 후 이벤트 리스트는 Intersection에서 자동으로 비워짐
+
         return reward
 
     def close(self):

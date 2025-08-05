@@ -13,3 +13,5 @@ torch
 gymnasium=0.29
 # --extra-index-url https://download.pytorch.org/whl/cu128
 # torch==2.7.1+cu128
+# torchrl ppo.py 수정
+# log_weight unsqueeze 삭제하기
