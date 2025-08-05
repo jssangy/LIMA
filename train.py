@@ -1,6 +1,7 @@
 import torch
 import argparse
 from tqdm import tqdm
+from collections import defaultdict
 
 # TorchRL 모듈 임포트
 from torchrl.collectors import SyncDataCollector
@@ -19,37 +20,25 @@ from tensordict.nn import TensorDictModule
 from gym_env import GymEnv
 from model import CommonNet, PolicyHead, ValueHead
 
+
 def main(args):
     # --- 1. 설정 및 초기화 ---
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {DEVICE}")
 
     # --- 2. 환경 생성 ---
-    # GymEnv는 단일 교차로의 상태를 관측하고, 단일 교차로에 대한 행동을 받습니다.
     base_env = GymEnv(prob_path=args.problem)
     env = GymWrapper(base_env, device=DEVICE)
 
-    # --- 3. 모델, 정책, 가치 함수 정의 ---
-    # 관측값(observation)은 단일 교차로의 상태 벡터입니다.
+    # --- 3. 액터-크리틱 모델 설정 ---
     state_dim = env.observation_spec["observation"].shape[-1]
 
-    # 3.1 각 모듈을 생성하고 TensorDictModule으로 래핑합니다.
-    # CommonNet은 교차로의 상태를 입력받아 공통 특징 벡터(hidden)를 출력합니다.
-    # Input: (B, 28) -> Output: (B, 128)
     common_net = CommonNet(state_dim).to(DEVICE)
-    common_operator = TensorDictModule(
-        module=common_net, in_keys=["observation"], out_keys=["hidden"]
-    )
+    common_operator = TensorDictModule(module=common_net, in_keys=["observation"], out_keys=["hidden"])
 
-    # PolicyHead는 특징 벡터를 입력받아 교차로 제어를 위한 행동의 로짓(logits)을 출력합니다.
-    # Input: (B, 128) -> Output: (B, 5, 4)
     policy_net = PolicyHead().to(DEVICE)
-    policy_logits = TensorDictModule(
-        module=policy_net, in_keys=["hidden"], out_keys=["logits"]
-    )
+    policy_logits = TensorDictModule(module=policy_net, in_keys=["hidden"], out_keys=["logits"])
 
-    # ProbabilisticActor는 로짓을 기반으로 실제 행동(action)을 샘플링합니다.
-    # env.action_spec은 GymEnv의 MultiDiscrete 공간에 맞춰 자동으로 생성됩니다.
     policy_operator = ProbabilisticActor(
         module=policy_logits,
         spec=env.action_spec,
@@ -57,29 +46,21 @@ def main(args):
         out_keys=["action"],
         distribution_class=OneHotCategorical,
         return_log_prob=True,
-        log_prob_key="log_prob",
+        log_prob_key="sample_log_prob",
     )
 
-    # ValueHead는 특징 벡터를 입력받아 현재 상태의 가치(state_value)를 출력합니다.
     value_net = ValueHead().to(DEVICE)
-    value_operator = TensorDictModule(
-        module=value_net, in_keys=["hidden"], out_keys=["state_value"]
-    )
+    value_operator = TensorDictModule(module=value_net, in_keys=["hidden"], out_keys=["state_value"])
 
-    # 3.2 세 개의 래핑된 모듈을 ActorValueOperator로 조립합니다.
-    # 이는 observation -> hidden -> (logits, state_value) -> (action, state_value)의 전체 흐름을 담당합니다.
     actor_value_module = ActorValueOperator(
         common_operator=common_operator,
         policy_operator=policy_operator,
         value_operator=value_operator,
     )
-
-    # 훈련에 사용할 전체 정책 및 가치 평가 모듈을 가져옵니다.
     policy = actor_value_module.get_policy_operator()
     value_module = actor_value_module.get_value_operator()
 
-
-    # --- 4. 데이터 수집기 및 리플레이 버퍼 설정 ---
+    # --- 4. 데이터 수집 및 버퍼 설정 ---
     collector = SyncDataCollector(
         env,
         policy,
@@ -97,41 +78,50 @@ def main(args):
 
     # --- 5. 손실 함수 및 옵티마이저 설정 ---
     advantage_module = GAE(
-        gamma=args.gamma,
-        lmbda=args.lmbda,
-        value_network=value_module,
-        average_gae=True,
+        gamma=args.gamma, 
+        lmbda=args.lmbda, 
+        value_network=value_module, 
+        average_gae=True
     )
 
     loss_module = ClipPPOLoss(
-        actor=policy,
-        critic=value_module,
-        clip_epsilon=args.clip_epsilon,
-        entropy_coeff=args.entropy_coeff,
+        actor=policy, 
+        critic=value_module, 
+        clip_epsilon=args.clip_epsilon, 
+        entropy_coeff=args.entropy_coeff, 
         loss_critic_type="l2",
-        log_prob_key="log_prob",
     )
     
     optimizer = torch.optim.Adam(loss_module.parameters(), lr=args.lr)
 
-    # --- 6. 훈련 루프 ---
+    # --- 6. 훈련 루프 (튜토리얼 기반) ---
+    logs = defaultdict(list)
     pbar = tqdm(total=args.total_frames)
+    eval_str = ""
     total_collected_frames = 0
 
     for i, tensordict_data in enumerate(collector):
+        # tensordict_data shape: [frames_per_batch, 1]
         total_collected_frames += tensordict_data.numel()
-        pbar.update(tensordict_data.numel())
 
-        # GAE 계산
-        with torch.no_grad():
-            advantage_module(tensordict_data)
-
-        replay_buffer.extend(tensordict_data.squeeze().reshape(-1))
-
-
-        # PPO 업데이트
         for _ in range(args.num_epochs):
+            keys_to_squeeze = ["action", "logits", "sample_log_prob"]
+            for key in keys_to_squeeze:
+                # tensordict_data[key]는 [256, 1, ...] 형태를 가집니다.
+                # .squeeze(1)을 통해 [256, ...] 형태로 바꿉니다.
+                tensordict_data.set(key, tensordict_data.get(key).squeeze(1))
+
+            # GAE는 매 에포크마다 재계산 (가치 함수가 업데이트되므로)
+            with torch.no_grad():
+                advantage_module(tensordict_data)
+
+            # [핵심 수정] 튜토리얼 방식: 데이터를 1차원으로 펼쳐서 버퍼에 추가
+            # [256, 1] -> [256]
+            data_view = tensordict_data.reshape(-1)
+            replay_buffer.extend(data_view)
+
             for sub_data in replay_buffer:
+                # sub_data shape: [mini_batch_size]
                 loss_vals = loss_module(sub_data)
                 loss = (
                     loss_vals["loss_objective"]
@@ -142,9 +132,17 @@ def main(args):
                 torch.nn.utils.clip_grad_norm_(loss_module.parameters(), max_norm=1.0)
                 optimizer.step()
                 optimizer.zero_grad()
+            
+            # 다음 에포크를 위해 버퍼 비우기
+            replay_buffer.empty()
+
+        # 로깅 및 진행 상황 업데이트
+        pbar.update(tensordict_data.numel())
+        reward = tensordict_data["next", "reward"].mean().item()
+        logs["reward"].append(reward)
         
-        if (i+1) % 10 == 0:
-            print(f"\nIter {i+1}, Frames {total_collected_frames}: loss={loss.item():.4f}")
+        if (i + 1) % 10 == 0:
+            pbar.set_description(f"Iter {i+1}, Reward: {reward:.4f}")
 
     collector.shutdown()
     pbar.close()
@@ -154,7 +152,6 @@ def main(args):
     torch.save(policy.state_dict(), 'ppo_policy.pth')
     torch.save(value_module.state_dict(), 'ppo_value.pth')
     print("Saved models to ppo_policy.pth and ppo_value.pth")
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PPO Training Script for DAA-CPS")
