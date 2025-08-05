@@ -2,6 +2,7 @@ import torch
 import argparse
 from tqdm import tqdm
 from collections import defaultdict
+import wandb  # [추가]
 
 # TorchRL 모듈 임포트
 from torchrl.collectors import SyncDataCollector
@@ -24,6 +25,13 @@ def main(args):
     # --- 1. 설정 및 초기화 ---
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {DEVICE}")
+
+    # [추가] wandb 초기화
+    wandb.init(
+        project="DAA-CPS-PPO",  # wandb 프로젝트 이름 (원하는 대로 변경 가능)
+        config=vars(args),      # 하이퍼파라미터를 wandb에 저장
+        name=f"ppo_run_{wandb.util.generate_id()}" # 실행(run)의 고유 이름 생성
+    )
 
     # --- 2. 환경 생성 ---
     base_env = GymEnv(prob_path=args.problem)
@@ -87,13 +95,18 @@ def main(args):
         
         processed_data = tensordict_data[is_active_mask]
 
-        # 필터링된 데이터가 없는 경우 훈련을 건너뜁니다.
         if processed_data.numel() == 0:
             pbar.update(tensordict_data.numel())
             pbar.set_description(f"Iter {i+1}, Reward: N/A (Skipped Training)")
             continue
 
         # --- 훈련 로직 ---
+        # [추가] 로깅을 위한 손실 값 누적 변수
+        total_loss_objective = 0
+        total_loss_critic = 0
+        total_loss_entropy = 0
+        update_count = 0
+
         for _ in range(args.num_epochs):
             with torch.no_grad():
                 advantage_module(processed_data)
@@ -112,14 +125,30 @@ def main(args):
                 torch.nn.utils.clip_grad_norm_(loss_module.parameters(), max_norm=1.0)
                 optimizer.step()
                 optimizer.zero_grad()
+
+                # [추가] 손실 값 누적
+                total_loss_objective += loss_vals["loss_objective"].item()
+                total_loss_critic += loss_vals["loss_critic"].item()
+                total_loss_entropy += loss_vals["loss_entropy"].item()
+                update_count += 1
             
             replay_buffer.empty()
 
         # --- 로깅 ---
         pbar.update(tensordict_data.numel())
-        reward = processed_data["next", "reward"].mean().item()
-        logs["reward"].append(reward)
-        pbar.set_description(f"Iter {i+1}, Reward: {reward:.4f}")
+        avg_reward = processed_data["next", "reward"].mean().item()
+        logs["reward"].append(avg_reward)
+        pbar.set_description(f"Iter {i+1}, Reward: {avg_reward:.4f}")
+
+        # [추가] wandb에 로그 기록
+        if update_count > 0:
+            wandb.log({
+                "reward": avg_reward,
+                "loss/objective": total_loss_objective / update_count,
+                "loss/critic": total_loss_critic / update_count,
+                "loss/entropy": total_loss_entropy / update_count,
+            }, step=total_collected_frames)
+
 
     collector.shutdown()
     pbar.close()
@@ -129,6 +158,10 @@ def main(args):
     torch.save(policy.state_dict(), 'ppo_policy.pth')
     torch.save(value_module.state_dict(), 'ppo_value.pth')
     print("Saved models to ppo_policy.pth and ppo_value.pth")
+
+    # [추가] wandb 실행 종료
+    wandb.finish()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PPO Training Script for DAA-CPS")
