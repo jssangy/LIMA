@@ -2,6 +2,7 @@ import os
 import json
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
+import torch
 
 from AGV import agv
 import Funct
@@ -40,6 +41,10 @@ class ENV():
         # Import tasks [[task_pick 0, task_drop 0], ...]
         self.tasks = self.load_tasks(self.task_path)
         
+        # RL 정책 관련 설정
+        self.rl_policy = None
+        self.use_rl = False
+        
         self.init_scenario()
     
     def init_scenario(self):
@@ -54,13 +59,73 @@ class ENV():
         # Set Intersection controller
         self.intersection = Intersection(self.intersection_centers[0], self.controller)
 
-
         return
 
     def reset(self):
         self.init_scenario()
+    
+    def set_rl_policy(self, policy):
+        """RL 정책을 설정합니다. 사용 여부는 별도로 제어됩니다."""
+        self.rl_policy = policy
+        # use_rl은 GUI에서 체크박스로 제어하므로 여기서 설정하지 않음
+    
+    def get_observation_for_rl(self):
+        """RL을 위한 관찰 상태를 반환합니다."""
+        if not self.use_rl or not self.intersection:
+            return None
+        return self.intersection.get_state()
+    
+    def get_rl_action(self):
+        """RL 정책을 사용해 액션을 생성합니다."""
+        if not self.use_rl or not self.rl_policy:
+            return [0, 0, 0, 0, 0]  # 기본 액션 (모든 힘 0)
+        
+        observation = self.get_observation_for_rl()
+        if observation is None:
+            return [0, 0, 0, 0, 0]
+        
+        # 모델이 있는 디바이스 확인
+        device = next(self.rl_policy.parameters()).device
+        
+        with torch.no_grad():
+            # 관찰값을 텐서로 변환하고 모델과 같은 디바이스로 이동
+            obs_tensor = torch.FloatTensor(observation).unsqueeze(0).to(device)
+            
+            # TensorDict 형태로 변환 (TorchRL 모델은 TensorDict를 입력으로 받음)
+            from tensordict import TensorDict
+            td_input = TensorDict({"observation": obs_tensor}, batch_size=[1])
+            
+            # 모델 실행
+            td_output = self.rl_policy(td_input)
+            
+            # 액션 추출
+            if "action" in td_output.keys():
+                action_tensor = td_output["action"]
+            else:
+                # 키가 없는 경우 기본 액션 반환
+                return [0, 0, 0, 0, 0]
+            
+            # [핵심 수정] 원핫 벡터를 정수 인덱스로 변환
+            action_tensor = action_tensor.cpu().squeeze()  # GPU -> CPU, 배치 차원 제거
+            
+            # OneHot 벡터가 2차원인 경우 ([5, 4] 형태)
+            if action_tensor.dim() == 2:
+                # 각 행에서 최대값의 인덱스를 찾아 정수 액션으로 변환
+                action_indices = torch.argmax(action_tensor, dim=1).tolist()
+                print(f"RL Action (converted): {action_indices}")
+                return action_indices
+            
+            # 1차원인 경우 (이미 인덱스 형태)
+            elif action_tensor.dim() == 1:
+                action_indices = action_tensor.tolist()
+                print(f"RL Action (already indices): {action_indices}")
+                return action_indices
+            
+            else:
+                print(f"Unexpected action tensor shape: {action_tensor.shape}")
+                return [0, 0, 0, 0, 0]
 
-    def step(self, action):
+    def step(self, action=None, test_mode=False):
         # 1 time step (sec)  
         self.time += 1
 
@@ -76,8 +141,15 @@ class ENV():
         
         # <2 Step>
         # Controller sends the conntrol signal through network
-        self.controller.make_control()        
-        self.intersection.action_control(action)
+        self.controller.make_control()
+        
+        if action is not None:
+            self.intersection.action_control(action)
+        # GUI 모드에서 RL 사용 시에만 자체 액션 생성
+        elif test_mode and self.use_rl and self.rl_policy:
+            action = self.get_rl_action()
+            self.intersection.action_control(action)
+
         control_sig = self.controller.get_control_sig()
         for num, agv in self.agv_list.items():
             agv.get_control(self.network.send([control_sig[0][num], control_sig[1][num]]))

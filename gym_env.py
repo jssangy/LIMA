@@ -46,6 +46,8 @@ class GymEnv(gym.Env):
         observation = self._get_observation()
         reward = self._calculate_reward(env_info)
         terminated = not env_info
+        if terminated:
+            print("Reset Environment.")
         truncated = False
         info = {}
 

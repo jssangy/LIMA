@@ -87,7 +87,8 @@ class GUI():
             font=self.font_style2,
             command=self.rl_agent_toggled
         )
-        self.rl_agent_var.set(False)
+        # Environment의 RL 사용 여부에 따라 초기값 설정
+        self.rl_agent_var.set(getattr(self.env, 'use_rl', False))
         
         # State (Right side)
         self.state = tk.Frame(self.win_frame, width = 400, height = 350, highlightbackground = '#595959', highlightthickness=2)   
@@ -202,7 +203,7 @@ class GUI():
     # Run environment
     def run_env(self, event = None):
         if self.running_check:
-            run = self.env.Run()
+            run = self.env.step(test_mode=True)
             if run == False:
                 self.running_check = False
             self.make_state_info(run)
@@ -274,7 +275,14 @@ class GUI():
 
     def rl_agent_toggled(self):
         if self.rl_agent_var.get():
-            self.append_log("Intersection RL Agent ON")
+            # RL 정책이 로드되어 있는지 확인
+            if hasattr(self.env, 'rl_policy') and self.env.rl_policy is not None:
+                self.env.use_rl = True
+                self.append_log("Intersection RL Agent ON")
+            else:
+                # 정책이 없으면 경고 메시지와 함께 체크박스 해제
+                self.append_log("Warning: No RL policy loaded!")
+                self.rl_agent_var.set(False)
         else:
+            self.env.use_rl = False
             self.append_log("Intersection RL Agent OFF")
-        self.env.use_rl = self.rl_agent_var.get()
