@@ -84,6 +84,8 @@ class ENV():
         if observation is None:
             return [0, 0, 0, 0, 0]
         
+        print(f"RL State: {observation}")
+        
         # 모델이 있는 디바이스 확인
         device = next(self.rl_policy.parameters()).device
         
@@ -130,7 +132,6 @@ class ENV():
         self.time += 1
 
         if self.controller.task_count >= len(self.tasks):
-            print("All tasks completed.")
             return False
         
         # <1 Step>

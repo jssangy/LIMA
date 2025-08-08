@@ -177,7 +177,7 @@ class Intersection:
 
         # --- 2. 중앙 AGV 제어 ---
         if self.center_agv is not None:
-            move_map = {0: (0, -1), 1: (1, 0), 2: (0, 1), 3: (-1, 0)} # N, E, S, W
+            move_map = {0: (0, 1), 1: (1, 0), 2: (0, -1), 3: (-1, 0)} # N, E, S, W
             move = move_map[center_direction_action]
             self.controller.control_buffer[self.center_agv] = move
 
@@ -194,6 +194,8 @@ class Intersection:
             num: pos for num, pos in self.controller.agv_pos.items()
             if pos in self.all_lane_coords
         }
+
+        self.agv_on_lanes = current_agvs_inside
 
         # 2. 이전 스텝과 비교하여 '방금 탈출한' AGV를 식별
         exited_agv_nums = set(self.agvs_inside_last_step.keys()) - set(current_agvs_inside.keys())

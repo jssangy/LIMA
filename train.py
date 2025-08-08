@@ -1,3 +1,4 @@
+import os
 import torch
 import argparse
 from tqdm import tqdm
@@ -5,7 +6,7 @@ from collections import defaultdict
 import wandb  # [추가]
 
 # TorchRL 모듈 임포트
-from torchrl.collectors import MultiaSyncDataCollector
+from torchrl.collectors import SyncDataCollector  # [변경]
 from torchrl.data.replay_buffers import TensorDictReplayBuffer
 from torchrl.data.replay_buffers.storages import LazyTensorStorage
 from torchrl.data.replay_buffers.samplers import SamplerWithoutReplacement
@@ -24,7 +25,6 @@ from model import CommonNet, PolicyHead, ValueHead
 def main(args):
     # --- 1. 설정 및 초기화 ---
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    num_workers = min(4, torch.cuda.device_count())  # GPU 개수에 따라 워커 수 조정
 
     # [추가] wandb 초기화
     wandb.init(
@@ -59,17 +59,17 @@ def main(args):
     value_module = actor_value_module.get_value_operator()
 
     # --- 4. 데이터 수집 및 버퍼 설정 ---
-    collector = MultiaSyncDataCollector(
-        [make_env] * num_workers,  # num_workers 개수만큼 환경을 실행
+    collector = SyncDataCollector(  # [변경]
+        env,  # [변경] 단일 환경 사용
         policy, 
-        frames_per_batch=args.frames_per_batch * num_workers,
+        frames_per_batch=args.frames_per_batch,  # [변경] num_workers 곱하기 제거
         total_frames=args.total_frames, 
         device=DEVICE, 
         storing_device=DEVICE,
     )
     replay_buffer = TensorDictReplayBuffer(
-        storage=LazyTensorStorage(max_size=args.frames_per_batch * num_workers, device=DEVICE),
-        batch_size=args.mini_batch_size * num_workers, 
+        storage=LazyTensorStorage(max_size=args.frames_per_batch, device=DEVICE),  # [변경]
+        batch_size=args.mini_batch_size,  # [변경] num_workers 곱하기 제거
         sampler=SamplerWithoutReplacement(),
     )
 
@@ -163,6 +163,7 @@ def main(args):
     print("Training finished.")
     
     # --- 7. 모델 저장 ---
+    os.makedirs('checkpoint', exist_ok=True)
     torch.save(policy.state_dict(), 'checkpoint/ppo_policy.pth')
     torch.save(value_module.state_dict(), 'checkpoint/ppo_value.pth')
     print("Saved models to checkpoint/ppo_policy.pth and checkpoint/ppo_value.pth")
