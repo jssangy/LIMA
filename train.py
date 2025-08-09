@@ -1,4 +1,5 @@
 import os
+import time
 import torch
 import argparse
 from tqdm import tqdm
@@ -28,12 +29,18 @@ def main(args):
     wandb.init(
         project="DAA-CPS-PPO",
         config=vars(args),
-        name=f"ppo_run_{wandb.util.generate_id()}",
+        name=args.exp_name or f"ppo_run_{wandb.util.generate_id()}",
     )
+
+    # 저장 경로 결정
+    run_name = args.exp_name or (wandb.run.name if wandb.run is not None else f"run_{int(time.time())}")
+    save_dir = os.path.join(args.save_dir, run_name)
+    os.makedirs(save_dir, exist_ok=True)
 
     # --- 2. 환경 생성 ---
     base_env = GymEnv(prob_path=args.problem)
     env = GymWrapper(base_env, device=DEVICE)
+    # Gym info['agv_in_intersection'] -> tensordict 로 올리기
     env.set_info_dict_reader(default_info_dict_reader(keys=["agv_in_intersection"]))
 
     # --- 3. 액터-크리틱 모델 설정 ---
@@ -74,7 +81,7 @@ def main(args):
         frames_per_batch=args.frames_per_batch,
         total_frames=args.total_frames,
         device=DEVICE,
-        storing_device=DEVICE,
+        storing_device=DEVICE,  # 메모리 아끼려면 "cpu"로 변경 가능
     )
     replay_buffer = TensorDictReplayBuffer(
         storage=LazyTensorStorage(max_size=args.frames_per_batch, device=DEVICE),
@@ -95,10 +102,31 @@ def main(args):
     )
     optimizer = torch.optim.Adam(loss_module.parameters(), lr=args.lr)
 
+    # 체크포인트 유틸
+    def save_ckpt(tag: str, frames: int):
+        tmp_pol = os.path.join(save_dir, f"policy_{tag}.pth.tmp")
+        tmp_val = os.path.join(save_dir, f"value_{tag}.pth.tmp")
+        torch.save(policy.state_dict(), tmp_pol)
+        torch.save(value_module.state_dict(), tmp_val)
+        os.replace(tmp_pol, os.path.join(save_dir, f"policy_{tag}.pth"))
+        os.replace(tmp_val, os.path.join(save_dir, f"value_{tag}.pth"))
+        state = {
+            "config": vars(args),
+            "policy": policy.state_dict(),
+            "value": value_module.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "frames": frames,
+            "timestamp": time.time(),
+        }
+        tmp_all = os.path.join(save_dir, f"trainstate_{tag}.pt.tmp")
+        torch.save(state, tmp_all)
+        os.replace(tmp_all, os.path.join(save_dir, f"trainstate_{tag}.pt"))
+
     # --- 6. 훈련 루프 ---
     logs = defaultdict(list)
     pbar = tqdm(total=args.total_frames)
     total_collected_frames = 0
+    best_metric = float("-inf")
 
     for i, tensordict_data in enumerate(collector):
         total_collected_frames += tensordict_data.numel()
@@ -112,8 +140,12 @@ def main(args):
             if k in tensordict_data.keys(True, True):
                 tensordict_data.set_(k, tensordict_data.get(k).detach())
 
+        # (C) 현재 상태 기준 게이트 마스크 (교차로일 때만 Actor 업데이트)
         gate_mask = tensordict_data.get("agv_in_intersection").bool()
         tensordict_data.set("gate_mask", gate_mask)
+        # 선택: 게이트 비율 로깅
+        if gate_mask.numel() > 0:
+            wandb.log({"gate/active_ratio": gate_mask.float().mean().item()}, step=total_collected_frames)
 
         # --- 훈련 로직 ---
         total_loss_objective = 0.0
@@ -122,7 +154,7 @@ def main(args):
         update_count = 0
 
         for _ in range(args.num_epochs):
-            # 전체 배치를 평탄화하여 버퍼에 넣고, 미니배치마다 게이팅
+            # 배치 평탄화 → 버퍼에 넣고, 미니배치마다 게이팅
             data_view = tensordict_data.reshape(-1)
             replay_buffer.extend(data_view)
 
@@ -137,15 +169,13 @@ def main(args):
                         + loss_vals_actor["loss_entropy"]
                     )
                 else:
-                    # 교차로 샘플이 없으면 정책 손실은 0
                     loss_pi = torch.tensor(0.0, device=DEVICE, requires_grad=True)
-                    # 로깅용 더미
                     loss_vals_actor = {
                         "loss_objective": torch.tensor(0.0, device=DEVICE),
                         "loss_entropy": torch.tensor(0.0, device=DEVICE),
                     }
 
-                # (2) 가치함수: 전체 샘플로
+                # (2) 가치함수: 전체 샘플
                 loss_vals_critic = loss_module(sub_data)
                 loss_v = loss_vals_critic["loss_critic"]
 
@@ -181,15 +211,22 @@ def main(args):
                 step=total_collected_frames,
             )
 
+        # 주기 저장
+        if args.save_every > 0 and (total_collected_frames % args.save_every == 0):
+            save_ckpt(f"step{total_collected_frames}", total_collected_frames)
+
+        # best 저장 (현재는 avg_reward 기준 — 필요시 throughput 기준으로 교체)
+        if avg_reward > best_metric:
+            best_metric = avg_reward
+            save_ckpt("best", total_collected_frames)
+
     collector.shutdown()
     pbar.close()
     print("Training finished.")
 
-    # --- 7. 모델 저장 ---
-    os.makedirs("checkpoint", exist_ok=True)
-    torch.save(policy.state_dict(), "checkpoint/ppo_policy.pth")
-    torch.save(value_module.state_dict(), "checkpoint/ppo_value.pth")
-    print("Saved models to checkpoint/ppo_policy.pth and checkpoint/ppo_value.pth")
+    # 마지막 저장
+    save_ckpt("last", total_collected_frames)
+    print(f"Saved checkpoints to {save_dir}")
 
     wandb.finish()
 
@@ -231,6 +268,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--entropy_coeff", type=float, default=0.01, help="Entropy coefficient for loss"
     )
+    # 체크포인트 옵션
+    parser.add_argument("--save_dir", type=str, default="artifacts", help="루트 저장 폴더")
+    parser.add_argument("--exp_name", type=str, default=None, help="저장/로그용 런 이름(없으면 wandb.run.name)")
+    parser.add_argument("--save_every", type=int, default=0, help="N 프레임마다 주기 저장(0이면 비활성)")
 
     args = parser.parse_args()
     main(args)
