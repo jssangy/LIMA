@@ -9,7 +9,7 @@ class GymEnv(gym.Env):
 
     def __init__(self, prob_path):
         super().__init__()
-        self.env = ENV(prob_path) 
+        self.env = ENV(prob_path)
 
         low = []
         high = []
@@ -23,7 +23,7 @@ class GymEnv(gym.Env):
             low=np.array(low, dtype=np.float32),
             high=np.array(high, dtype=np.float32),
             shape=(28,),
-            dtype=np.float32
+            dtype=np.float32,
         )
 
         self.action_space = spaces.MultiDiscrete([4, 4, 4, 4, 4])
@@ -31,10 +31,9 @@ class GymEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.env.reset()
-        
-        obs = self._get_observation()
-        info = {}
-        
+
+        obs = self._get_observation().astype(np.float32, copy=False)
+        info = {"agv_in_intersection": np.array(self._agv_in_intersection(), dtype=np.int8)}
         return obs, info
 
     def step(self, action):
@@ -43,11 +42,11 @@ class GymEnv(gym.Env):
         for num, agv in self.env.agv_list.items():
             self.env.controller.get_sensing(num, self.env.network.send(agv.sensing()))
 
-        observation = self._get_observation()
-        reward = self._calculate_reward(env_info)
-        terminated = not env_info
+        observation = self._get_observation().astype(np.float32, copy=False)
+        reward = float(self._calculate_reward(env_info))
+        terminated = bool(not env_info)
         truncated = False
-        info = {}
+        info = {"agv_in_intersection": np.array(self._agv_in_intersection(), dtype=np.int8)}
 
         return observation, reward, terminated, truncated, info
 
@@ -56,21 +55,17 @@ class GymEnv(gym.Env):
         return np.array(state, dtype=np.float32)
 
     def _calculate_reward(self, env_info):
-        # 기본 타임스텝 페널티
         reward = -0.01
-
-        # Intersection 객체에서 발생한 탈출 이벤트들을 가져옴
         for event in self.env.intersection.exit_events:
             if event["correct"]:
-                # 올바른 방향으로 탈출 시 +1.0 보상
                 reward += 1.0
             else:
-                # 잘못된 방향으로 탈출 시 -0.5 페널티
                 reward -= 0.5
-        
-        # 보상 계산 후 이벤트 리스트는 Intersection에서 자동으로 비워짐
-
         return reward
+
+    def _agv_in_intersection(self):
+        # 교차로가 비었으면 0, 아니면 1
+        return 0 if self.env.intersection.is_empty else 1
 
     def close(self):
         pass

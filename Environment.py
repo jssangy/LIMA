@@ -13,8 +13,6 @@ from Intersection import Intersection
 
 class ENV():    
     def __init__(self, prob_path):
-        # number of agvs
-        self.agv_num = 0
         # agv_list[alphabet] = agv object
         self.agv_list = {}
 
