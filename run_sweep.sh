@@ -19,7 +19,7 @@ NGPU=${#GPUS[@]}
 JOBS=${JOBS:-$NGPU}
 
 # 스윕 규모 S/M/L
-SIZE=${SIZE:-L}
+SIZE=${SIZE:-M}
 SEEDS=(${SEEDS:-0 1})
 
 if [[ "$SIZE" == "S" ]]; then
