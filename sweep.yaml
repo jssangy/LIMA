@@ -1,7 +1,7 @@
 # sweep.yaml
-project: DAA-CPS-PPO
-name: ppo-mapf-grid-M
-method: grid         # 지정한 values 조합을 전부 탐색
+project: MAPF
+name: ppo_mapf_sweep
+method: bayes
 metric:
   name: reward       # train.py에서 wandb.log({"reward": ...}) 로 기록 중
   goal: maximize
