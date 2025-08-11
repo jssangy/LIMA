@@ -1,10 +1,12 @@
 import os
 import time
+import wandb
 import torch
+import random
 import argparse
+import numpy as np
 from tqdm import tqdm
 from collections import defaultdict
-import wandb
 
 from torchrl.collectors import SyncDataCollector
 from torchrl.data.replay_buffers import TensorDictReplayBuffer
@@ -22,14 +24,37 @@ from gym_env import GymEnv
 from model import CommonNet, PolicyHead, ValueHead
 
 
+def set_seed(seed):
+    """모든 랜덤 시드를 고정하여 재현성을 보장합니다."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    
+    # 추가 환경 변수 설정
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    
+    print(f"✓ All random seeds set to: {seed}")
+
+
 def main(args):
+    # --- 0. 시드 설정 (가장 먼저) ---
+    if args.seed is not None:
+        set_seed(args.seed)
+    
     # --- 1. 설정 및 초기화 ---
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+    # wandb config에 시드 정보 추가
+    config = vars(args)
+    if args.seed is not None:
+        config['seed'] = args.seed
+    
     wandb.init(
         project="MAPF",
-        config=vars(args),
-        name=args.exp_name or f"ppo_run_{wandb.util.generate_id()}",
+        config=config,
+        name=args.exp_name or f"run_{wandb.util.generate_id()}",
     )
 
     # 저장 경로 결정
@@ -44,6 +69,8 @@ def main(args):
 
     # --- 3. 액터-크리틱 모델 설정 ---
     state_dim = env.observation_spec["observation"].shape[-1]
+    
+    # 모델 초기화 시에도 시드가 적용됨
     common_net = CommonNet(state_dim).to(DEVICE)
     common_operator = TensorDictModule(
         module=common_net, in_keys=["observation"], out_keys=["hidden"]
@@ -80,7 +107,7 @@ def main(args):
         frames_per_batch=args.frames_per_batch,
         total_frames=args.total_frames,
         device=DEVICE,
-        storing_device=DEVICE,  # 메모리 아끼려면 "cpu"로 변경 가능
+        storing_device=DEVICE,
     )
     replay_buffer = TensorDictReplayBuffer(
         storage=LazyTensorStorage(max_size=args.frames_per_batch, device=DEVICE),
@@ -109,6 +136,8 @@ def main(args):
         torch.save(value_module.state_dict(), tmp_val)
         os.replace(tmp_pol, os.path.join(save_dir, f"policy_{tag}.pth"))
         os.replace(tmp_val, os.path.join(save_dir, f"value_{tag}.pth"))
+        
+        # 체크포인트에 시드 정보도 저장
         state = {
             "config": vars(args),
             "policy": policy.state_dict(),
@@ -116,6 +145,7 @@ def main(args):
             "optimizer": optimizer.state_dict(),
             "frames": frames,
             "timestamp": time.time(),
+            "seed": args.seed,  # 시드 정보 추가
         }
         tmp_all = os.path.join(save_dir, f"trainstate_{tag}.pt.tmp")
         torch.save(state, tmp_all)
@@ -125,7 +155,6 @@ def main(args):
     logs = defaultdict(list)
     pbar = tqdm(total=args.total_frames)
     total_collected_frames = 0
-    best_metric = float("-inf")
 
     for i, tensordict_data in enumerate(collector):
         total_collected_frames += tensordict_data.numel()
@@ -213,12 +242,7 @@ def main(args):
         # 주기 저장
         if args.save_every > 0 and (total_collected_frames % args.save_every == 0):
             save_ckpt(f"step{total_collected_frames}", total_collected_frames)
-
-        # best 저장 (현재는 avg_reward 기준 — 필요시 throughput 기준으로 교체)
-        if avg_reward > best_metric:
-            best_metric = avg_reward
-            save_ckpt("best", total_collected_frames)
-
+            
     collector.shutdown()
     pbar.close()
     print("Training finished.")
@@ -265,10 +289,14 @@ if __name__ == "__main__":
     parser.add_argument("--lmbda", type=float, default=0.95, help="Lambda for GAE")
     parser.add_argument("--clip_epsilon", type=float, default=0.2, help="PPO clip epsilon")
     parser.add_argument("--entropy_coeff", type=float, default=0.01, help="Entropy coefficient for loss")
+    
     # 체크포인트 옵션
     parser.add_argument("--save_dir", type=str, default="artifacts", help="루트 저장 폴더")
     parser.add_argument("--exp_name", type=str, default=None, help="저장/로그용 런 이름(없으면 wandb.run.name)")
     parser.add_argument("--save_every", type=int, default=0, help="N 프레임마다 주기 저장(0이면 비활성)")
+    
+    # [추가] 시드 옵션
+    parser.add_argument("--seed", type=int, default=7, help="Random seed for reproducibility")
 
     args = parser.parse_args()
     main(args)

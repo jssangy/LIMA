@@ -6,14 +6,13 @@ PY=${PY:-python}
 SCRIPT=${SCRIPT:-train.py}
 PROBLEM=${PROBLEM:-problems/cross/cross_1.json}
 
-TOTAL_FRAMES=${TOTAL_FRAMES:-500000}
+TOTAL_FRAMES=${TOTAL_FRAMES:-1000000}
 SAVE_EVERY=${SAVE_EVERY:-0}
 
 # 고정(원하면 환경변수로 바꿀 수 있음)
-FRAMES_PER_BATCH=${FRAMES_PER_BATCH:-256}
+FRAMES_PER_BATCH=${FRAMES_PER_BATCH:-1024}
 MINI_BATCH_SIZE=${MINI_BATCH_SIZE:-64}
 NUM_EPOCHS=${NUM_EPOCHS:-10}
-GAMMA_FIX=${GAMMA_FIX:-}  # 비워두면 아래 GAMMAS 배열 사용, 값 넣으면 그 값 고정
 
 # 사용할 GPU 목록 (공백 구분). 예: GPUS="0 1 2 3"
 GPUS_STR=${GPUS:-"0"}
@@ -22,8 +21,8 @@ NGPU=${#GPUS[@]}
 JOBS=${JOBS:-$NGPU}
 
 # 스윕 규모
-SIZE=${SIZE:-S}
-SEEDS=(${SEEDS:-0 1})
+SIZE=${SIZE:-M}
+SEEDS=(${SEEDS:-7})
 
 # -------- sweep grids (only 5 hparams) --------
 if [[ "$SIZE" == "S" ]]; then
@@ -39,16 +38,11 @@ elif [[ "$SIZE" == "L" ]]; then
   CLIPS=("0.05" "0.1" "0.15" "0.2" "0.25" "0.3")
   ENTS=("0.0" "0.001" "0.0025" "0.005" "0.0075" "0.01" "0.015")
 else # M
-  LRS=("1e-4" "2e-4" "3e-4" "5e-4")
-  GAMMAS=("0.97" "0.99")
-  LAMBDAS=("0.90" "0.95" "0.97")
-  CLIPS=("0.1" "0.15" "0.2" "0.25")
-  ENTS=("0.0" "0.0025" "0.005" "0.01")
-fi
-
-# GAMMA를 단일 고정값으로 쓰고 싶다면
-if [[ -n "${GAMMA_FIX}" ]]; then
-  GAMMAS=("${GAMMA_FIX}")
+  LRS=("5e-5" "1e-4" "5e-4" "1e-3" "5e-3")
+  GAMMAS=("0.95" "0.99")
+  LAMBDAS=("0.90" "0.95")
+  CLIPS=("0.1" "0.2" "0.3")
+  ENTS=("0.0" "0.005" "0.01")
 fi
 
 # -------- dirs & group --------
@@ -63,9 +57,9 @@ export WANDB_RUN_GROUP="${GROUP}"
 
 # -------- helper --------
 run_one () {
-  local gpu="$1" seed="$2" lr="$3" gamma="$4" lam="$5" clip="$6" ent="$7"
+  local gpu="$1" lr="$2" gamma="$3" lam="$4" clip="$5" ent="$6"
 
-  local EXP_ID="g${gpu}_S${seed}_lr${lr}_gm${gamma}_lam${lam}_clip${clip}_ent${ent}"
+  local EXP_ID="g${gpu}_lr${lr}_gm${gamma}_lam${lam}_clip${clip}_ent${ent}"
   local RUN_PATH="${RUNDIR}/${EXP_ID}"
   local LOGPATH="${LOGDIR}/${EXP_ID}.log"
 
@@ -89,6 +83,7 @@ run_one () {
       --save_dir "${ARTIFACTS}" \
       --exp_name "${EXP_ID}" \
       --save_every "${SAVE_EVERY}" \
+      --seed "${seed}" \
       2>&1 | tee "${LOGPATH}"
 
     echo ">> [${EXP_ID}] done. artifacts: ${ARTIFACTS}/${EXP_ID}"
@@ -126,7 +121,7 @@ for s in "${SEEDS[@]}"; do
             gpu="${GPUS[$((idx % NGPU))]}"
             idx=$((idx+1))
 
-            run_one "$gpu" "$s" "$lr" "$gm" "$lam" "$clip" "$ent" &
+            run_one "$gpu" "$lr" "$gm" "$lam" "$clip" "$ent" &
             running=$((running+1))
             if (( running % JOBS == 0 )); then
               wait

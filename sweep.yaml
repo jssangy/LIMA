@@ -1,0 +1,50 @@
+# sweep.yaml
+project: DAA-CPS-PPO
+name: ppo-mapf-grid-M
+method: grid         # 지정한 values 조합을 전부 탐색
+metric:
+  name: reward       # train.py에서 wandb.log({"reward": ...}) 로 기록 중
+  goal: maximize
+
+parameters:
+  lr:
+    values: [5e-5, 1e-4, 5e-4, 1e-3, 5e-3]
+  gamma:
+    values: [0.95, 0.99]
+  lmbda:
+    values: [0.90, 0.95]
+  clip_epsilon:
+    values: [0.1, 0.2, 0.3]
+  entropy_coeff:
+    values: [0.0, 0.005, 0.01]
+  seed:
+    values: [7]
+
+command:
+  - ${env}
+  - ${interpreter}
+  - train.py
+  - -p
+  - problems/cross/cross_1.json
+  - --total_frames
+  - "1000000"
+  - --frames_per_batch
+  - "1024"
+  - --mini_batch_size
+  - "64"
+  - --num_epochs
+  - "10"
+  - --lr
+  - ${lr}
+  - --gamma
+  - ${gamma}
+  - --lmbda
+  - ${lmbda}
+  - --clip_epsilon
+  - ${clip_epsilon}
+  - --entropy_coeff
+  - ${entropy_coeff}
+  - --seed
+  - ${seed}
+  - --exp_name
+  - "lr${lr}_gm${gamma}_lam${lmbda}_clip${clip_epsilon}_ent${entropy_coeff}_seed${seed}"
