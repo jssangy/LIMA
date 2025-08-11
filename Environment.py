@@ -118,7 +118,6 @@ class ENV():
                 return action_indices
             
             else:
-                print(f"Unexpected action tensor shape: {action_tensor.shape}")
                 return [0, 0, 0, 0, 0]
 
     def step(self, action=None, test_mode=False):

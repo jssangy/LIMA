@@ -121,8 +121,6 @@ class Intersection:
         - 탈출 시: F_rep은 F_attr과 같은 방향 (음수 값)
         """
         self._update_internal_state()
-        
-        print(actions)
 
         repulsive_magnitudes = actions[:4]
         center_direction_action = int(actions[4])
