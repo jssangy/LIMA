@@ -34,17 +34,6 @@ command:
   - "64"
   - --num_epochs
   - "10"
-  - --lr
-  - ${lr}
-  - --gamma
-  - ${gamma}
-  - --lmbda
-  - ${lmbda}
-  - --clip_epsilon
-  - ${clip_epsilon}
-  - --entropy_coeff
-  - ${entropy_coeff}
-  - --seed
-  - ${seed}
+  - ${args}
   - --exp_name
-  - "lr${lr}_gm${gamma}_lam${lmbda}_clip${clip_epsilon}_ent${entropy_coeff}_seed${seed}"
+  - "lr${lr}_gm${gamma}_lam${lmbda}_clip${clip_epsilon}_ent${entropy_coeff}"
