@@ -63,7 +63,7 @@ def main():
     parser.add_argument(
         '--policy_path',
         type=str,
-        default='checkpoint/ppo_policy.pth',
+        default='checkpoint/policy_best.pth',
         help='Path to the trained PPO policy model file'
     )
     args = parser.parse_args()

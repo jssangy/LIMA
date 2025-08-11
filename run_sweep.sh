@@ -7,45 +7,48 @@ SCRIPT=${SCRIPT:-train.py}
 PROBLEM=${PROBLEM:-problems/cross/cross_1.json}
 
 TOTAL_FRAMES=${TOTAL_FRAMES:-500000}
-GAMMA=${GAMMA:-0.99}
 SAVE_EVERY=${SAVE_EVERY:-0}
+
+# 고정(원하면 환경변수로 바꿀 수 있음)
+FRAMES_PER_BATCH=${FRAMES_PER_BATCH:-256}
+MINI_BATCH_SIZE=${MINI_BATCH_SIZE:-64}
+NUM_EPOCHS=${NUM_EPOCHS:-10}
+GAMMA_FIX=${GAMMA_FIX:-}  # 비워두면 아래 GAMMAS 배열 사용, 값 넣으면 그 값 고정
 
 # 사용할 GPU 목록 (공백 구분). 예: GPUS="0 1 2 3"
 GPUS_STR=${GPUS:-"0"}
 read -r -a GPUS <<< "$GPUS_STR"
 NGPU=${#GPUS[@]}
-
-# 동시 실행 수(기본: GPU 수와 동일)
 JOBS=${JOBS:-$NGPU}
 
-# 스윕 규모 S/M/L
-SIZE=${SIZE:-M}
+# 스윕 규모
+SIZE=${SIZE:-S}
 SEEDS=(${SEEDS:-0 1})
 
+# -------- sweep grids (only 5 hparams) --------
 if [[ "$SIZE" == "S" ]]; then
   LRS=("1e-4" "3e-4" "5e-4")
-  CLIPS=("0.1" "0.2" "0.3")
-  ENTS=("0.0" "0.005" "0.01")
+  GAMMAS=("0.97" "0.99")
   LAMBDAS=("0.90" "0.95")
-  EPOCHS=("8")
-  MINIBATCH=("64")
-  FPB=("256")
+  CLIPS=("0.1" "0.2")
+  ENTS=("0.0" "0.005" "0.01")
 elif [[ "$SIZE" == "L" ]]; then
   LRS=("5e-5" "1e-4" "2e-4" "3e-4" "5e-4" "7e-4" "1e-3")
+  GAMMAS=("0.95" "0.97" "0.99")
+  LAMBDAS=("0.90" "0.92" "0.95" "0.97")
   CLIPS=("0.05" "0.1" "0.15" "0.2" "0.25" "0.3")
   ENTS=("0.0" "0.001" "0.0025" "0.005" "0.0075" "0.01" "0.015")
-  LAMBDAS=("0.90" "0.92" "0.95" "0.97")
-  EPOCHS=("5" "8" "10")
-  MINIBATCH=("32" "64" "128")
-  FPB=("256" "512")
-else
+else # M
   LRS=("1e-4" "2e-4" "3e-4" "5e-4")
+  GAMMAS=("0.97" "0.99")
+  LAMBDAS=("0.90" "0.95" "0.97")
   CLIPS=("0.1" "0.15" "0.2" "0.25")
   ENTS=("0.0" "0.0025" "0.005" "0.01")
-  LAMBDAS=("0.90" "0.95" "0.97")
-  EPOCHS=("8" "10")
-  MINIBATCH=("64" "128")
-  FPB=("256" "512")
+fi
+
+# GAMMA를 단일 고정값으로 쓰고 싶다면
+if [[ -n "${GAMMA_FIX}" ]]; then
+  GAMMAS=("${GAMMA_FIX}")
 fi
 
 # -------- dirs & group --------
@@ -60,9 +63,9 @@ export WANDB_RUN_GROUP="${GROUP}"
 
 # -------- helper --------
 run_one () {
-  local gpu="$1" seed="$2" lr="$3" clip="$4" ent="$5" lam="$6" ep="$7" mb="$8" fpb="$9"
+  local gpu="$1" seed="$2" lr="$3" gamma="$4" lam="$5" clip="$6" ent="$7"
 
-  local EXP_ID="g${gpu}_S${seed}_lr${lr}_clip${clip}_ent${ent}_lam${lam}_ep${ep}_mb${mb}_fpb${fpb}"
+  local EXP_ID="g${gpu}_S${seed}_lr${lr}_gm${gamma}_lam${lam}_clip${clip}_ent${ent}"
   local RUN_PATH="${RUNDIR}/${EXP_ID}"
   local LOGPATH="${LOGDIR}/${EXP_ID}.log"
 
@@ -75,11 +78,11 @@ run_one () {
 
     ${PY} "${ROOT}/${SCRIPT}" -p "${ROOT}/${PROBLEM}" \
       --total_frames "${TOTAL_FRAMES}" \
-      --frames_per_batch "${fpb}" \
-      --mini_batch_size "${mb}" \
-      --num_epochs "${ep}" \
+      --frames_per_batch "${FRAMES_PER_BATCH}" \
+      --mini_batch_size "${MINI_BATCH_SIZE}" \
+      --num_epochs "${NUM_EPOCHS}" \
       --lr "${lr}" \
-      --gamma "${GAMMA}" \
+      --gamma "${gamma}" \
       --lmbda "${lam}" \
       --clip_epsilon "${clip}" \
       --entropy_coeff "${ent}" \
@@ -96,15 +99,11 @@ run_one () {
 COUNT=0
 for s in "${SEEDS[@]}"; do
   for lr in "${LRS[@]}"; do
-    for clip in "${CLIPS[@]}"; do
-      for ent in "${ENTS[@]}"; do
-        for lam in "${LAMBDAS[@]}"; do
-          for ep in "${EPOCHS[@]}"; do
-            for mb in "${MINIBATCH[@]}"; do
-              for fpb in "${FPB[@]}"; do
-                COUNT=$((COUNT+1))
-              done
-            done
+    for gm in "${GAMMAS[@]}"; do
+      for lam in "${LAMBDAS[@]}"; do
+        for clip in "${CLIPS[@]}"; do
+          for ent in "${ENTS[@]}"; do
+            COUNT=$((COUNT+1))
           done
         done
       done
@@ -113,29 +112,25 @@ for s in "${SEEDS[@]}"; do
 done
 echo "GPUS: ${GPUS[*]}  (NGPU=${NGPU})"
 echo "Total runs: ${COUNT}  (GROUP=${GROUP}, JOBS=${JOBS})"
+echo "Fixed: FRAMES_PER_BATCH=${FRAMES_PER_BATCH}, MINI_BATCH_SIZE=${MINI_BATCH_SIZE}, NUM_EPOCHS=${NUM_EPOCHS}, TOTAL_FRAMES=${TOTAL_FRAMES}"
 
 # -------- dispatch (round-robin GPU assignment) --------
 idx=0
 running=0
 for s in "${SEEDS[@]}"; do
   for lr in "${LRS[@]}"; do
-    for clip in "${CLIPS[@]}"; do
-      for ent in "${ENTS[@]}"; do
-        for lam in "${LAMBDAS[@]}"; do
-          for ep in "${EPOCHS[@]}"; do
-            for mb in "${MINIBATCH[@]}"; do
-              for fpb in "${FPB[@]}"; do
-                gpu="${GPUS[$((idx % NGPU))]}"
-                idx=$((idx+1))
+    for gm in "${GAMMAS[@]}"; do
+      for lam in "${LAMBDAS[@]}"; do
+        for clip in "${CLIPS[@]}"; do
+          for ent in "${ENTS[@]}"; do
+            gpu="${GPUS[$((idx % NGPU))]}"
+            idx=$((idx+1))
 
-                run_one "$gpu" "$s" "$lr" "$clip" "$ent" "$lam" "$ep" "$mb" "$fpb" &
-                running=$((running+1))
-                # 동시 실행 제한
-                if (( running % JOBS == 0 )); then
-                  wait
-                fi
-              done
-            done
+            run_one "$gpu" "$s" "$lr" "$gm" "$lam" "$clip" "$ent" &
+            running=$((running+1))
+            if (( running % JOBS == 0 )); then
+              wait
+            fi
           done
         done
       done

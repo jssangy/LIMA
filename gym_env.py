@@ -37,7 +37,7 @@ class GymEnv(gym.Env):
         return obs, info
 
     def step(self, action):
-        env_info = self.env.step(action[0])
+        env_info = self.env.step(action)
 
         for num, agv in self.env.agv_list.items():
             self.env.controller.get_sensing(num, self.env.network.send(agv.sensing()))

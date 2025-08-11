@@ -82,8 +82,6 @@ class ENV():
         if observation is None:
             return [0, 0, 0, 0, 0]
         
-        print(f"RL State: {observation}")
-        
         # 모델이 있는 디바이스 확인
         device = next(self.rl_policy.parameters()).device
         
@@ -112,13 +110,11 @@ class ENV():
             if action_tensor.dim() == 2:
                 # 각 행에서 최대값의 인덱스를 찾아 정수 액션으로 변환
                 action_indices = torch.argmax(action_tensor, dim=1).tolist()
-                print(f"RL Action (converted): {action_indices}")
                 return action_indices
             
             # 1차원인 경우 (이미 인덱스 형태)
             elif action_tensor.dim() == 1:
                 action_indices = action_tensor.tolist()
-                print(f"RL Action (already indices): {action_indices}")
                 return action_indices
             
             else:

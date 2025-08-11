@@ -27,7 +27,7 @@ def main(args):
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
     wandb.init(
-        project="DAA-CPS-PPO",
+        project="MAPF",
         config=vars(args),
         name=args.exp_name or f"ppo_run_{wandb.util.generate_id()}",
     )
@@ -40,7 +40,6 @@ def main(args):
     # --- 2. 환경 생성 ---
     base_env = GymEnv(prob_path=args.problem)
     env = GymWrapper(base_env, device=DEVICE)
-    # Gym info['agv_in_intersection'] -> tensordict 로 올리기
     env.set_info_dict_reader(default_info_dict_reader(keys=["agv_in_intersection"]))
 
     # --- 3. 액터-크리틱 모델 설정 ---
@@ -241,12 +240,12 @@ if __name__ == "__main__":
         help="Path to the problem file",
     )
     parser.add_argument(
-        "--total_frames", type=int, default=500_000, help="Total frames to train for"
+        "--total_frames", type=int, default=1_000_000, help="Total frames to train for"
     )
     parser.add_argument(
         "--frames_per_batch",
         type=int,
-        default=256,
+        default=1024,
         help="Frames collected per data collection phase",
     )
     parser.add_argument(
