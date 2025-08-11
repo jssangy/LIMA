@@ -8,7 +8,7 @@ metric:
 
 early_terminate:
   type: hyperband
-  min_iter: 30
+  min_iter: 100
   eta: 2
 
 parameters:
