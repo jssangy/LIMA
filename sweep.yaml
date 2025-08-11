@@ -6,6 +6,11 @@ metric:
   name: reward       # train.py에서 wandb.log({"reward": ...}) 로 기록 중
   goal: maximize
 
+early_terminate:
+  type: hyperband
+  min_iter: 30
+  eta: 2
+
 parameters:
   lr:
     values: [5e-5, 1e-4, 5e-4, 1e-3, 5e-3]
