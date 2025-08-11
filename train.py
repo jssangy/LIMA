@@ -264,9 +264,7 @@ if __name__ == "__main__":
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
     parser.add_argument("--lmbda", type=float, default=0.95, help="Lambda for GAE")
     parser.add_argument("--clip_epsilon", type=float, default=0.2, help="PPO clip epsilon")
-    parser.add_argument(
-        "--entropy_coeff", type=float, default=0.01, help="Entropy coefficient for loss"
-    )
+    parser.add_argument("--entropy_coeff", type=float, default=0.01, help="Entropy coefficient for loss")
     # 체크포인트 옵션
     parser.add_argument("--save_dir", type=str, default="artifacts", help="루트 저장 폴더")
     parser.add_argument("--exp_name", type=str, default=None, help="저장/로그용 런 이름(없으면 wandb.run.name)")
