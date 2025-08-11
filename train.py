@@ -50,16 +50,34 @@ def main(args):
     config = vars(args)
     if args.seed is not None:
         config['seed'] = args.seed
+
+    # (NEW) exp_name 자동 생성 유틸
+    def _fmt(x):
+        if isinstance(x, float):
+            # 0.001 같은 값은 1e-3로, 그 외엔 g 포맷으로 깔끔하게
+            return f"{x:.0e}" if (x != 0 and (abs(x) < 1e-2 or abs(x) >= 1e3)) else f"{x:g}"
+        return str(x)
+
+    # (NEW) exp_name 결정: --exp_name이 없거나 'auto'면 하이퍼로 이름 생성
+    if (args.exp_name is None) or (isinstance(args.exp_name, str) and args.exp_name.lower() == "auto") or ("${" in str(args.exp_name)):
+        exp_name = (
+            f"lr{_fmt(args.lr)}_gm{_fmt(args.gamma)}_lam{_fmt(args.lmbda)}_"
+            f"clip{_fmt(args.clip_epsilon)}_ent{_fmt(args.entropy_coeff)}_seed{args.seed}"
+        )
+    else:
+        exp_name = args.exp_name
     
     wandb.init(
         project="MAPF",
         config=config,
-        name=args.exp_name or f"run_{wandb.util.generate_id()}",
+        name=exp_name,
     )
+    if wandb.run is not None:
+        wandb.run.name = exp_name  # 대시보드 표시명도 통일
 
     # 저장 경로 결정
-    run_name = args.exp_name or (wandb.run.name if wandb.run is not None else f"run_{int(time.time())}")
-    save_dir = os.path.join(args.save_dir, run_name)
+    save_dir = os.path.join(args.save_dir, exp_name)
+    os.makedirs(save_dir, exist_ok=True)
     os.makedirs(save_dir, exist_ok=True)
 
     # --- 2. 환경 생성 ---
@@ -292,7 +310,7 @@ if __name__ == "__main__":
     
     # 체크포인트 옵션
     parser.add_argument("--save_dir", type=str, default="artifacts", help="루트 저장 폴더")
-    parser.add_argument("--exp_name", type=str, default=None, help="저장/로그용 런 이름(없으면 wandb.run.name)")
+    parser.add_argument("--exp_name", type=str, default="auto", help="저장/로그용 런 이름(없으면 wandb.run.name)")
     parser.add_argument("--save_every", type=int, default=0, help="N 프레임마다 주기 저장(0이면 비활성)")
     
     # [추가] 시드 옵션

@@ -41,4 +41,4 @@ command:
   - "10"
   - ${args}
   - --exp_name
-  - "lr${lr}_gm${gamma}_lam${lmbda}_clip${clip_epsilon}_ent${entropy_coeff}"
+  - auto
