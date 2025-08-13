@@ -20,7 +20,7 @@ from torchrl.objectives import ClipPPOLoss
 from torchrl.objectives.value import GAE
 from tensordict.nn import TensorDictModule
 
-from gym_env import GymEnv
+from train.gym_env import GymEnv
 from model import CommonNet, PolicyHead, ValueHead
 
 
@@ -302,11 +302,11 @@ if __name__ == "__main__":
         default=10,
         help="Number of epochs to train on each batch of data",
     )
-    parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
-    parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
-    parser.add_argument("--lmbda", type=float, default=0.95, help="Lambda for GAE")
-    parser.add_argument("--clip_epsilon", type=float, default=0.2, help="PPO clip epsilon")
-    parser.add_argument("--entropy_coeff", type=float, default=0.01, help="Entropy coefficient for loss")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--gamma", type=float, default=0.95, help="Discount factor")
+    parser.add_argument("--lmbda", type=float, default=0.90, help="Lambda for GAE")
+    parser.add_argument("--clip_epsilon", type=float, default=0.1, help="PPO clip epsilon")
+    parser.add_argument("--entropy_coeff", type=float, default=0.0, help="Entropy coefficient for loss")
     
     # 체크포인트 옵션
     parser.add_argument("--save_dir", type=str, default="artifacts", help="루트 저장 폴더")

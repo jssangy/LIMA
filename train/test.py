@@ -8,7 +8,7 @@ from torchrl.modules.distributions import OneHotCategorical
 from torchrl.envs import ExplorationType, set_exploration_type
 from tensordict import TensorDict
 
-from gym_env import GymEnv
+from train.gym_env import GymEnv
 from model import CommonNet, PolicyHead, ValueHead
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -126,7 +126,7 @@ avo = ActorValueOperator(common_op, policy_op, value_op)
 policy = avo.get_policy_operator().to(DEVICE).eval()
 
 # 3) 가중치 로드
-CKPT = "checkpoint/policy_best.pth"  # 파일 경로 수정하세요
+CKPT = "checkpoint/policy_last.pth"  # 파일 경로 수정하세요
 try:
     sd = torch.load(CKPT, map_location=DEVICE)
     policy.load_state_dict(sd, strict=True)

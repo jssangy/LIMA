@@ -4,11 +4,11 @@ import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 import torch
 
-from AGV import agv
-import Funct
-import Network
-from Controller import controller
-from Intersection import Intersection
+from utils.AGV import agv
+from utils import Funct
+from utils import Network
+from utils.Controller import controller
+from utils.Intersection import Intersection
 
 
 class ENV():    
@@ -52,10 +52,10 @@ class ENV():
         self.agv_list = self.load_agents(self.agent_path)
         
         # Set controller
-        self.controller = controller(self.agv_num, self.map, self.agv_list, self.tasks, self.intersection_centers)
+        self.controller = controller(self.agv_num, self.map, self.agv_list, self.tasks)
 
         # Set Intersection controller
-        self.intersection = Intersection(self.intersection_centers[0], self.controller)
+        # self.intersection = Intersection(self.intersection_centers[0], self.controller)
 
         return
 

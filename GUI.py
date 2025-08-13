@@ -20,7 +20,7 @@ class GUI():
         
         # Main window
         self.root = tk.Tk()  
-        pyglet.font.add_file('D2Coding.ttf')
+        pyglet.font.add_file('utils/D2Coding.ttf')
         self.root.title("Multi AGV System Simulator")
         self.root.resizable(False, False)
         self.root.configure(background='#000000')

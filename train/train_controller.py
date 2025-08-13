@@ -1,10 +1,9 @@
 import numpy as np
 
-from global_planning import DStar, PIBT
-from Intersection import Intersection
+from utils.global_planning import DStar
 
 class controller():    
-    def __init__(self, agv_num, map, agv_list, tasks, intersections):
+    def __init__(self, agv_num, map, agv_list, tasks):
         self.agv_pos = {}               # save the position of agv positions
         self.control_buffer = {}        # save the D* algorithm based control output of agvs
         self.agv_state = {}             # 0(start - pick up) 1(pick up - drop) 2(drop - rest) 3(rest - start)
@@ -37,9 +36,6 @@ class controller():
         # AGV tasks
         self.tasks = tasks
         self.task_count = 0
-
-        # Intersections of map
-        self.intersections = [Intersection(data, self) for data in intersections]
 
         # Set pick-up & drop tasks
         for num, task in zip(range(agv_num), self.tasks):
@@ -119,22 +115,6 @@ class controller():
             dx = next_pos[0] - pos[0]
             dy = next_pos[1] - pos[1]
             self.control_buffer[num] = (dx, dy)
-
-        
-    def pibt_rout(self):
-        agv_nums = self.agv_nums
-        starts = [self.agv_pos[num] for num in agv_nums]
-        goals = [self.agv_goal[num][self.agv_state[num]] for num in agv_nums]
-        pibt_planner = PIBT(self.map, starts, goals)
-        priorities = [pibt_planner.dist_tables[i].get(starts[i]) for i in range(len(starts))]
-        next_positions = pibt_planner.step(starts, priorities)
-        for idx, num in enumerate(agv_nums):
-            cur_pos = self.agv_pos[num]
-            next_pos = next_positions[idx]
-            dx = next_pos[0] - cur_pos[0]
-            dy = next_pos[1] - cur_pos[1]
-            self.control_buffer[num] = (dx, dy)
-            self.agv_next_pos[num] = next_pos
         
     # ======================== Routing Functions ============================================
     # Get active tasks for AGVs
