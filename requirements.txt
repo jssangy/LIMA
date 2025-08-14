@@ -11,7 +11,7 @@ torch
 torchrl
 tensordict
 gymnasium=0.29
-# --extra-index-url https://download.pytorch.org/whl/cu128
-# torch==2.7.1+cu128
+
 # torchrl ppo.py 수정
+# Loss, Advantage 차원을 맞춰주기 위해
 # log_weight unsqueeze 삭제하기 line 699, 702

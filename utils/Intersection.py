@@ -3,11 +3,10 @@ import numpy as np
 from utils.DeadlockDetector import DeadlockDetector
 
 class Intersection:
-    def __init__(self, intersection_data, controller_ref, env_ref):
+    def __init__(self, intersection_data, controller_ref):
         self.id = intersection_data
         self.center_x, self.center_y, self.len_N, self.len_E, self.len_S, self.len_W = intersection_data
         self.controller = controller_ref
-        self.env = env_ref
 
         self.lane_coords = {
             'N': {(self.center_x, self.center_y - i) for i in range(1, self.len_N + 1)},
@@ -27,7 +26,6 @@ class Intersection:
         self.agvs_in_intersection = {}  # 교차로 내 AGV만 추적
         self.agvs_in_lanes = {'N': {}, 'E': {}, 'S': {}, 'W': {}}
         self.center_agv = None
-        self.exit_events = []
 
     def get_state(self):        
         state_vector = []
@@ -90,16 +88,13 @@ class Intersection:
 
         for dir_name, agvs in self.agvs_in_lanes.items():
             for agv_num, agv_pos in agvs.items():
-                path = self.controller.agv_path.get(agv_num, [])
-                if not path:
-                    continue
+                path = self.controller.agv_path[agv_num]
 
                 is_entering = center in path
-
                 if is_entering:
                     target_node = center
                 else:
-                    target_node = path[1] if len(path) > 1 else path[0]
+                    target_node = path[0]
                 
                 dx = target_node[0] - agv_pos[0]
                 dy = target_node[1] - agv_pos[1]
@@ -121,10 +116,6 @@ class Intersection:
                     move = (0, 0)
                 else:
                     move = (-F_attr_direction[0], -F_attr_direction[1])
-
-                # Controller의 제어 버퍼가 없으면 생성
-                if not hasattr(self.controller, 'control_buffer'):
-                    self.controller.control_buffer = {}
                     
                 self.controller.control_buffer[agv_num] = move
 
@@ -132,9 +123,6 @@ class Intersection:
         if self.center_agv is not None:
             move_map = {0: (0, 1), 1: (1, 0), 2: (0, -1), 3: (-1, 0)}
             move = move_map[center_direction_action]
-            
-            if not hasattr(self.controller, 'control_buffer'):
-                self.controller.control_buffer = {}
                 
             self.controller.control_buffer[self.center_agv] = move
 
@@ -151,17 +139,11 @@ class Intersection:
         for direction, lane_coords in self.lane_coords.items():
             if coords in lane_coords:
                 return direction
-    
-    @property
-    def is_empty(self):
-        """O(1) 복잡도로 교차로 빈 상태 확인"""
-        return len(self.agvs_in_intersection) == 0    
 
-    def clear_internal_state(self):
+    def reset(self):
         self.agvs_in_intersection.clear()
         self.agvs_in_lanes = {'N': {}, 'E': {}, 'S': {}, 'W': {}}
         self.center_agv = None
-        self.exit_events.clear()
 
     def add_agv(self, agv_num, pos):
         self.agvs_in_intersection[agv_num] = pos

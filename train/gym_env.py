@@ -1,8 +1,9 @@
-import gymnasium as gym
-from gymnasium import spaces
-import numpy as np
 import os
 import json
+import random
+import numpy as np
+import gymnasium as gym
+from gymnasium import spaces
 
 from utils.AGV import agv
 from utils.Intersection import Intersection
@@ -16,11 +17,7 @@ class GymEnv(gym.Env):
 
     def __init__(self, prob_path):
         super().__init__()
-        
-        # Environment 초기화
         self._init_environment(prob_path)
-        
-        # Gym spaces 정의
         self._init_gym_spaces()
 
     def _init_environment(self, prob_path):
@@ -30,378 +27,250 @@ class GymEnv(gym.Env):
             data = json.load(f)
         map_path = os.path.join(base_dir, data['mapFile'])
         
-        self.map = self.load_map(map_path)
-        self.intersection_centers = self.find_intersections()
+        self.map = self._load_map(map_path)
+        self.intersection_centers = self._find_intersections()
         if not self.intersection_centers:
             raise ValueError("No intersection found in the map")
         
-        # Environment state
         self.time = 0
         self.agv_list = {}
-        
-        # Controller, Intersection, Deadlock Detector, Traffic Generator
-        self.controller = None
-        self.intersections = []
-        self.deadlock_detector = None
         self.traffic_generator = TrafficGenerator()
 
+        # Controller, DeadlockDetector, Intersections
+        self.controller = controller(self.map)
+        self.deadlock_detector = DeadlockDetector(self.controller)
+        self.intersections = [Intersection(data, self.controller) for data in self.intersection_centers]
+
+        # [최적화] 좌표-교차로 매핑을 미리 생성
+        self.coord_to_intersection_map = self._build_coord_to_intersection_map()
+
+        self.previous_deadlock_states = {}
+
     def _init_gym_spaces(self):
-        # Observation space (교차로 상태)
-        low = []
-        high = []
-        for _ in range(4):  # 4방향
-            low.extend([0] * 5)
-            high.extend([1, 1, 1, 1, 1000])
-        low.extend([0] * 4)
-        high.extend([1] * 4)
+        """다중 교차로(에이전트)를 위한 Gym spaces 정의"""
+        obs_spaces = {}
+        action_spaces = {}
+        single_obs_space = spaces.Box(low=-np.inf, high=np.inf, shape=(24,), dtype=np.float32)
+        single_action_space = spaces.MultiDiscrete([4, 4, 4, 4, 4])
 
-        self.observation_space = spaces.Box(
-            low=np.array(low, dtype=np.float32),
-            high=np.array(high, dtype=np.float32),
-            shape=(24,),
-            dtype=np.float32,
-        )
-
-        self.action_space = spaces.MultiDiscrete([4, 4, 4, 4, 4])
+        for intersection in self.intersections:
+            agent_id = intersection.id
+            obs_spaces[agent_id] = single_obs_space
+            action_spaces[agent_id] = single_action_space
+        
+        self.observation_space = spaces.Dict(obs_spaces)
+        self.action_space = spaces.Dict(action_spaces)
 
     def reset(self, seed=None, options=None):
         """환경 리셋"""
         super().reset(seed=seed)
         
-        # 환경 상태 초기화
         self.time = 0
         self.agv_list.clear()
         self.traffic_generator.start_new_episode()
-        self._init_controller_and_intersection()
+
+        # 컨트롤러와 모든 교차로의 내부 상태 초기화
+        self.controller.reset()
+        for intersection in self.intersections:
+            intersection.reset()
 
         self._spawn_amrs_if_needed()
 
-        obs = self._get_observation()
-        info = None
+        # 리셋 시에는 초기 관찰 상태만 반환
+        observations, active_agents = self._update_observation()
+        self.previous_deadlock_states = {inter.id: (inter.id in active_agents) for inter in self.intersections}
+        info = self._get_info(active_agents)
+        return observations, info
 
-        return obs, info
-
-    def step(self, action):
-        """한 스텝 실행"""
+    def step(self, actions):
+        """[재설계] 한 스텝 '실행'에만 집중"""
         self.time += 1
 
+        # 1. Action 적용: 전달받은 actions을 기반으로 제어 신호 수정
+        if actions:
+            for agent_id, action in actions.items():
+                target_intersection = next((inter for inter in self.intersections if inter.id == agent_id), None)
+                if target_intersection:
+                    target_intersection.action_control(action)
+
+        # 2. Movement: 수정된 제어 신호에 따라 모든 AGV 이동
+        for agv_id, agv_obj in list(self.agv_list.items()):
+            control_sig = self.controller.control_buffer[agv_id]
+            if self._is_valid_move(agv_obj, control_sig):
+                agv_obj.move(control_sig)
+        
+        # 3. 환경 변화 처리: AGV 완료 및 신규 생성
+        self._check_amr_completion()
+        self._spawn_amrs_if_needed()
+
+        # 4. 다음 의사결정을 위한 상태 계산
+        observation, active_agents = self._update_observation()
+        
+        # 5. 보상, 종료 조건 계산
+        rewards = self._calculate_step_reward(actions.keys(), active_agents)
+        self.previous_deadlock_states = {inter.id: (inter.id in active_agents) for inter in self.intersections}
+        episode_terminated = self.traffic_generator.is_episode_done() and not self.agv_list
+        terminateds = {agent_id: episode_terminated for agent_id in active_agents}
+        terminateds["__all__"] = episode_terminated
+        truncated = False
+        info = self._get_info(active_agents)
+
+        return observation, rewards, terminateds, truncated, info
+    
+    def _is_valid_move(self, current_agv, control_signal):
+        next_pos = (current_agv.pos[0] + control_signal[0], current_agv.pos[1] + control_signal[1])
+        if self.map[next_pos[1]][next_pos[0]] == 1: return False
+        for agv_id, other_agv in self.agv_list.items():
+            if current_agv != other_agv and next_pos == other_agv.pos: return False
+        return True
+
+    def _update_observation(self):
+        # 1. Sensing: 현재 AGV들의 물리적 위치를 Controller에 업데이트
+        for agv_id, agv_obj in self.agv_list.items():
+            self.controller.get_sensing(agv_id, agv_obj.pos)
+
+        # 2. Planning: Controller가 최신 위치 기반으로 D* 경로 및 제어 신호 계산
+        self.controller.make_control()
+
+        # 3. State Update: 계산된 경로를 바탕으로 교차로 내부 상태 업데이트
         self._update_intersections_state()
 
-        # AMR 완료 체크
-        episode_done = False
-        step_reward = 0
-        
-        if self._check_amr_completion():
-            step_reward += 1.0
-            
-            if self.traffic_generator.has_remaining_tasks():
-                self._spawn_new_amr()
-            else:
-                episode_done = True
-                episode_metrics = self.traffic_generator.get_episode_metrics()
-                print(f"Episode completed! Metrics: {episode_metrics}")
-        
-        elif self.current_amr is None:
-            self._spawn_new_amr()
-        
-        # 교차로 제어 적용
-        if self.current_amr and action is not None:
-            self._apply_intersection_control(action)
-        
-        # AMR 이동 시뮬레이션
-        if self.current_amr:
-            old_pos = self.current_amr.pos
-            self._simulate_amr_movement()
-            new_pos = self.current_amr.pos
-            
-            # 위치 변화가 있으면 intersection에 알림
-            if old_pos != new_pos:
-                self._notify_position_change('A', old_pos, new_pos)
-        
-        # 관찰, 보상, 종료 조건
-        observation = self._get_observation().astype(np.float32, copy=False)
-        reward = float(step_reward + self._calculate_step_reward())
-        terminated = episode_done
-        truncated = False
-        
-        info = {
-            "agv_in_intersection": np.array(self._agv_in_intersection(), dtype=np.int8),
-            "episode_progress": self.traffic_generator.get_progress(),
-            "time": self.time
-        }
+        # 4. Observation Generation: 최종적으로 확정된 상태를 반환
+        observations = {}
+        active_agents = []
+        for intersection in self.intersections:
+            if self.deadlock_detector.check_deadlock(intersection):
+                observations[intersection.id] = intersection.get_state()
+                active_agents.append(intersection.id)
+        return observations, active_agents
+    
+    def _calculate_step_reward(self, agents_who_acted, current_active_agents):
+        rewards = {}
+        for agent_id in agents_who_acted:
+            rewards[agent_id] = -0.01  # 기본 시간 페널티
 
-        return observation, reward, terminated, truncated, info
+        for agent_id, was_deadlocked in self.previous_deadlock_states.items():
+            is_currently_deadlocked = agent_id in current_active_agents
+            if was_deadlocked and not is_currently_deadlocked:
+                if agent_id in agents_who_acted:
+                    rewards[agent_id] = rewards.get(agent_id, 0) + 1.0
+        return rewards
+    
+    def _get_info(self, active_agents):
+        """인자로 받은 active_agents를 사용"""
+        return {
+            "time": self.time,
+            "episode_progress": self.traffic_generator.get_progress(),
+            "active_agents": active_agents 
+        }
     
     def _update_intersections_state(self):
         for intersection in self.intersections:
             intersection.clear_internal_state()
-
-        for agv_num, agv_obj in self.agv_list.items():
+        for agv_id, agv_obj in self.agv_list.items():
             pos = agv_obj.pos
-            for intersection in self.intersections:
-                if pos in intersection.all_lane_coords:
-                    intersection.add_agv(agv_num, pos)
-                    break
-
-    def _notify_position_change(self, agv_num, old_pos, new_pos):
-        """AGV 위치 변화를 intersection에 알림"""
-        if hasattr(self, 'intersection') and self.intersection:
-            self.intersection.on_agv_position_changed(agv_num, old_pos, new_pos)
-        
-        # Controller의 agv_pos도 업데이트
-        if hasattr(self, 'controller') and self.controller:
-            self.controller.agv_pos[agv_num] = new_pos
+            if pos in self.coord_to_intersection_map:
+                target_intersection = self.coord_to_intersection_map[pos]
+                if target_intersection:
+                    target_intersection.add_agv(agv_id, pos)
     
-    def _spawn_new_amr(self):
-        """새 AMR 생성"""
-        task_info = self.traffic_generator.get_next_task()
-        if task_info is None:
-            return
-        
-        start_pos = self._direction_to_coords(task_info['start_direction'])
-        self.current_amr = agv(start_pos, (255, 0, 0))
-        self.current_goal_direction = task_info['goal_direction']
-        self.agv_list['A'] = self.current_amr
-        
-        # 경로 생성 및 설정
-        self._create_amr_path(task_info)
-        
-        # Intersection에 새 AMR 알림
-        self._notify_position_change('A', None, start_pos)
-        
-        print(f"Time {self.time}: New AMR spawned: {task_info['start_direction']} → {task_info['goal_direction']}")
+    def _build_coord_to_intersection_map(self):
+        """
+        모든 교차로의 좌표를 키로, 교차로 객체를 값으로 하는 딕셔너리를 생성합니다.
+        이 함수는 초기화 시 한 번만 호출됩니다.
+        """
+        mapping = {}
+        for intersection in self.intersections:
+            for coord in intersection.all_lane_coords:
+                mapping[coord] = intersection
+        return mapping
 
-    def _create_amr_path(self, task_info):
-        """AMR 경로 생성"""
-        start_pos = self._direction_to_coords(task_info['start_direction'])
-        center_pos = (self.intersection_centers[0][0], self.intersection_centers[0][1])
-        goal_pos = self._direction_to_coords(task_info['goal_direction'])
-        
-        # 간단한 경로: 시작점 → 교차로 중심 → 목표점
-        path = [start_pos, center_pos, goal_pos]
-        
-        # Controller에 경로 설정
-        if hasattr(self, 'controller') and self.controller:
-            self.controller.agv_path['A'] = path
-            self.controller.agv_pos['A'] = start_pos
+    def _spawn_amrs_if_needed(self):
+        while self.traffic_generator.should_spawn_next(self.time):
+            task_info = self.traffic_generator.get_next_task()
+            if task_info is None: break
+            start_intersection_data = random.choice(self.intersection_centers)
+            goal_intersection_data = random.choice(self.intersection_centers)
+            while start_intersection_data == goal_intersection_data:
+                goal_intersection_data = random.choice(self.intersection_centers)
+            agv_id = task_info['id']
+            start_pos = self._direction_to_coords(task_info['start_direction'], start_intersection_data)
+            goal_pos = self._direction_to_coords(task_info['goal_direction'], goal_intersection_data)
+            self.agv_list[agv_id] = agv(start_pos, (255, 0, 0))
+            self.controller.add_agv(agv_id, start_pos, goal_pos)
+            print(f"Time {self.time}: AMR {agv_id} spawned at {start_pos}, heading to goal near {goal_pos}")
 
-    def _check_amr_completion(self):
-        """AMR 완료 여부 체크"""
-        if self.current_amr is None:
-            return False
-        
-        if self._is_goal_reached():
-            # 완료 처리
-            self.traffic_generator.complete_current_task(self.time, success=True)
-            
-            # Intersection에 AMR 제거 알림
-            self._notify_position_change('A', self.current_amr.pos, None)
-            
-            # AMR 제거
-            self.current_amr = None
-            self.current_goal_direction = None
-            if 'A' in self.agv_list:
-                del self.agv_list['A']
-            
-            # Controller에서도 제거
-            if hasattr(self, 'controller') and self.controller:
-                self.controller.agv_pos.pop('A', None)
-                self.controller.agv_path.pop('A', None)
-            
-            print(f"Time {self.time}: AMR reached goal!")
-            return True
-        
-        return False
-
-    def _simulate_amr_movement(self):
-        """AMR 이동 시뮬레이션"""
-        if not self.current_amr or not hasattr(self, 'controller'):
-            return
-        
-        # Controller의 제어 신호가 있으면 적용
-        control_signal = self.controller.control_buffer.get('A', None)
-        if control_signal:
-            dx, dy = control_signal
-            current_x, current_y = self.current_amr.pos
-            new_pos = (current_x + dx, current_y + dy)
-            self.current_amr.pos = new_pos
-            # 제어 신호 소비
-            self.controller.control_buffer.pop('A', None)
-        else:
-            # 기본 이동 로직 (교차로 중심으로)
-            center_x, center_y = self.intersection_centers[0][:2]
-            current_x, current_y = self.current_amr.pos
-            
-            if abs(current_x - center_x) > 1:
-                dx = 1 if current_x < center_x else -1
-                self.current_amr.pos = (current_x + dx, current_y)
-            elif abs(current_y - center_y) > 1:
-                dy = 1 if current_y < center_y else -1
-                self.current_amr.pos = (current_x, current_y + dy)
-            else:
-                # 중심에 도달했으면 목표 방향으로 이동
-                goal_pos = self._direction_to_coords(self.current_goal_direction)
-                dx = np.sign(goal_pos[0] - current_x)
-                dy = np.sign(goal_pos[1] - current_y)
-                if dx != 0 or dy != 0:
-                    self.current_amr.pos = (current_x + dx, current_y + dy)
-
-    def _init_controller_and_intersection(self):
-        """Controller와 Intersection 초기화"""
-        # Controller 초기화
-        self.controller = controller(1, self.map, self.agv_list, [])
-        
-        # Intersection 초기화 (이벤트 기반)
-        if self.intersection_centers:
-            self.intersection = Intersection(self.intersection_centers[0], self.controller)
-
-    def _apply_intersection_control(self, action):
-        """교차로 제어 적용"""
-        if hasattr(self, 'intersection') and self.intersection:
-            self.intersection.action_control(action)
-
-    def _get_observation(self):
-        """관찰 상태 반환"""
-        if hasattr(self, 'intersection') and self.intersection:
-            state = self.intersection.get_state()
-            return np.array(state, dtype=np.float32)
-        else:
-            return np.zeros(28, dtype=np.float32)
-
-    def _calculate_step_reward(self):
-        """스텝별 보상 계산"""
-        reward = -0.01  # 시간 페널티
-        
-        if hasattr(self, 'intersection') and self.intersection:
-            for event in self.intersection.exit_events:
-                if event.get("correct", False):
-                    reward += 0.1
-                else:
-                    reward -= 0.1
-        
-        return reward
-
-    def _agv_in_intersection(self):
-        """교차로 내 AMR 존재 여부"""
-        if hasattr(self, 'intersection') and self.intersection:
-            return 0 if self.intersection.is_empty else 1
-        return 0
-
-    # 기존 유틸리티 메서드들은 그대로 유지...
-    def _is_goal_reached(self):
-        """목표 지점 도달 여부 체크"""
-        if not self.current_amr or not self.current_goal_direction:
-            return False
-        
-        center_x, center_y, len_N, len_E, len_S, len_W = self.intersection_centers[0]
-        current_x, current_y = self.current_amr.pos
-        
-        if self.current_goal_direction == 'N':
-            return current_y <= center_y - len_N - 1
-        elif self.current_goal_direction == 'E':
-            return current_x >= center_x + len_E + 1
-        elif self.current_goal_direction == 'S':
-            return current_y >= center_y + len_S + 1
-        elif self.current_goal_direction == 'W':
-            return current_x <= center_x - len_W - 1
-        
-        return False
-
-    def _direction_to_coords(self, direction):
-        """방향을 실제 좌표로 변환"""
-        center_x, center_y, len_N, len_E, len_S, len_W = self.intersection_centers[0]
-        
+    def _direction_to_coords(self, direction, intersection_data):
+        center_x, center_y, len_N, len_E, len_S, len_W = intersection_data
         direction_map = {
-            'N': (center_x, center_y - len_N),
-            'E': (center_x + len_E, center_y),
-            'S': (center_x, center_y + len_S),
-            'W': (center_x - len_W, center_y)
+            'N': (center_x, center_y - len_N), 'E': (center_x + len_E, center_y),
+            'S': (center_x, center_y + len_S), 'W': (center_x - len_W, center_y)
         }
-        
         return direction_map[direction]
 
-    # 나머지 맵 로딩 메서드들은 기존과 동일...
-    def load_map(self, map_path):        
-        if not os.path.isfile(map_path):
-            raise FileNotFoundError(f"Map file not found: {map_path}")
-        
+    def _check_amr_completion(self):
+        completed_agvs = []
+        for agv_id, agv_obj in self.agv_list.items():
+            if agv_obj.pos == self.controller.agv_goal.get(agv_id):
+                completed_agvs.append(agv_id)
+        for agv_id in completed_agvs:
+            self.traffic_generator.complete_task(agv_id, self.time, success=True)
+            del self.agv_list[agv_id]
+            self.controller.remove_agv(agv_id)
+            print(f"Time {self.time}: AMR {agv_id} reached goal!")
+    
+    def _load_map(self, map_path):        
+        if not os.path.isfile(map_path): raise FileNotFoundError(f"Map file not found: {map_path}")
         map_data = []
-        with open(map_path, 'r') as f:
-            lines = f.readlines()
-        
+        with open(map_path, 'r') as f: lines = f.readlines()
         map_start = None
         for idx, line in enumerate(lines):
-            if line.strip() == 'map':
-                map_start = idx + 1
-                break
-        
-        if map_start is None:
-            raise ValueError("Map data not found in file")
-            
+            if line.strip() == 'map': map_start = idx + 1; break
+        if map_start is None: raise ValueError("Map data not found in file")
         for line in lines[map_start:]:
             row = []
             for c in line.strip():
-                if c in ['@', 'T']:
-                    row.append(1)
-                elif c in ['.', 'E', 'S']:
-                    row.append(0)
-                else:
-                    raise ValueError(f"Invalid character in map file: {c}")
-            if row:
-                map_data.append(row)
-            
+                if c in ['@', 'T']: row.append(1)
+                elif c in ['.', 'E', 'S']: row.append(0)
+                else: raise ValueError(f"Invalid character in map file: {c}")
+            if row: map_data.append(row)
         return np.array(map_data)
 
-    def find_intersection_center(self):
-        """교차로 중심점 찾기"""
-        from numpy.lib.stride_tricks import sliding_window_view
-        
-        kernel = np.array([[1, 0, 1],
-                           [0, 0, 0],
-                           [1, 0, 1]])
-
-        windows = sliding_window_view(self.map, kernel.shape)
+    def _find_intersection_center(self):
+        kernel = np.array([[1, 0, 1], [0, 0, 0], [1, 0, 1]])
+        windows = np.lib.stride_tricks.sliding_window_view(self.map, kernel.shape)
         matches = np.all(windows == kernel, axis=(2, 3))
         centers = (np.argwhere(matches) + 1).tolist()
-
         return centers
         
-    def ray_len(self, r, c, dr, dc):
-        """특정 방향으로 뻗어나가는 길이 계산"""
+    def _ray_len(self, r, c, dr, dc):
         H, W = self.map.shape
         length = 0
         rr, cc = r + dr, c + dc
-
         while 0 <= rr < H and 0 <= cc < W and self.map[rr][cc] == 0:
             if dr != 0:
                 left_wall = (cc - 1 < 0) or (self.map[rr][cc - 1] == 1)
                 right_wall = (cc + 1 >= W) or (self.map[rr][cc + 1] == 1)
-                if not (left_wall or right_wall):
-                    break
+                if not (left_wall or right_wall): break
             else:
                 up_wall = (rr - 1 < 0) or (self.map[rr - 1][cc] == 1)
                 down_wall = (rr + 1 >= H) or (self.map[rr + 1][cc] == 1)
-                if not (up_wall or down_wall):
-                    break
+                if not (up_wall or down_wall): break
             length += 1
             rr += dr
             cc += dc
         return length
     
-    def find_intersections(self):
-        """교차로 정보 찾기"""
+    def _find_intersections(self):
         intersections = []
-        for r, c in self.find_intersection_center():
-            len_N = self.ray_len(r, c, -1, 0)
-            len_E = self.ray_len(r, c, 0, 1)
-            len_S = self.ray_len(r, c, 1, 0)
-            len_W = self.ray_len(r, c, 0, -1)
-
+        for r, c in self._find_intersection_center():
+            len_N = self._ray_len(r, c, -1, 0)
+            len_E = self._ray_len(r, c, 0, 1)
+            len_S = self._ray_len(r, c, 1, 0)
+            len_W = self._ray_len(r, c, 0, -1)
             if min(len_N, len_E, len_S, len_W) > 0:
                 intersections.append((c, r, len_N, len_E, len_S, len_W))
-
         return intersections
 
     def close(self):
-        """환경 종료"""
         pass

@@ -8,7 +8,7 @@ class DeadlockDetector:
     def __init__(self, controller_ref):
         self.controller = controller_ref
 
-    def check_potential_deadlock(self, intersection):
+    def check_deadlock(self, intersection):
         """
         교차로 내 모든 AMR 쌍의 경로를 분석하여 데드락 발생 가능성을 확인.
         """

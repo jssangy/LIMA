@@ -3,126 +3,77 @@ import numpy as np
 from utils.global_planning import DStar
 
 class controller():    
-    def __init__(self, agv_num, map, agv_list, tasks):
-        self.agv_pos = {}               # save the position of agv positions
-        self.control_buffer = {}        # save the D* algorithm based control output of agvs
-        self.agv_state = {}             # 0(start - pick up) 1(pick up - drop) 2(drop - rest) 3(rest - start)
-        self.agv_nums = []              # agv numbers (0, 1, 2, ...)
-        self.agv_mode = {}              # 0 (normal) 1 (Danger)
-        self.agv_goal = {}              # goal position of all agvs
-        self.agv_info = {}              # for GUI information
-        self.planners = {}              # D* class for each AGV
-        self.agv_path = {}              # save the path of each AGV        
-
-        self.running_opt = 0
-        
-        # Whole Products
-        self.whole_product = 0
-            
-        # Initialization
-        for i in range (agv_num):
-            self.agv_nums.append(i)
-            self.agv_pos[i] = (0, 0)
-            self.agv_state[i] = 0 # Initial state is 0
-            self.agv_mode[i] = 0 # Initial mode is normal
-            self.agv_goal[i] = [(0, 0), (0, 0), (0, 0), (0, 0)]
-            self.agv_info[i] = [0, 0]
-            self.control_buffer[i] = (0, 0)
-            self.planners[i] = DStar(map, agv_list[i].start, tasks[i][0])
+    def __init__(self, map_data):
+        # 동적 AGV 관리를 위해 초기화 시 비워둠
+        self.agv_pos = {}
+        self.control_buffer = {}
+        self.agv_nums = []
+        self.agv_goal = {}
+        self.planners = {}
+        self.agv_path = {}
 
         # Map of the environment
-        self.map = map
+        self.map = map_data
 
-        # AGV tasks
-        self.tasks = tasks
-        self.task_count = 0
-
-        # Set pick-up & drop tasks
-        for num, task in zip(range(agv_num), self.tasks):
-            self.set_pick(num, task[0])
-            self.set_drop(num, task[1])
-            self.task_count += 1
+    def reset(self):
+        self.agv_pos.clear()
+        self.control_buffer.clear()
+        self.agv_nums.clear()
+        self.agv_goal.clear()
+        self.planners.clear()
+        self.agv_path.clear()
     
-    # set start position - not used
-    def set_start(self, num, pos):
-        self.agv_goal[num][3] = pos
-    
-    # set pick-up position
-    def set_pick(self, num, pos):
-        self.agv_goal[num][0] = pos
-        
-    # set drop position
-    def set_drop(self, num, pos):
-        self.agv_goal[num][1] = pos
-        
-    # set rest position - not used
-    def set_rest(self, num, pos):
-        self.agv_goal[num][2] = pos
-    
-    # Change the AGV's state
-    def change_state(self, num, state):
-        if state != 1:
-            self.agv_state[num] = state + 1   
-        else:
-            if self.task_count < len(self.tasks):
-                self.agv_state[num] = 0
-                self.agv_info[num][0] += 1
-                self.whole_product += 1
+    def add_agv(self, agv_num, start_pos, goal_pos):
+        """AGV를 컨트롤러에 동적으로 추가"""
+        self.agv_nums.append(agv_num)
+        self.agv_pos[agv_num] = start_pos
+        self.agv_goal[agv_num] = goal_pos
+        self.control_buffer[agv_num] = (0, 0)
+        self.planners[agv_num] = DStar(self.map, start_pos, goal_pos)
+        self.agv_path[agv_num] = []
 
-                self.set_pick(num, self.tasks[self.task_count][0])
-                self.set_drop(num, self.tasks[self.task_count][1])
-                self.task_count += 1
-            else:
-                raise ValueError("No more tasks available for AGV {}".format(num))
+    def remove_agv(self, agv_num):
+        """완료된 AGV를 컨트롤러에서 제거"""
+        if agv_num in self.agv_nums:
+            self.agv_nums.remove(agv_num)
+            self.agv_pos.pop(agv_num, None)
+            self.agv_goal.pop(agv_num, None)
+            self.control_buffer.pop(agv_num, None)
+            self.planners.pop(agv_num, None)
+            self.agv_path.pop(agv_num, None)
 
-        return self.agv_state[num]
-
-    # Update data from sensing of agv
-    def get_sensing(self, num, data):
-        if data != None:
-            self.agv_pos[num] = data[0]
-            self.agv_mode[num] = data[1]
-            self.agv_info[num][1] = data[1]
+    def get_sensing(self, agv_num, pos):
+        """GymEnv로부터 AGV의 현재 위치를 업데이트"""
+        if agv_num in self.agv_nums:
+            self.agv_pos[agv_num] = pos
 
     def make_control(self):
-        if self.running_opt == 0:
-            self.dstar_rout()
-        elif self.running_opt == 1:
-            self.pibt_rout()
-
-    def get_control_sig(self):       
-        return (self.control_buffer, self.agv_mode)
+        """모든 활성 AGV에 대한 제어 신호 생성"""
+        self.dstar_rout()
     
     def dstar_rout(self):
+        """D* 알고리즘을 사용하여 각 AGV의 경로를 계산하고 제어 신호 생성"""
         for num in self.agv_nums:
-            pos = self.agv_pos[num]
-            state = self.agv_state[num]
-            goal = self.agv_goal[num][state]
-            planner = self.planners[num]
+            pos = self.agv_pos.get(num)
+            goal = self.agv_goal.get(num)
+            planner = self.planners.get(num)
 
+            if not all([pos, goal, planner]):
+                continue
+
+            # 목표에 도달하면 이동 멈춤 (제거는 gym_env에서 처리)
             if pos == goal:
-                state = self.change_state(num, state)
-                goal = self.agv_goal[num][state]
-                self.agv_mode[num] = 0                
-                planner.update_goal(goal)
+                self.control_buffer[num] = (0, 0)
+                continue
 
+            # D* 플래너의 시작점을 현재 위치로 업데이트하고 경로 재계산
             planner.start = pos
             planner.compute_shortest_path()
             path = planner.extract_path()
             self.agv_path[num] = path
 
+            # 경로에 따라 다음 이동 방향 결정
             next_pos = path[1]
             dx = next_pos[0] - pos[0]
             dy = next_pos[1] - pos[1]
             self.control_buffer[num] = (dx, dy)
-        
-    # ======================== Routing Functions ============================================
-    # Get active tasks for AGVs
-    def get_active_tasks(self):
-        active_tasks = {}
-        for num in self.agv_nums:
-            state = self.agv_state[num]
-            goal = self.agv_goal[num][state]
-            active_tasks[num] = goal
-
-        return active_tasks
