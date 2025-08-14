@@ -6,6 +6,7 @@ import json
 
 from utils.AGV import agv
 from utils.Intersection import Intersection
+from utils.DeadlockDetector import DeadlockDetector
 from train_controller import controller
 from traffic_generator import TrafficGenerator
 
@@ -24,7 +25,6 @@ class GymEnv(gym.Env):
 
     def _init_environment(self, prob_path):
         """환경 초기화"""
-        # 기존 초기화 코드...
         base_dir = os.path.dirname(prob_path)
         with open(prob_path, 'r') as f:
             data = json.load(f)
@@ -35,36 +35,30 @@ class GymEnv(gym.Env):
         if not self.intersection_centers:
             raise ValueError("No intersection found in the map")
         
-        self.traffic_generator = TrafficGenerator()
-        
         # Environment state
         self.time = 0
         self.agv_list = {}
-        self.current_amr = None
-        self.current_goal_direction = None
         
-        # 위치 추적을 위한 변수들
-        self.prev_agv_positions = {}  # 이전 스텝의 AGV 위치들
-        
-        # Controller and intersection
+        # Controller, Intersection, Deadlock Detector, Traffic Generator
         self.controller = None
-        self.intersection = None
+        self.intersections = []
+        self.deadlock_detector = None
+        self.traffic_generator = TrafficGenerator()
 
     def _init_gym_spaces(self):
-        """기존과 동일"""
         # Observation space (교차로 상태)
         low = []
         high = []
         for _ in range(4):  # 4방향
-            low.extend([0] * 6)
-            high.extend([1, 1, 1, 1, 1000, 1])
+            low.extend([0] * 5)
+            high.extend([1, 1, 1, 1, 1000])
         low.extend([0] * 4)
         high.extend([1] * 4)
 
         self.observation_space = spaces.Box(
             low=np.array(low, dtype=np.float32),
             high=np.array(high, dtype=np.float32),
-            shape=(28,),
+            shape=(24,),
             dtype=np.float32,
         )
 
@@ -76,31 +70,23 @@ class GymEnv(gym.Env):
         
         # 환경 상태 초기화
         self.time = 0
-        self.agv_list = {}
-        self.current_amr = None
-        self.current_goal_direction = None
-        self.prev_agv_positions = {}
-        
-        # 새 에피소드 시작
+        self.agv_list.clear()
         self.traffic_generator.start_new_episode()
-        
-        # Controller와 Intersection 초기화
         self._init_controller_and_intersection()
-        
-        # 첫 번째 AMR 생성
-        self._spawn_new_amr()
 
-        obs = self._get_observation().astype(np.float32, copy=False)
-        info = {
-            "agv_in_intersection": np.array(self._agv_in_intersection(), dtype=np.int8),
-            "episode_progress": self.traffic_generator.get_progress()
-        }
+        self._spawn_amrs_if_needed()
+
+        obs = self._get_observation()
+        info = None
+
         return obs, info
 
     def step(self, action):
         """한 스텝 실행"""
         self.time += 1
-        
+
+        self._update_intersections_state()
+
         # AMR 완료 체크
         episode_done = False
         step_reward = 0
@@ -145,6 +131,17 @@ class GymEnv(gym.Env):
         }
 
         return observation, reward, terminated, truncated, info
+    
+    def _update_intersections_state(self):
+        for intersection in self.intersections:
+            intersection.clear_internal_state()
+
+        for agv_num, agv_obj in self.agv_list.items():
+            pos = agv_obj.pos
+            for intersection in self.intersections:
+                if pos in intersection.all_lane_coords:
+                    intersection.add_agv(agv_num, pos)
+                    break
 
     def _notify_position_change(self, agv_num, old_pos, new_pos):
         """AGV 위치 변화를 intersection에 알림"""
