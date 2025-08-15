@@ -149,7 +149,7 @@ class GUI():
         pygame.init()
         self.win = pygame.display.set_mode((self.width, self.height))
         self.redrawWindow(self.env.Get_AGV())
-        self.root.after(1000, self.run_env())
+        self.root.after(100, self.run_env())
         self.root.mainloop()
         
     # Update windows
@@ -161,7 +161,7 @@ class GUI():
         # Draw active tasks as rectangles (with AGV color)
         active_tasks = self.env.get_active_tasks()  # {agv_id: (row, col)}
         for num, (row, col) in active_tasks.items():
-            color = self.env.color.dic[num]
+            color = self.env.color_map[num]
             pygame.draw.rect(
                 self.win,
                 color,
@@ -203,7 +203,7 @@ class GUI():
     # Run environment
     def run_env(self, event = None):
         if self.running_check:
-            run = self.env.step(test_mode=True)
+            run = self.env.step(train=False)
             if run == False:
                 self.running_check = False
             self.make_state_info(run)

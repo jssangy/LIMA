@@ -15,6 +15,8 @@ class controller():
         # Map of the environment
         self.map = map_data
 
+        self.running_opt = 0
+
     def reset(self):
         self.agv_pos.clear()
         self.control_buffer.clear()

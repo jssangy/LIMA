@@ -1,7 +1,5 @@
 import numpy as np
 
-from utils.DeadlockDetector import DeadlockDetector
-
 class Intersection:
     def __init__(self, intersection_data, controller_ref):
         self.id = intersection_data

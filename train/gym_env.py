@@ -8,8 +8,9 @@ from gymnasium import spaces
 from utils.AGV import agv
 from utils.Intersection import Intersection
 from utils.DeadlockDetector import DeadlockDetector
-from train_controller import controller
-from traffic_generator import TrafficGenerator
+from utils import Funct
+from utils.traffic_generator import TrafficGenerator
+from train.train_controller import controller
 
 
 class GymEnv(gym.Env):    
@@ -19,6 +20,8 @@ class GymEnv(gym.Env):
         super().__init__()
         self._init_environment(prob_path)
         self._init_gym_spaces()
+
+        self.use_rl = False
 
     def _init_environment(self, prob_path):
         """환경 초기화"""
@@ -34,9 +37,10 @@ class GymEnv(gym.Env):
         
         self.time = 0
         self.agv_list = {}
-        self.traffic_generator = TrafficGenerator()
 
-        # Controller, DeadlockDetector, Intersections
+        # TrafficGenerator, Controller, DeadlockDetector, Intersections
+        self.traffic_generator = TrafficGenerator()
+        self.color_map = Funct.Color_dict(self.traffic_generator.total_tasks_in_episode).dic
         self.controller = controller(self.map)
         self.deadlock_detector = DeadlockDetector(self.controller)
         self.intersections = [Intersection(data, self.controller) for data in self.intersection_centers]
@@ -82,8 +86,8 @@ class GymEnv(gym.Env):
         info = self._get_info(active_agents)
         return observations, info
 
-    def step(self, actions):
-        """[재설계] 한 스텝 '실행'에만 집중"""
+    def step(self, actions=None, train=False):
+        """한 스텝 '실행'에만 집중"""
         self.time += 1
 
         # 1. Action 적용: 전달받은 actions을 기반으로 제어 신호 수정
@@ -105,17 +109,23 @@ class GymEnv(gym.Env):
 
         # 4. 다음 의사결정을 위한 상태 계산
         observation, active_agents = self._update_observation()
-        
-        # 5. 보상, 종료 조건 계산
-        rewards = self._calculate_step_reward(actions.keys(), active_agents)
-        self.previous_deadlock_states = {inter.id: (inter.id in active_agents) for inter in self.intersections}
+
+        # 5. 보상 계산
+        if train:
+            rewards = self._calculate_step_reward(actions.keys(), active_agents)
+            self.previous_deadlock_states = {inter.id: (inter.id in active_agents) for inter in self.intersections}
+
+        # 6. 종료 조건 확인
         episode_terminated = self.traffic_generator.is_episode_done() and not self.agv_list
-        terminateds = {agent_id: episode_terminated for agent_id in active_agents}
-        terminateds["__all__"] = episode_terminated
+        terminated = {agent_id: episode_terminated for agent_id in active_agents}
+        terminated["__all__"] = episode_terminated
         truncated = False
         info = self._get_info(active_agents)
 
-        return observation, rewards, terminateds, truncated, info
+        if not train:
+            return self.make_info()
+
+        return observation, rewards, terminated, truncated, info
     
     def _is_valid_move(self, current_agv, control_signal):
         next_pos = (current_agv.pos[0] + control_signal[0], current_agv.pos[1] + control_signal[1])
@@ -166,7 +176,7 @@ class GymEnv(gym.Env):
     
     def _update_intersections_state(self):
         for intersection in self.intersections:
-            intersection.clear_internal_state()
+            intersection.reset()
         for agv_id, agv_obj in self.agv_list.items():
             pos = agv_obj.pos
             if pos in self.coord_to_intersection_map:
@@ -186,19 +196,33 @@ class GymEnv(gym.Env):
         return mapping
 
     def _spawn_amrs_if_needed(self):
-        while self.traffic_generator.should_spawn_next(self.time):
+        while self.traffic_generator.should_spawn_next():
             task_info = self.traffic_generator.get_next_task()
             if task_info is None: break
             start_intersection_data = random.choice(self.intersection_centers)
-            goal_intersection_data = random.choice(self.intersection_centers)
-            while start_intersection_data == goal_intersection_data:
-                goal_intersection_data = random.choice(self.intersection_centers)
+            if len(self.intersection_centers) > 1:
+                possible_goals = [i for i in self.intersection_centers if i != start_intersection_data]
+                goal_intersection_data = random.choice(possible_goals)
+            else:
+                goal_intersection_data = start_intersection_data
+
             agv_id = task_info['id']
             start_pos = self._direction_to_coords(task_info['start_direction'], start_intersection_data)
             goal_pos = self._direction_to_coords(task_info['goal_direction'], goal_intersection_data)
-            self.agv_list[agv_id] = agv(start_pos, (255, 0, 0))
+            self.agv_list[agv_id] = agv(start_pos, self.color_map[agv_id])
             self.controller.add_agv(agv_id, start_pos, goal_pos)
             print(f"Time {self.time}: AMR {agv_id} spawned at {start_pos}, heading to goal near {goal_pos}")
+
+    def _check_amr_completion(self):
+        completed_agvs = []
+        for agv_id, agv_obj in self.agv_list.items():
+            if agv_obj.pos == self.controller.agv_goal.get(agv_id):
+                completed_agvs.append(agv_id)
+        for agv_id in completed_agvs:
+            self.traffic_generator.complete_task(agv_id)
+            del self.agv_list[agv_id]
+            self.controller.remove_agv(agv_id)
+            print(f"Time {self.time}: AMR {agv_id} reached goal!")
 
     def _direction_to_coords(self, direction, intersection_data):
         center_x, center_y, len_N, len_E, len_S, len_W = intersection_data
@@ -207,17 +231,6 @@ class GymEnv(gym.Env):
             'S': (center_x, center_y + len_S), 'W': (center_x - len_W, center_y)
         }
         return direction_map[direction]
-
-    def _check_amr_completion(self):
-        completed_agvs = []
-        for agv_id, agv_obj in self.agv_list.items():
-            if agv_obj.pos == self.controller.agv_goal.get(agv_id):
-                completed_agvs.append(agv_id)
-        for agv_id in completed_agvs:
-            self.traffic_generator.complete_task(agv_id, self.time, success=True)
-            del self.agv_list[agv_id]
-            self.controller.remove_agv(agv_id)
-            print(f"Time {self.time}: AMR {agv_id} reached goal!")
     
     def _load_map(self, map_path):        
         if not os.path.isfile(map_path): raise FileNotFoundError(f"Map file not found: {map_path}")
@@ -274,3 +287,37 @@ class GymEnv(gym.Env):
 
     def close(self):
         pass
+
+    # --- [GUI 연동을 위한 어댑터 함수들] ---
+
+    def Get_AGV(self):
+        """GUI가 AGV 목록을 가져갈 수 있도록 하는 함수"""
+        return self.agv_list
+
+    def get_active_tasks(self):
+        """GUI가 AGV의 목표 지점을 가져갈 수 있도록 하는 함수"""
+        return self.controller.agv_goal
+
+    def make_info(self):
+        """GUI의 State Panel 포맷에 맞게 정보를 가공하는 함수"""
+        if self.traffic_generator.is_episode_done() and not self.agv_list:
+            return False # 에피소드 종료 신호
+
+        progress = self.traffic_generator.get_progress()
+        total_prod = progress['completed_tasks']
+        
+        throughput = (total_prod / self.time * 3600) if self.time > 0 else 0
+
+        agv_states = {}
+        for agv_id, agv_obj in self.agv_list.items():
+            mode = 0 # 0: Normal
+            for inter_id, is_deadlocked in self.previous_deadlock_states.items():
+                if is_deadlocked:
+                    intersection = next((inter for inter in self.intersections if inter.id == inter_id), None)
+                    if intersection and agv_id in intersection.agvs_in_intersection:
+                        mode = 2 # 2: Deadlock
+                        break
+            
+            agv_states[agv_id] = [f"Goal_{agv_id}", mode]
+
+        return [total_prod, throughput, agv_states]

@@ -32,10 +32,10 @@ class agv():
         
     def next_pos(self):
         return (self.pos[0] + self.move_x, self.pos[1] + self.move_y)
-    
-    def move(self):
-        self.pos = (self.pos[0] + self.move_x, self.pos[1] + self.move_y)
-        
+
+    def move(self, control_signal):
+        self.pos = (self.pos[0] + control_signal[0], self.pos[1] + control_signal[1])
+
     # Send position and state
     def sensing(self):
         return [self.pos, self.mode]
