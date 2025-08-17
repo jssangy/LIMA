@@ -1,80 +1,91 @@
 import random
 
-class TrafficGenerator:    
-    def __init__(self, total_tasks=12):
-        self.total_tasks_in_episode = total_tasks
-        
-        self.directions = ['N', 'E', 'S', 'W']
-        self.all_routes = []
-        for start in self.directions:
-            for goal in self.directions:
-                if start != goal:
-                    self.all_routes.append({
-                        'start_direction': start,
-                        'goal_direction': goal
-                    })
-        
+class TrafficGenerator:
+    """
+    두 대의 AMR이 한 쌍으로 움직이는 시나리오를 생성합니다.
+    한 쌍의 AMR이 모두 목적지에 도달하면, 다음 교차 경로를 가진 한 쌍이 생성됩니다.
+    """
+    def __init__(self):
+        # 6가지 교차(crossing) 작업 쌍을 정의
+        self.task_pairs = [
+            [{'start_direction': 'N', 'goal_direction': 'S'}, {'start_direction': 'S', 'goal_direction': 'N'}],
+            [{'start_direction': 'E', 'goal_direction': 'W'}, {'start_direction': 'W', 'goal_direction': 'E'}],
+            [{'start_direction': 'N', 'goal_direction': 'E'}, {'start_direction': 'E', 'goal_direction': 'N'}],
+            [{'start_direction': 'N', 'goal_direction': 'W'}, {'start_direction': 'W', 'goal_direction': 'N'}],
+            [{'start_direction': 'E', 'goal_direction': 'S'}, {'start_direction': 'S', 'goal_direction': 'E'}],
+            [{'start_direction': 'W', 'goal_direction': 'S'}, {'start_direction': 'S', 'goal_direction': 'W'}],
+        ]
+        self.total_tasks_in_episode = len(self.task_pairs)
         self.agv_id_counter = 0
-        self.spawn_trigger = False # 'completion' 정책을 위한 트리거
+        self.spawn_trigger = False
 
     def start_new_episode(self):
         """새 에피소드 시작"""
-        self.tasks_to_spawn = random.sample(self.all_routes, self.total_tasks_in_episode)
+        # 정의된 작업 쌍의 순서를 무작위로 섞음
+        self.task_pairs_to_spawn = random.sample(self.task_pairs, len(self.task_pairs))
         
-        self.active_tasks = {}
-        self.completed_task_count = 0
+        self.active_pair_agv_ids = set()
+        self.completed_pair_count = 0
         self.agv_id_counter = 0
         
-        # [추가] 'completion' 정책일 경우, 첫 AGV를 즉시 생성하도록 트리거 설정
+        # 첫 번째 쌍을 즉시 생성하도록 트리거 설정
         self.spawn_trigger = True
 
-        print(f"\n=== New Episode Started (Policy: completion) with {self.total_tasks_in_episode} tasks ===")
+        print(f"\n=== New Episode Started with {self.total_tasks_in_episode} task pairs ===")
 
     def should_spawn_next(self):
-        """새 AGV를 생성할지, 그리고 생성할 작업이 남았는지 확인"""
-        has_tasks_left = bool(self.tasks_to_spawn)
-        return has_tasks_left and self.spawn_trigger
+        """새로운 AMR 쌍을 생성할지 확인"""
+        # 생성할 작업 쌍이 남아있고, 생성 트리거가 켜져있을 때
+        return bool(self.task_pairs_to_spawn) and self.spawn_trigger
 
-    def get_next_task(self):
-        """다음 생성할 AGV의 정보를 반환"""
-        if not self.tasks_to_spawn:
+    def get_next_task_pair(self):
+        """다음 생성할 AMR 쌍(2개)의 정보를 반환"""
+        if not self.task_pairs_to_spawn:
             return None
         
-        task_info = self.tasks_to_spawn.pop(0)
+        # 생성할 작업 쌍 목록에서 하나를 꺼냄
+        task_pair_info = self.task_pairs_to_spawn.pop(0)
         
-        agv_id = self.agv_id_counter
+        # 각 작업에 고유 ID 할당
+        task1_info = task_pair_info[0]
+        task1_info['id'] = self.agv_id_counter
+        self.agv_id_counter += 1
+        
+        task2_info = task_pair_info[1]
+        task2_info['id'] = self.agv_id_counter
         self.agv_id_counter += 1
 
-        task_info['id'] = agv_id
+        # 현재 활성화된 쌍의 ID들을 기록
+        self.active_pair_agv_ids = {task1_info['id'], task2_info['id']}
         
-        self.spawn_trigger = False  # 'completion' 정책일 경우, 다음 스폰을 위해 트리거 초기화
+        # 생성 후 트리거 비활성화
+        self.spawn_trigger = False
         
-        self.active_tasks[agv_id] = task_info
-        return task_info
+        return [task1_info, task2_info]
 
     def complete_task(self, agv_id):
         """특정 AGV의 작업 완료 처리"""
-        if agv_id in self.active_tasks:
-            task_info = self.active_tasks.pop(agv_id)
-            self.completed_task_count += 1
+        if agv_id in self.active_pair_agv_ids:
+            # 완료된 AGV를 활성 쌍에서 제거
+            self.active_pair_agv_ids.remove(agv_id)
             
-            self.spawn_trigger = True
-
-            print(f"Task completed for {agv_id} ({task_info['start_direction']}->{task_info['goal_direction']}). "
-                  f"Progress: {self.completed_task_count}/{self.total_tasks_in_episode}")
+            # 만약 활성 쌍의 모든 AGV가 작업을 완료했다면
+            if not self.active_pair_agv_ids:
+                self.completed_pair_count += 1
+                # 다음 쌍 생성을 위한 트리거 설정
+                self.spawn_trigger = True
+                print(f"--- Task Pair {self.completed_pair_count}/{self.total_tasks_in_episode} completed! ---")
         else:
-            print(f"[Warning] Trying to complete a task for an unknown AGV ID: {agv_id}")
+            print(f"[Warning] Trying to complete a task for an unknown or already completed AGV ID: {agv_id}")
 
     def is_episode_done(self):
-        """모든 작업이 생성되고, 모든 활성 AGV가 작업을 완료했는지 확인"""
-        all_tasks_spawned = not self.tasks_to_spawn
-        no_active_agvs = not self.active_tasks
-        return all_tasks_spawned and no_active_agvs
+        """모든 작업 쌍이 완료되었는지 확인"""
+        return self.completed_pair_count >= self.total_tasks_in_episode
 
     def get_progress(self):
         """에피소드 진행률 반환"""
         return {
-            'completed_tasks': self.completed_task_count,
-            'total_tasks': self.total_tasks_in_episode,
-            'active_agvs': len(self.active_tasks)
+            'completed_pairs': self.completed_pair_count,
+            'total_pairs': self.total_tasks_in_episode,
+            'active_agvs': len(self.active_pair_agv_ids)
         }

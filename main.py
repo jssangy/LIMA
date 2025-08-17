@@ -2,7 +2,7 @@ from Environment import ENV
 from GUI import GUI
 import argparse
 import torch
-from model import CommonNet, PolicyHead, ValueHead
+from module.model import CommonNet, PolicyHead, ValueHead
 from torchrl.modules import ActorValueOperator, ProbabilisticActor
 from torchrl.modules.distributions import OneHotCategorical
 from tensordict.nn import TensorDictModule
