@@ -1,29 +1,22 @@
 # sweep.yaml
-project: MAPF
-name: ppo_mapf_sweep
-method: bayes
+project: MAPPO
+name: ppo_mappo_sweep
+method: grid
 metric:
   name: reward       # train.py에서 wandb.log({"reward": ...}) 로 기록 중
   goal: maximize
 
-early_terminate:
-  type: hyperband
-  min_iter: 100
-  eta: 2
-
 parameters:
   lr:
-    values: [5e-5, 1e-4, 5e-4, 1e-3, 5e-3]
+    values: [1e-4, 5e-4, 1e-3]
   gamma:
     values: [0.95, 0.99]
   lmbda:
     values: [0.90, 0.95]
   clip_epsilon:
-    values: [0.1, 0.2, 0.3]
+    values: [0.1, 0.2]
   entropy_coeff:
-    values: [0.0, 0.005, 0.01]
-  seed:
-    values: [7]
+    values: [0.001, 0.005, 0.01]
 
 command:
   - ${env}
@@ -39,6 +32,8 @@ command:
   - "64"
   - --num_epochs
   - "10"
+  - --seed
+  - "7"
   - ${args}
-  - --exp_name
-  - auto
+  - --save_dir
+  - "artifacts"

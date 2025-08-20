@@ -1,7 +1,7 @@
 import os
 import sys
 from GUI import GUI
-from module.gym_env import GymEnv
+from module.Environment import ENV
 
 def main():
     # 프로젝트 루트 경로를 sys.path에 추가
@@ -9,10 +9,10 @@ def main():
     sys.path.insert(0, project_root)
 
     # 환경 설정 파일 경로
-    prob_path = os.path.join(project_root, 'problems', 'warehouse', 'sortation_large_2000.json')
+    prob_path = os.path.join(project_root, 'problems', 'cross', 'cross_1.json')
 
-    # 1. GymEnv 환경 인스턴스 생성
-    env = GymEnv(prob_path)
+    # 1. ENV 환경 인스턴스 생성
+    env = ENV(prob_path)
 
     env.reset()
     

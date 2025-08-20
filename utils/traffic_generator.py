@@ -8,7 +8,7 @@ class TrafficGenerator:
     def __init__(self):
         # 6가지 교차(crossing) 작업 쌍을 정의
         self.task_pairs = [
-            [{'start_direction': 'N', 'goal_direction': 'S'}, {'start_direction': 'S', 'goal_direction': 'N'}],
+            [{'start_direction': 'N', 'goal_direction': 'S'}, {'start_direction': 'E', 'goal_direction': 'N'}],
             [{'start_direction': 'E', 'goal_direction': 'W'}, {'start_direction': 'W', 'goal_direction': 'E'}],
             [{'start_direction': 'N', 'goal_direction': 'E'}, {'start_direction': 'E', 'goal_direction': 'N'}],
             [{'start_direction': 'N', 'goal_direction': 'W'}, {'start_direction': 'W', 'goal_direction': 'N'}],

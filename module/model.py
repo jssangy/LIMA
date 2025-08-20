@@ -1,56 +1,60 @@
 import torch
-from torch import nn
+import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv, global_mean_pool
 
+# GNNBody 클래스는 기존과 동일합니다.
 class GNNBody(nn.Module):
-    """
-    공유 GNN 몸체 (Shared GNN Body)
-    - 입력: (배치된) 서브그래프의 노드 특징(x)과 엣지 인덱스(edge_index)
-    - 출력: (배치된) 서브그래프의 각 노드에 대한 상황 인식 임베딩
-    """
     def __init__(self, input_dim=24, hidden_dim=128):
         super().__init__()
+        self.hidden_dim = hidden_dim
         self.conv1 = GCNConv(input_dim, hidden_dim)
         self.conv2 = GCNConv(hidden_dim, hidden_dim)
 
-    def forward(self, x, edge_index):
-        # GNN 레이어를 통해 정보 전파 (Message Passing)
-        x = F.relu(self.conv1(x, edge_index))
-        x = self.conv2(x, edge_index)
-        return x
+    @torch.no_grad()
+    def _compact(self, x, edge_index, active_mask):
+        active_mask = active_mask.bool()
+        keep_idx = torch.nonzero(active_mask, as_tuple=True)[0]      # [N_active]
+        if keep_idx.numel() == 0:
+            x_sub = x.new_zeros((0, x.size(-1)))
+            ei_sub = edge_index.new_zeros((2, 0))
+            return x_sub, ei_sub, keep_idx
+        new_id = torch.full((x.size(0),), -1, dtype=torch.long, device=x.device)
+        new_id[keep_idx] = torch.arange(keep_idx.numel(), device=x.device)
+        ei = edge_index
+        m = (new_id[ei[0]] >= 0) & (new_id[ei[1]] >= 0)              # 활성 엣지만
+        ei_sub = torch.stack((new_id[ei[0, m]], new_id[ei[1, m]]), 0)
+        return x[keep_idx], ei_sub, keep_idx
+
+    def forward(self, x, edge_index, active_nodes):
+        x_sub, ei_sub, keep_idx = self._compact(x, edge_index, active_nodes)
+        if x_sub.size(0) == 0:
+            return x.new_zeros((0, self.hidden_dim)), keep_idx
+        h = F.relu(self.conv1(x_sub, ei_sub))
+        h = F.relu(self.conv2(h, ei_sub))
+        return h, keep_idx
+
 
 class Actor(nn.Module):
-    """
-    분산 액터 헤드 (Decentralized Actor Head)
-    - 입력: 단일 노드의 임베딩 벡터
-    - 출력: 해당 노드의 행동 확률 분포 (Logits)
-    """
-    def __init__(self, hidden_dim=128, action_dims=5, action_levels=4):
+    def __init__(self, hidden_dim=128, action_dims=4):
         super().__init__()
         self.action_dims = action_dims
-        self.action_levels = action_levels
-        total_outputs = action_dims * action_levels
-
-        self.layer = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_dim // 2, total_outputs)
+        self.net = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim//2), nn.ReLU(),
+            nn.Linear(hidden_dim//2, action_dims)
         )
 
-    def forward(self, node_embeddings):
-        # GNN으로부터 받은 노드별 임베딩에 대해 각각 행동 로짓 계산
-        action_logits_flat = self.layer(node_embeddings)
-        # 로짓을 [Total_Nodes_in_Batch, Dims, Levels] 형태로 재구성
-        action_logits = action_logits_flat.view(-1, self.action_dims, self.action_levels)
-        return action_logits
+    def forward(self, node_embeds, batch_vec=None):
+        if node_embeds.size(0) == 0:
+            return node_embeds.new_zeros((1, self.action_dims))  # 빈 그래프 안전 처리
+        if batch_vec is None:                                    # 단일 서브그래프
+            g = node_embeds.mean(dim=0, keepdim=True)
+        else:                                                    # 여러 서브그래프
+            g = global_mean_pool(node_embeds, batch_vec)
+        return self.net(g)                                       # [B, action_dims]
 
+# Critic 클래스는 이미 이 구조를 따르고 있으므로 기존과 동일합니다.
 class Critic(nn.Module):
-    """
-    torch_geometric 배치를 처리하는 중앙화된 크리틱 헤드
-    - 입력: 배치 내 모든 노드의 임베딩 벡터와 배치 정보 벡터
-    - 출력: 각 서브그래프의 상태 가치 (배치 크기만큼의 값)
-    """
     def __init__(self, hidden_dim=128):
         super().__init__()
         self.layer = nn.Sequential(
@@ -59,37 +63,6 @@ class Critic(nn.Module):
             nn.Linear(hidden_dim // 2, 1)
         )
 
-    def forward(self, all_node_embeddings, batch):
-        # [수정] global_mean_pool을 사용하여 각 그래프의 평균 임베딩을 계산
-        # all_node_embeddings: [Total_Nodes_in_Batch, Hidden_Dim]
-        # batch: [Total_Nodes_in_Batch]
-        # 출력: [Batch_Size, Hidden_Dim]
-        global_state_embedding = global_mean_pool(all_node_embeddings, batch)
-        
-        # 전역 임베딩을 사용하여 상태 가치 평가
+    def forward(self, all_node_embeddings, batch_vector):
+        global_state_embedding = global_mean_pool(all_node_embeddings, batch_vector)
         return self.layer(global_state_embedding)
-
-class GNN_PPO_Agent(nn.Module):
-    """
-    torch_geometric 배치를 처리하는 GNN 기반 PPO 에이전트
-    """
-    def __init__(self, input_dim=24, hidden_dim=128, action_dims=5, action_levels=4):
-        super().__init__()
-        self.gnn_body = GNNBody(input_dim, hidden_dim)
-        self.actor = Actor(hidden_dim, action_dims, action_levels)
-        self.critic = Critic(hidden_dim)
-
-    def forward(self, nodes, edge_index, batch):
-        """
-        torch_geometric의 batch 벡터를 추가로 입력받음
-        """
-        # 1. GNN 몸체를 통해 노드 임베딩 생성
-        node_embeddings = self.gnn_body(nodes, edge_index)
-
-        # 2. 액터 헤드를 통해 행동 로짓 계산
-        action_logits = self.actor(node_embeddings)
-
-        # 3. 크리틱 헤드를 통해 상태 가치 계산
-        state_value = self.critic(node_embeddings, batch)
-
-        return action_logits, state_value

@@ -75,52 +75,11 @@ class Intersection:
 
         return np.array(state_vector, dtype=np.float32)
 
-    def action_control(self, actions):
-        repulsive_magnitudes = actions[:4]
-        center_direction_action = int(actions[4])
-        center = (self.center_x, self.center_y)
-
-        # 차선 위 AGV 제어
-        action_map = {'N': repulsive_magnitudes[0], 'E': repulsive_magnitudes[1], 
-                      'S': repulsive_magnitudes[2], 'W': repulsive_magnitudes[3]}
-
-        for dir_name, agvs in self.agvs_in_lanes.items():
-            for agv_num, agv_pos in agvs.items():
-                path = self.controller.agv_path[agv_num]
-
-                is_entering = center in path
-                if is_entering:
-                    target_node = center
-                else:
-                    target_node = path[0]
-                
-                dx = target_node[0] - agv_pos[0]
-                dy = target_node[1] - agv_pos[1]
-                F_attr_direction = (np.sign(dx), np.sign(dy))
-
-                repulsive_magnitude = action_map[dir_name]
-                
-                if is_entering:
-                    F_rep_scalar = repulsive_magnitude 
-                else:
-                    F_rep_scalar = -repulsive_magnitude
-
-                F_total = -1 + F_rep_scalar
-
-                move = (0, 0)
-                if F_total < 0:
-                    move = F_attr_direction
-                elif F_total == 0:
-                    move = (0, 0)
-                else:
-                    move = (-F_attr_direction[0], -F_attr_direction[1])
-                    
-                self.controller.control_buffer[agv_num] = move
-
+    def action_control(self, actions, is_push_out=False):
         # 중앙 AGV 제어
         if self.center_agv is not None:
-            move_map = {0: (0, 1), 1: (1, 0), 2: (0, -1), 3: (-1, 0)}
-            move = move_map[center_direction_action]
+            move_map = {0: (0, -1), 1: (1, 0), 2: (0, 1), 3: (-1, 0)}
+            move = move_map[actions]
                 
             self.controller.control_buffer[self.center_agv] = move
 
@@ -153,3 +112,41 @@ class Intersection:
             if pos in coords:
                 self.agvs_in_lanes[direction][agv_num] = pos
                 break
+
+    def calculate_action_mask(self):
+        """
+        교차로 중앙에 있는 AGV에 대한 유효 행동 마스크를 계산합니다.
+        반환값: np.array([N, E, S, W]), 유효하면 True, 아니면 False
+        """
+        # 1. 제어 대상(중앙 AGV)이 없으면 어떤 행동도 유효하지 않음
+        is_push_out = False
+
+        if self.center_agv is None:
+            return np.zeros(4, dtype=np.bool_)
+
+        # 모든 행동이 가능하다고 가정하고 마스크 초기화
+        mask = np.ones(4, dtype=np.bool_)
+        
+        # 3. 규칙 2: 충돌 방지 (벽 또는 다른 AGV)
+        state = self.get_state()
+        state_N = state[:5]
+        state_E = state[5:10]
+        state_S = state[10:15]
+        state_W = state[15:20]
+
+        if state_N[4] > 0 and state_N[0] != 1:
+            mask[0] = False  # 북쪽으로 이동 불가
+        if state_E[4] > 0 and state_E[1] != 1:
+            mask[1] = False  # 동쪽으로 이동 불가
+        if state_S[4] > 0 and state_S[2] != 1:
+            mask[2] = False  # 남쪽으로 이동 불가
+        if state_W[4] > 0 and state_W[3] != 1:
+            mask[3] = False  # 서쪽으로 이동 불가
+
+        # --- 2. [핵심 추가] '모두 막힘' 예외 처리 ---
+        # 기본 마스킹 결과, 갈 수 있는 곳이 하나도 없는지 확인
+        if not mask.any():
+            is_push_out = True
+            mask[:] = True  # 모든 행동을 유효하게 설정
+
+        return mask, is_push_out
