@@ -32,7 +32,7 @@ class ENV():
         self.time = 0
         self.agv_list = {}
         self.l_hop = 1
-        self.max_steps = 100
+        self.max_steps = 1024
 
         # TrafficGenerator, Controller, DeadlockDetector, Intersections
         self.traffic_generator = TrafficGenerator()
@@ -41,6 +41,9 @@ class ENV():
         self.deadlock_detector = DeadlockDetector(self.controller)
         self.intersection = Intersection(self.intersection_data[0], self.controller)
         self.prev_deadlock = False
+
+        self.use_rl = False
+        self.rl_policy = None
 
     def reset(self):        
         self.time = 0
@@ -63,6 +66,20 @@ class ENV():
     def step(self, actions=None, train=True):
         """한 스텝 '실행'에만 집중"""
         self.time += 1
+
+        if actions is None and (not train) and self.use_rl and (self.rl_policy is not None):
+            # 현재 상태에서 이벤트 시작 여부를 보기 위해 '사전 관측' 1회
+            obs_now, info_now = self.generate_observation()
+            if obs_now is not None and info_now.get("deadlock_active", False):
+                # 막 시작했는지 여부(상승엣지)
+                is_start = (not self.prev_deadlock) and True
+                if is_start:
+                    try:
+                        a = self.rl_policy(obs_now, info_now.get("action_mask", None))  # int
+                        self.intersection.action_control(a)
+                    except Exception as e:
+                        # 정책 오류 시 RL 비활성화하고 안전하게 계속
+                        self.use_rl = False
 
         # 1. Action 적용: 전달받은 actions을 기반으로 제어 신호 수정
         if actions is not None:
@@ -104,10 +121,6 @@ class ENV():
         truncated = False
 
         # 6. 종료 조건 확인
-        # (a) 모든 테스크 소진 + 시스템 비었음 --> 정상 종료
-        if self.traffic_generator.is_episode_done() and not self.agv_list:
-            terminated = True
-        
         # (b) 시간 제한 초과
         if self.time >= self.max_steps:
             truncated = True
@@ -138,10 +151,6 @@ class ENV():
         self.controller.make_control()
         self._update_intersections_state()
         is_deadlock = self.deadlock_detector.check_deadlock(self.intersection)
-        
-        # 이벤트가 없을 경우, 0으로 패딩된 고정 크기 Dict 반환
-        if not is_deadlock:
-            return None, {'deadlock_active': False}
 
         state = np.asarray(self.intersection.get_state())
         edge_index = np.array([[0],[0]], dtype=np.int64)  # [2, E] (단일 노드 self-loop)
@@ -179,8 +188,6 @@ class ENV():
         if self.traffic_generator.should_spawn_next():
             task_pair = self.traffic_generator.get_next_task_pair()
             if task_pair is None: return
-
-            print(f"\nTime {self.time}: Spawning new AMR pair...")
             
             # 두 개의 AMR을 순차적으로 생성
             for task_info in task_pair:
@@ -201,8 +208,6 @@ class ENV():
                 self.agv_list[agv_id] = agv(start_pos, color)
                 
                 self.controller.add_agv(agv_id, start_pos, goal_pos)
-                print(f"  - AMR {agv_id} spawned at {start_pos}, heading to goal near {goal_pos} "
-                      f"({task_info['start_direction']}->{task_info['goal_direction']})")
 
     def _check_amr_completion(self):
         completed_agvs = []
@@ -211,8 +216,6 @@ class ENV():
                 completed_agvs.append(agv_id)
         
         for agv_id in completed_agvs:
-            print(f"Time {self.time}: AMR {agv_id} reached goal!")
-            # [수정] TrafficGenerator에 작업 완료 알림
             self.traffic_generator.complete_task(agv_id)
             del self.agv_list[agv_id]
             self.controller.remove_agv(agv_id)
@@ -316,10 +319,6 @@ class ENV():
         # defaultdict를 일반 dict로 변환하고, 중복 제거 및 정렬
         final_adj = {k: sorted(list(set(v))) for k, v in adj.items()}
 
-        print("✓ Intersections and Adjacency List Created in one pass:")
-        for inter_id in intersections_data:
-            print(f"  - {inter_id}: {final_adj.get(inter_id, [])}")
-
         return intersections_data, final_adj
     
     def close(self):
@@ -335,19 +334,22 @@ class ENV():
         return self.controller.agv_goal
 
     def make_info(self):
-        """GUI의 State Panel 포맷에 맞게 정보를 가공하는 함수"""
-        if self.traffic_generator.is_episode_done() and not self.agv_list:
-            return False # 에피소드 종료 신호
+        # 스트리밍 모드: 타임리밋으로만 종료 신호
+        if self.time >= self.max_steps:
+            return False  # GUI에게 에피소드 종료 신호
 
         progress = self.traffic_generator.get_progress()
-        total_prod = progress['completed_pairs']
+        # 바뀐 키들:
+        # 'completed_pairs_in_cycle', 'total_pairs_per_cycle', 'completed_pairs_total', 'active_agvs', 'cycle'
+        total_pairs_done = progress['completed_pairs_total']
 
-        throughput = (total_prod / self.time * 3600) if self.time > 0 else 0
+        # 단순 스루풋(쌍/스텝). 필요하면 시간 스케일 맞춰 곱해 쓰세요.
+        throughput = (total_pairs_done / self.time) if self.time > 0 else 0.0
 
         agv_states = {}
         for agv_id, agv_obj in self.agv_list.items():
-            # 단일 intersection만 고려
             mode = 2 if self.prev_deadlock and agv_id in self.intersection.agvs_in_intersection else 0
             agv_states[agv_id] = [f"Goal_{agv_id}", mode]
 
-        return [total_prod, throughput, agv_states]
+        # GUI가 쓰던 포맷 유지: [완료수, 스루풋, AGV상태]
+        return [total_pairs_done, throughput, agv_states]

@@ -1,24 +1,23 @@
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
-
 import time
 import numpy as np
+from tqdm import tqdm
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions import Categorical
 
-from env import ENV                     # <- 너의 ENV
-from model import ActorCritic           # <- 너의 모델
-from buffer import EventBuffer, EventTransition
-from smdp_gae import compute_smdp_gae
+from module.model import ActorCritic
+from module.buffer import EventBuffer, EventTransition
+from module.smdp_gae import compute_smdp_gae
 
 
 @dataclass
 class TrainConfig:
-    prob_path: str
     total_updates: int = 1000
-    events_per_update: int = 1024
+    events_per_update: int = 256
     epochs: int = 4
     minibatch_size: int = 256
     gamma: float = 0.99
@@ -28,37 +27,38 @@ class TrainConfig:
     entropy_coef: float = 0.01
     value_coef: float = 0.5
     max_grad_norm: float = 0.5
-    seed: int = 42
+    seed: int = 7
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-class SMDPTrainer:
+class Trainer:
     """
-    - ENV.step(action) -> (obs_next, reward, done, info_next)
-      info_next keys(필수): event_start, event_end(또는 done 중 강제), tau(끝날 때),
-                            terminated, truncated, action_mask
-      obs/obs_next: dict {"state": np/torch, "edge_index": np/torch}
+    ENV.step(action) -> (obs_next, reward, info_next)  # done 없음
+      - info_next: deadlock_active, event_start, event_end, tau(끝날 때),
+                   terminated, truncated, action_mask ...
     """
-    def __init__(self, cfg: TrainConfig):
+    def __init__(self, cfg: TrainConfig, env):
         self.cfg = cfg
         self.device = torch.device(cfg.device)
         torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 
         # 1) Env
-        self.env = ENV(cfg.prob_path)
+        self.env = env
         obs, info = self.env.reset()
 
-        # 2) Model
-        # obs가 None일 수 있으므로 하나 나올 때까지 굴림
+        # 2) Model 초기화 (초기 state_dim 확보)
+        # deadlock이 없어서 obs=None일 수 있으므로 몇 스텝 굴려서 obs를 확보
         if obs is None:
             for _ in range(1000):
-                obs, _, done, info = self.env.step(None)
+                obs, _, info = self.env.step(None)
+                done = bool(info.get("terminated", False) or info.get("truncated", False))
                 if done:
                     obs, info = self.env.reset()
                 if obs is not None:
                     break
         assert isinstance(obs, dict) and "state" in obs, "ENV must return dict obs when deadlock active."
         state_dim = int(np.asarray(obs["state"]).shape[-1])
+
         self.model = ActorCritic(state_dim).to(self.device)
         self.opt = optim.Adam(self.model.parameters(), lr=cfg.lr)
 
@@ -70,7 +70,6 @@ class SMDPTrainer:
         waiting_idx: Optional[int] = None
 
         obs, info = self.env.reset()
-        done = False
         steps_guard = 0
 
         while len(buf) < min_events:
@@ -78,17 +77,15 @@ class SMDPTrainer:
             if steps_guard > 1_000_000:
                 raise RuntimeError("Collector guard exceeded. Check env for stalled run.")
 
-            # ---- 의사결정/액션 (데드락 시점만) ----
-            if obs is not None and info.get("event_start", False):
-                # action mask
+            # ---- 의사결정/액션 (데드락 시작 시점만) ----
+            if obs is not None:
                 amask_np = info.get("action_mask", None)
                 amask = None
                 if amask_np is not None:
                     amask = torch.as_tensor(amask_np, dtype=torch.bool, device=self.device)
-                    if amask.dim() == 1:  # [A] -> [1,A]
+                    if amask.dim() == 1:
                         amask = amask.unsqueeze(0)
 
-                # 정책 호출 (dict 그대로)
                 action, logprob, value = self.model.act(obs, action_mask=amask)
 
                 pending = {
@@ -103,16 +100,20 @@ class SMDPTrainer:
             else:
                 act_to_env = None
 
-            # ---- 한 스텝 전진 ----
-            obs_next, r, done, info_next = self.env.step(act_to_env)
+            # ---- 한 스텝 전진 (env는 3-튜플 반환) ----
+            obs_next, r, info_next = self.env.step(act_to_env)
 
             # ---- 이벤트 진행 중이면 보상 누적 ----
             if pending is not None and info.get("deadlock_active", False):
                 pending["R"] += float(r)
 
+            # ---- 종료/경계 판단 ----
+            done = bool(info_next.get("terminated", False) or info_next.get("truncated", False))
+            end_now = bool(info_next.get("event_end", False) or (done and bool(info_next.get("deadlock_active", False))))
+
             # ---- 이벤트 종료/에피소드 종료: 전이 닫기 ----
-            if pending is not None and (info_next.get("event_end", False) or done):
-                tau_final = int(info_next["tau"])  # env가 계산한 τ 사용
+            if pending is not None and end_now:
+                tau_final = int(info_next["tau"]) if "tau" in info_next else int(pending["tau_cnt"])  # env가 계산한 τ 사용
                 e = EventTransition(
                     state=pending["state"],
                     action=pending["action"],
@@ -120,27 +121,29 @@ class SMDPTrainer:
                     value=pending["value"],
                     reward=pending["R"],
                     tau=tau_final,
-                    done=bool(done),
-                    # ▼ 버퍼 dataclass에 다음 두 필드가 반드시 있어야 함
+                    done=done,
                     terminated=bool(info_next.get("terminated", False)),
                     truncated=bool(info_next.get("truncated", False)),
                     action_mask=pending["mask"],
                 )
-                idx = buf.add(e)
-                waiting_idx = idx
+                waiting_idx = buf.add(e)
                 pending = None
 
-            # ---- 다음 이벤트가 시작되면, 직전 전이에 next_value 채우기 ----
+                # 타임리밋(truncated)으로 끝났다면, 그 자리에서 V_next 부트스트랩 채우기
+                if info_next.get("truncated", False) and waiting_idx is not None and obs_next is not None:
+                    _, v_next = self.model.forward(obs_next)
+                    buf.set_next(waiting_idx, next_state=None, next_value=v_next.squeeze(0))
+                    waiting_idx = None
+
+            # ---- 다음 이벤트가 시작되면 직전 전이에 next_value 채우기 ----
             if info_next.get("event_start", False) and waiting_idx is not None and obs_next is not None:
-                # 부트스트랩을 위한 V(s_{k+1})
-                _, v_next = self.model.forward(obs_next)   # 모델이 dict 입력을 지원
+                _, v_next = self.model.forward(obs_next)
                 buf.set_next(waiting_idx, next_state=None, next_value=v_next.squeeze(0))
                 waiting_idx = None
 
-            # ---- 에피소드 종료 처리 ----
+            # ---- 에피소드 경계 처리 ----
             if done:
                 obs, info = self.env.reset()
-                done = False
             else:
                 obs, info = obs_next, info_next
 
@@ -155,7 +158,6 @@ class SMDPTrainer:
         for _ in range(cfg.epochs):
             for start in range(0, N, cfg.minibatch_size):
                 mb = idxs[start:start + cfg.minibatch_size]
-                # 미니배치 슬라이스
                 states  = batch["states"][mb]
                 actions = batch["actions"][mb]
                 old_lp  = batch["old_logprobs"][mb]
@@ -163,12 +165,11 @@ class SMDPTrainer:
                 ret     = batch["returns"][mb]
                 amask   = None if batch["action_masks"] is None else batch["action_masks"][mb]
 
-                # 새 logprob/value
                 logp_new, entropy, value = self.model.crt({"state": states, "edge_index": None}, actions, amask)
                 ratio = (logp_new - old_lp).exp()
-
                 surr1 = ratio * adv
                 surr2 = torch.clamp(ratio, 1.0 - cfg.clip_eps, 1.0 + cfg.clip_eps) * adv
+
                 actor_loss = -(torch.min(surr1, surr2)).mean()
                 value_loss = 0.5 * (ret - value).pow(2).mean()
                 entropy_bonus = entropy.mean()
@@ -182,14 +183,14 @@ class SMDPTrainer:
     # --------- 전체 학습 루프 ---------
     def train(self):
         cfg = self.cfg
-        for upd in range(1, cfg.total_updates + 1):
+        for upd in tqdm(range(1, cfg.total_updates + 1)):
             t0 = time.time()
             buf = self.collect_events(cfg.events_per_update)
             batch = buf.as_tensors()
             batch = compute_smdp_gae(batch, cfg.gamma, cfg.lam)
             self.update(batch)
             dt = time.time() - t0
-
             avgR = float(batch["rewards"].mean().cpu())
             avgTau = float(batch["taus"].mean().cpu())
             print(f"[upd {upd:04d}] events={len(buf):5d}  avgR={avgR:+.3f}  avgTau={avgTau:.2f}  time={dt:.2f}s")
+

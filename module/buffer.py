@@ -12,7 +12,7 @@ class EventTransition:
     tau: int                    # duration of the event
     done: bool
     terminated: bool = False
-    truncated: bool
+    truncated: bool = False
     action_mask: Optional[torch.Tensor] = None
     # next-state/value at next decision time (may be None if not yet observed)
     next_state: Optional[torch.Tensor] = None

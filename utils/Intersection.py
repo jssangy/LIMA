@@ -122,7 +122,7 @@ class Intersection:
         is_push_out = False
 
         if self.center_agv is None:
-            return np.zeros(4, dtype=np.bool_)
+            return np.zeros(4, dtype=np.bool_), is_push_out
 
         # 모든 행동이 가능하다고 가정하고 마스크 초기화
         mask = np.ones(4, dtype=np.bool_)
