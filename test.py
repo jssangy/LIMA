@@ -1,7 +1,7 @@
 import os
 import sys
 from GUI import GUI
-from module.Environment import ENV
+from Environment import ENV
 
 def main():
     # 프로젝트 루트 경로를 sys.path에 추가

@@ -1,68 +1,112 @@
+from typing import Optional, Tuple, Dict, Any
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from torch.distributions import Categorical
 from torch_geometric.nn import GCNConv, global_mean_pool
 
-# GNNBody 클래스는 기존과 동일합니다.
-class GNNBody(nn.Module):
-    def __init__(self, input_dim=24, hidden_dim=128):
+
+class GraphEncoder(nn.Module):
+    """
+    GCN + global mean pooling.
+    Inputs
+      - x: [N, in_dim]
+      - edge_index: [2, E] (long)  — 빈/None이면 self-loop로 대체
+      - batch: [N]  — None이면 zeros(N)로 대체(그래프 1개)
+    Output
+      - [B, hidden]
+    """
+    def __init__(self, in_dim: int, hidden: int = 128, layers: int = 2):
         super().__init__()
-        self.hidden_dim = hidden_dim
-        self.conv1 = GCNConv(input_dim, hidden_dim)
-        self.conv2 = GCNConv(hidden_dim, hidden_dim)
+        self.convs = nn.ModuleList(
+            [GCNConv(in_dim, hidden)] +
+            [GCNConv(hidden, hidden) for _ in range(layers - 1)]
+        )
+        self.act = nn.ReLU()
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        edge_index: Optional[torch.Tensor] = None,
+        batch: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        device = x.device
+        if batch is None:
+            batch = torch.zeros(x.size(0), dtype=torch.long, device=device)
+
+        # 엣지 없으면 self-loop 주입(단일 노드 포함 모든 케이스 GCN 경로 보장)
+        if edge_index is None or edge_index.numel() == 0:
+            idx = torch.arange(x.size(0), dtype=torch.long, device=device)
+            edge_index = torch.stack([idx, idx], dim=0)
+        else:
+            edge_index = edge_index.to(device=device, dtype=torch.long)
+
+        h = x
+        for conv in self.convs:
+            h = self.act(conv(h, edge_index))
+        return global_mean_pool(h, batch)  # [B, hidden]
+
+
+class ActorCritic(nn.Module):
+    """
+    입력 형태를 유연하게 받는 정책-가치 네트워크.
+    - dict: {"state": [F] or [N,F], "edge_index": [2,E] (선택)}
+    - tuple: (state, edge_index)
+    - tensor: state만 [F] 또는 [B,F]  → B개의 1-노드 그래프로 자동 변환
+    """
+    def __init__(self, state_dim: int, action_dim: int = 4, hidden: int = 128, gnn_layers: int = 2):
+        super().__init__()
+        self.encoder = GraphEncoder(state_dim, hidden, layers=gnn_layers)
+        self.actor = nn.Linear(hidden, action_dim)
+        self.critic = nn.Linear(hidden, 1)
+
+    # ---- 입력 표준화: 어떤 형태든 (x, edge_index, batch)로 변환 ----
+    def _normalize_inputs(self, inputs: Dict[str, Any]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        dev = self.actor.weight.device
+
+        # dict (ENV obs 형태)
+        if isinstance(inputs, dict):
+            x = torch.as_tensor(inputs["state"], dtype=torch.float32, device=dev)
+            if x.ndim == 1:
+                x = x.unsqueeze(0)  # [1,F]
+            ei_in = inputs.get("edge_index", None)
+            if ei_in is None:
+                edge_index = torch.empty((2, 0), dtype=torch.long, device=dev)
+            else:
+                edge_index = torch.as_tensor(ei_in, dtype=torch.long, device=dev)
+            batch = torch.zeros(x.size(0), dtype=torch.long, device=dev)
+            return x, edge_index, batch
+        else:
+            raise ValueError("Unsupported input type. Use dict with 'state' and optional 'edge_index'.")
+
+    # ---- 공통 forward ----
+    def forward(self, inputs: Dict[str, Any]):
+        x, edge_index, batch = self._normalize_inputs(inputs)
+        z = self.encoder(x, edge_index, batch)
+        logits = self.actor(z)
+        value = self.critic(z).squeeze(-1)
+        return logits, value
 
     @torch.no_grad()
-    def _compact(self, x, edge_index, active_mask):
-        active_mask = active_mask.bool()
-        keep_idx = torch.nonzero(active_mask, as_tuple=True)[0]      # [N_active]
-        if keep_idx.numel() == 0:
-            x_sub = x.new_zeros((0, x.size(-1)))
-            ei_sub = edge_index.new_zeros((2, 0))
-            return x_sub, ei_sub, keep_idx
-        new_id = torch.full((x.size(0),), -1, dtype=torch.long, device=x.device)
-        new_id[keep_idx] = torch.arange(keep_idx.numel(), device=x.device)
-        ei = edge_index
-        m = (new_id[ei[0]] >= 0) & (new_id[ei[1]] >= 0)              # 활성 엣지만
-        ei_sub = torch.stack((new_id[ei[0, m]], new_id[ei[1, m]]), 0)
-        return x[keep_idx], ei_sub, keep_idx
+    def act(self, inputs: Dict[str, Any], action_mask: Optional[torch.Tensor] = None):
+        logits, value = self.forward(inputs)
+        if action_mask is not None:
+            # action_mask: True=가능 / False=불가, shape [B, A] 또는 [A]
+            if action_mask.dim() == 1 and logits.size(0) == 1:
+                action_mask = action_mask.unsqueeze(0)
+            logits = logits.masked_fill(~action_mask.bool(), -1e9)
+        dist = Categorical(logits=logits)
+        action = dist.sample()
+        logprob = dist.log_prob(action)
+        return action, logprob, value
 
-    def forward(self, x, edge_index, active_nodes):
-        x_sub, ei_sub, keep_idx = self._compact(x, edge_index, active_nodes)
-        if x_sub.size(0) == 0:
-            return x.new_zeros((0, self.hidden_dim)), keep_idx
-        h = F.relu(self.conv1(x_sub, ei_sub))
-        h = F.relu(self.conv2(h, ei_sub))
-        return h, keep_idx
-
-
-class Actor(nn.Module):
-    def __init__(self, hidden_dim=128, action_dims=4):
-        super().__init__()
-        self.action_dims = action_dims
-        self.net = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim//2), nn.ReLU(),
-            nn.Linear(hidden_dim//2, action_dims)
-        )
-
-    def forward(self, node_embeds, batch_vec=None):
-        if node_embeds.size(0) == 0:
-            return node_embeds.new_zeros((1, self.action_dims))  # 빈 그래프 안전 처리
-        if batch_vec is None:                                    # 단일 서브그래프
-            g = node_embeds.mean(dim=0, keepdim=True)
-        else:                                                    # 여러 서브그래프
-            g = global_mean_pool(node_embeds, batch_vec)
-        return self.net(g)                                       # [B, action_dims]
-
-# Critic 클래스는 이미 이 구조를 따르고 있으므로 기존과 동일합니다.
-class Critic(nn.Module):
-    def __init__(self, hidden_dim=128):
-        super().__init__()
-        self.layer = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_dim // 2, 1)
-        )
-
-    def forward(self, all_node_embeddings, batch_vector):
-        global_state_embedding = global_mean_pool(all_node_embeddings, batch_vector)
-        return self.layer(global_state_embedding)
+    def crt(self, inputs: Dict[str, Any], action: torch.Tensor, action_mask: Optional[torch.Tensor] = None):
+        logits, value = self.forward(inputs)
+        if action_mask is not None:
+            if action_mask.dim() == 1 and logits.size(0) == 1:
+                action_mask = action_mask.unsqueeze(0)
+            logits = logits.masked_fill(~action_mask.bool(), -1e9)
+        dist = Categorical(logits=logits)
+        logprob = dist.log_prob(action)
+        entropy = dist.entropy()
+        return logprob, entropy, value

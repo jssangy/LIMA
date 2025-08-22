@@ -9,7 +9,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.distributions import Categorical
+
+from Environment import ENV
 
 # ---------------------------------------------------------
 # Plug your ENV here
@@ -19,11 +20,6 @@ from torch.distributions import Categorical
 #   - info contains: deadlock_active(bool), event_start(bool), event_end(bool), in_event(bool), tau(int when event_end True), terminated(bool), truncated(bool), action_mask(np.ndarray[bool]) when deadlock_active
 #   - obs is a dict with at least {"state": np.ndarray(shape=[state_dim], dtype=float32)}
 # For now we create a placeholder import path expecting ENV(prob_path)
-try:
-    from env import ENV  # adjust to your actual module
-except Exception as e:
-    ENV = None
-    print("[WARN] Couldn't import ENV from env.py. Replace import path at top of this file.")
 
 # ---------------------------------------------------------
 # Utilities
@@ -32,161 +28,6 @@ def to_tensor(x, device):
     if isinstance(x, np.ndarray):
         return torch.from_numpy(x).to(device)
     return torch.tensor(x, device=device)
-
-# ---------------------------------------------------------
-# Actor-Critic (replace the encoder with your GNN later)
-
-class ActorCritic(nn.Module):
-    def __init__(self, state_dim: int, action_dim: int = 4, hidden: int = 128):
-        super().__init__()
-        # Simple MLP encoder; swap with your GNN body if needed
-        self.encoder = nn.Sequential(
-            nn.Linear(state_dim, hidden), nn.ReLU(),
-            nn.Linear(hidden, hidden), nn.ReLU(),
-        )
-        self.actor = nn.Linear(hidden, action_dim)
-        self.critic = nn.Linear(hidden, 1)
-
-    def forward(self, state: torch.Tensor):
-        # state: [B, state_dim]
-        z = self.encoder(state)
-        logits = self.actor(z)
-        value = self.critic(z).squeeze(-1)
-        return logits, value
-
-    @torch.no_grad()
-    def act(self, state: torch.Tensor, action_mask: Optional[torch.Tensor] = None):
-        logits, value = self.forward(state)
-        if action_mask is not None:
-            # mask: True = allowed, False = blocked
-            # set -inf on invalid actions (use a large negative number to avoid NaNs)
-            invalid = (~action_mask).to(torch.bool)
-            logits = logits.masked_fill(invalid, -1e9)
-        dist = Categorical(logits=logits)
-        action = dist.sample()
-        logprob = dist.log_prob(action)
-        return action, logprob, value
-
-    def evaluate_actions(self, state: torch.Tensor, action: torch.Tensor, action_mask: Optional[torch.Tensor] = None):
-        logits, value = self.forward(state)
-        if action_mask is not None:
-            invalid = (~action_mask).to(torch.bool)
-            logits = logits.masked_fill(invalid, -1e9)
-        dist = Categorical(logits=logits)
-        logprob = dist.log_prob(action)
-        entropy = dist.entropy()
-        return logprob, entropy, value
-
-# ---------------------------------------------------------
-# Event Buffer for SMDP (stores per-event transitions)
-
-@dataclass
-class EventTransition:
-    state: torch.Tensor
-    action: torch.Tensor
-    logprob: torch.Tensor
-    value: torch.Tensor
-    reward: float               # accumulated R_k
-    tau: int                    # duration of the event
-    done: bool
-    terminated: bool
-    truncated: bool
-    action_mask: Optional[torch.Tensor] = None
-    # next-state/value at next decision time (may be None if not yet observed)
-    next_state: Optional[torch.Tensor] = None
-    next_value: Optional[torch.Tensor] = None
-
-class EventBuffer:
-    def __init__(self, device: torch.device):
-        self.device = device
-        self.events: List[EventTransition] = []
-
-    def add(self, e: EventTransition) -> int:
-        self.events.append(e)
-        return len(self.events) - 1
-
-    def set_next(self, idx: int, next_state: torch.Tensor, next_value: torch.Tensor):
-        self.events[idx].next_state = next_state
-        self.events[idx].next_value = next_value
-
-    def __len__(self):
-        return len(self.events)
-
-    def clear(self):
-        self.events.clear()
-
-    def as_tensors(self) -> Dict[str, torch.Tensor]:
-        # collate into tensors (pad missing next_value with 0)
-        states = torch.stack([e.state for e in self.events]).to(self.device)
-        actions = torch.stack([e.action for e in self.events]).to(self.device)
-        old_logprobs = torch.stack([e.logprob for e in self.events]).to(self.device)
-        values = torch.stack([e.value for e in self.events]).to(self.device)
-        rewards = torch.tensor([e.reward for e in self.events], dtype=torch.float32, device=self.device)
-        taus = torch.tensor([e.tau for e in self.events], dtype=torch.float32, device=self.device)
-        dones = torch.tensor([e.done for e in self.events], dtype=torch.bool, device=self.device)
-        terminated = torch.tensor([e.terminated for e in self.events], dtype=torch.bool, device=self.device)
-        truncated = torch.tensor([e.truncated for e in self.events], dtype=torch.bool, device=self.device)
-
-        # masks stored per-event (optional)
-        if any(e.action_mask is not None for e in self.events):
-            action_masks = torch.stack([e.action_mask if e.action_mask is not None else torch.ones_like(self.events[0].action_mask) for e in self.events]).to(self.device)
-        else:
-            action_masks = None
-
-        next_values = []
-        for e in self.events:
-            if e.next_value is None:
-                next_values.append(torch.tensor(0.0, device=self.device))
-            else:
-                next_values.append(e.next_value.to(self.device))
-        next_values = torch.stack(next_values)
-
-        return {
-            "states": states,
-            "actions": actions,
-            "old_logprobs": old_logprobs,
-            "values": values,
-            "rewards": rewards,
-            "taus": taus,
-            "dones": dones,
-            "terminated": terminated,
-            "truncated": truncated,
-            "action_masks": action_masks,
-            "next_values": next_values,
-        }
-
-# ---------------------------------------------------------
-# SMDP-GAE computation over event sequence
-
-def compute_smdp_gae(batch: Dict[str, torch.Tensor], gamma: float, lam: float) -> Dict[str, torch.Tensor]:
-    rewards = batch["rewards"]           # [N]
-    taus = batch["taus"]                 # [N]
-    values = batch["values"]             # [N]
-    next_values = batch["next_values"]   # [N] (0 if unknown or terminal)
-    dones = batch["dones"].float()       # [N]
-
-    # delta_k = R_k + gamma^{tau_k} V(s_{k+1}) - V(s_k)
-    gamma_tau = torch.pow(gamma, taus)
-    deltas = rewards + gamma_tau * next_values - values
-
-    advantages = torch.zeros_like(rewards)
-    last_gae = 0.0
-    for t in reversed(range(rewards.shape[0])):
-        not_done = 1.0 - dones[t]
-        lam_pow = torch.pow(gamma * lam, taus[t])
-        last_gae = deltas[t] + lam_pow * last_gae * not_done
-        advantages[t] = last_gae
-    returns = advantages + values
-
-    # normalize advantages (avoid NaN if var=0)
-    adv_mean = advantages.mean()
-    adv_std = advantages.std(unbiased=False) + 1e-8
-    advantages = (advantages - adv_mean) / adv_std
-
-    batch_out = batch.copy()
-    batch_out["advantages"] = advantages
-    batch_out["returns"] = returns
-    return batch_out
 
 # ---------------------------------------------------------
 # Training loop (collector builds per-event transitions)
