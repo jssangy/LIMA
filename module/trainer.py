@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 import time
+import wandb
 import numpy as np
 from tqdm import tqdm
 
@@ -40,7 +41,6 @@ class Trainer:
     def __init__(self, cfg: TrainConfig, env):
         self.cfg = cfg
         self.device = torch.device(cfg.device)
-        torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 
         # 1) Env
         self.env = env
@@ -184,6 +184,8 @@ class Trainer:
     def train(self):
         cfg = self.cfg
         for upd in tqdm(range(1, cfg.total_updates + 1)):
+            if upd == 1:
+                wandb.init(project="smdp_mappo", config=self.config.__dict__)
             t0 = time.time()
             buf = self.collect_events(cfg.events_per_update)
             batch = buf.as_tensors()
@@ -193,4 +195,12 @@ class Trainer:
             avgR = float(batch["rewards"].mean().cpu())
             avgTau = float(batch["taus"].mean().cpu())
             print(f"[upd {upd:04d}] events={len(buf):5d}  avgR={avgR:+.3f}  avgTau={avgTau:.2f}  time={dt:.2f}s")
+            
+            wandb.log({
+                "update": upd,
+                "avgR": avgR,
+                "avgTau": avgTau,
+                "lr": self.opt.param_groups[0]["lr"],
+                "entropy_coef": self.cfg.entropy_coef,   # 스케줄링하면 값 반영
+            })
 

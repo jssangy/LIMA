@@ -8,7 +8,7 @@ from utils.AGV import agv
 from utils.Intersection import Intersection
 from utils.DeadlockDetector import DeadlockDetector
 from utils import Funct
-from utils.traffic_generator import TrafficGenerator
+from utils.traffic_generator import TrafficGenerator1, TrafficGenerator2
 from utils.Controller import controller
 
 
@@ -32,10 +32,14 @@ class ENV():
         self.time = 0
         self.agv_list = {}
         self.l_hop = 1
-        self.max_steps = 1024
+        self.max_steps = 1000
 
-        # TrafficGenerator, Controller, DeadlockDetector, Intersections
-        self.traffic_generator = TrafficGenerator()
+        # TrafficGenerator
+        self.traffic_generator = TrafficGenerator2()
+        self.max_inside = 3
+        self.traffic_generator.set_capacity_gate(self._spawn_gate)
+
+        # Controller, DeadlockDetector, Intersections
         self.color_map = Funct.Color_dict(self.traffic_generator.total_tasks_in_episode).dic
         self.controller = controller(self.map)
         self.deadlock_detector = DeadlockDetector(self.controller)
@@ -72,11 +76,14 @@ class ENV():
             obs_now, info_now = self.generate_observation()
             if obs_now is not None and info_now.get("deadlock_active", False):
                 # 막 시작했는지 여부(상승엣지)
-                is_start = (not self.prev_deadlock) and True
+                is_start = not self.prev_deadlock
                 if is_start:
                     try:
+                        print(obs_now)
+                        print(info_now)
                         a = self.rl_policy(obs_now, info_now.get("action_mask", None))  # int
                         self.intersection.action_control(a)
+                        print(a)
                     except Exception as e:
                         # 정책 오류 시 RL 비활성화하고 안전하게 계속
                         self.use_rl = False
@@ -96,12 +103,12 @@ class ENV():
         self._spawn_amrs_if_needed()
 
         # 4. 다음 의사결정을 위한 상태 계산
-        obs_next, info_next = self.generate_observation()
-        curr_deadlock = bool(info_next["deadlock_active"])
+        obs_next, info_next = self.generate_observation(train)
 
         if not train:
             return self.make_info()
-
+        
+        curr_deadlock = bool(info_next["deadlock_active"])
         event_start = (not self.prev_deadlock) and curr_deadlock
         event_end = self.prev_deadlock and (not curr_deadlock)
 
@@ -141,7 +148,7 @@ class ENV():
 
         return obs_next, reward, info_next
 
-    def generate_observation(self):
+    def generate_observation(self, train=True):
         """
         GNN을 위한 Dict 형태의 관측 생성
         """
@@ -149,6 +156,10 @@ class ENV():
         for agv_id, agv_obj in self.agv_list.items():
             self.controller.get_sensing(agv_id, agv_obj.pos)
         self.controller.make_control()
+        
+        if not train:
+            return None, None
+
         self._update_intersections_state()
         is_deadlock = self.deadlock_detector.check_deadlock(self.intersection)
 
@@ -321,8 +332,54 @@ class ENV():
 
         return intersections_data, final_adj
     
-    def close(self):
-        pass
+    def _center_positions(self):
+        """모든 교차로 중앙 좌표 리스트"""
+        return [(cx, cy) for (cx, cy, *_) in self.intersection_data]
+
+    def _center_occupied_any(self) -> bool:
+        """어느 교차로 중앙이라도 AMR이 있으면 True"""
+        centers = set(self._center_positions())
+        return any(agv_obj.pos in centers for agv_obj in self.agv_list.values())
+
+    def _center_occupied_at(self, intersection_data) -> bool:
+        """지정 교차로의 중앙이 점유되어 있으면 True"""
+        cx, cy, *_ = intersection_data
+        return any(agv_obj.pos == (cx, cy) for agv_obj in self.agv_list.values())
+
+    def _count_inside_intersection(self) -> int:
+        """교차로 내부(팔+중앙) AMR 수"""
+        lanes = getattr(self.intersection, "all_lane_coords", set())
+        return sum(1 for agv_obj in self.agv_list.values() if agv_obj.pos in lanes)
+
+    def _arm_occupied(self, direction: str) -> bool:
+        """해당 방향 팔(교차로 내부 구간)에 AMR이 있으면 True"""
+        cx, cy, lenN, lenE, lenS, lenW = self.intersection_data[0]  # 단일 교차로 기준
+        L = {'N': lenN, 'E': lenE, 'S': lenS, 'W': lenW}[direction]
+        if direction == 'N':
+            cells = [(cx, cy - i) for i in range(1, L + 1)]
+        elif direction == 'S':
+            cells = [(cx, cy + i) for i in range(1, L + 1)]
+        elif direction == 'E':
+            cells = [(cx + i, cy) for i in range(1, L + 1)]
+        else:  # 'W'
+            cells = [(cx - i, cy) for i in range(1, L + 1)]
+        occ = {agv_obj.pos for agv_obj in self.agv_list.values()}
+        return any(p in occ for p in cells)
+
+    def _spawn_gate(self, direction: str) -> bool:
+        """
+        Poisson 스폰을 막는 글로벌 게이트:
+        - 중앙 점유 시 전체 스폰 정지
+        - 교차로 내부 AMR 수가 임계치 이상이면 정지
+        - 해당 팔 점유 시 해당 방향 스폰 금지
+        """
+        if self._center_occupied_any():               # ★ 중앙 점유 금지
+            return False
+        if self._count_inside_intersection() >= self.max_inside:
+            return False
+        if self._arm_occupied(direction):
+            return False
+        return True
 
     # --- [GUI 연동을 위한 어댑터 함수들] ---
     def Get_AGV(self):
@@ -340,8 +397,8 @@ class ENV():
 
         progress = self.traffic_generator.get_progress()
         # 바뀐 키들:
-        # 'completed_pairs_in_cycle', 'total_pairs_per_cycle', 'completed_pairs_total', 'active_agvs', 'cycle'
-        total_pairs_done = progress['completed_pairs_total']
+        # 'completed_pairs_in_cycle', 'total_pairs_per_cycle', 'completed_total', 'active_agvs', 'cycle'
+        total_pairs_done = progress['completed_total']
 
         # 단순 스루풋(쌍/스텝). 필요하면 시간 스케일 맞춰 곱해 쓰세요.
         throughput = (total_pairs_done / self.time) if self.time > 0 else 0.0

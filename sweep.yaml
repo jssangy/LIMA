@@ -1,39 +1,52 @@
-# sweep.yaml
-project: MAPPO
-name: ppo_mappo_sweep
+# sweep_1st.yaml
+program: train.py
 method: grid
 metric:
-  name: reward       # train.py에서 wandb.log({"reward": ...}) 로 기록 중
+  name: avgR          # trainer에서 wandb.log({"avgR": ...}) 하세요
   goal: maximize
 
 parameters:
-  lr:
-    values: [1e-4, 5e-4, 1e-3]
-  gamma:
-    values: [0.95, 0.99]
-  lmbda:
-    values: [0.90, 0.95]
-  clip_epsilon:
-    values: [0.1, 0.2]
-  entropy_coeff:
-    values: [0.001, 0.005, 0.01]
+  lr:                 # Adam 학습률
+    distribution: log_uniform_values
+    min: 1e-5
+    max: 5e-4
+
+  clip:               # PPO clip epsilon
+    values: [0.10, 0.15, 0.20, 0.25, 0.30]
+
+  entropy_coef:       # 엔트로피 보너스 계수
+    distribution: log_uniform_values
+    min: 0.005
+    max: 0.05
+
+  epochs:             # PPO epochs per update
+    values: [2, 3, 4, 6]
+
+  minibatch:          # 미니배치 크기
+    values: [64, 128, 256]
+
+  events_per_update:  # 이벤트 전이 개수
+    values: [64, 128, 256, 512]
 
 command:
   - ${env}
-  - ${interpreter}
-  - train.py
-  - -p
+  - python
+  - ${program}
+  - --prob_path
   - problems/cross/cross_1.json
-  - --total_frames
-  - "1000000"
-  - --frames_per_batch
-  - "1024"
-  - --mini_batch_size
-  - "64"
-  - --num_epochs
-  - "10"
-  - --seed
-  - "7"
-  - ${args}
-  - --save_dir
-  - "artifacts"
+  - --updates
+  - "300"
+  - --events_per_update
+  - ${events_per_update}
+  - --epochs
+  - ${epochs}
+  - --minibatch
+  - ${minibatch}
+  - --clip
+  - ${clip}
+  - --lr
+  - ${lr}
+  - --entropy_coef
+  - ${entropy_coef}
+  - --device
+  - "cuda"

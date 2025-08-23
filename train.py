@@ -10,14 +10,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--prob_path", type=str, default="problems/cross/cross_1.json",
                         help="Path to your problem JSON for ENV(prob_path)")
-    parser.add_argument("--updates", type=int, default=20)
-    parser.add_argument("--events_per_update", type=int, default=1024)
+    parser.add_argument("--updates", type=int, default=100)
+    parser.add_argument("--events_per_update", type=int, default=1000)
     parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--minibatch", type=int, default=256)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lam", type=float, default=0.95)
+    parser.add_argument("--entropy_coef", type=float, default=0.01)
     parser.add_argument("--clip", type=float, default=0.2)
-    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--out_model", type=str, default="checkpoints/policy_final.pt")
     args = parser.parse_args()
@@ -33,8 +35,10 @@ def main():
         minibatch_size=args.minibatch,
         gamma=args.gamma,
         lam=args.lam,
+        entropy_coef=args.entropy_coef,
         clip_eps=args.clip,
         lr=args.lr,
+        seed=args.seed,
         device=args.device,
     )
 
@@ -44,6 +48,7 @@ def main():
 
     # ★ 최종 모델 저장
     os.makedirs(os.path.dirname(args.out_model) or ".", exist_ok=True)
+    path = os.path.join("checkpoints", )
     torch.save(trainer.model.state_dict(), args.out_model)
     print(f"[model] saved → {args.out_model}")
 

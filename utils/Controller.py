@@ -1,6 +1,6 @@
 import numpy as np
 
-from utils.global_planning import DStar
+from utils.global_planning import DStar, PIBT
 
 class controller():    
     def __init__(self, map_data):
@@ -16,6 +16,7 @@ class controller():
         self.map = map_data
 
         self.running_opt = 0
+        self.pibt = PIBT(self.map)
 
     def reset(self):
         self.agv_pos.clear()
@@ -51,7 +52,14 @@ class controller():
 
     def make_control(self):
         """모든 활성 AGV에 대한 제어 신호 생성"""
-        self.dstar_rout()
+        if self.running_opt == 0:              # D*
+            self.dstar_rout()
+        elif self.running_opt == 1:            # PIBT 전체
+            self.pibt_rout(use_dstar_hint=True, on_conflict=False)
+        elif self.running_opt == 2:            # D* 기본 + 충돌 시만 PIBT
+            self.pibt_rout(use_dstar_hint=True, on_conflict=True)
+        else:
+            self.dstar_rout()
     
     def dstar_rout(self):
         """D* 알고리즘을 사용하여 각 AGV의 경로를 계산하고 제어 신호 생성"""
@@ -79,3 +87,99 @@ class controller():
             dx = next_pos[0] - pos[0]
             dy = next_pos[1] - pos[1]
             self.control_buffer[num] = (dx, dy)
+
+    def pibt_rout(self, use_dstar_hint: bool = True, on_conflict: bool = False):
+        """
+        PIBT로 한 스텝 제어 벡터를 채운다.
+        - use_dstar_hint=True: D*의 다음 칸을 후보 최우선 힌트로 사용
+        - on_conflict=True: D* 제안대로 갔을 때 t+1 충돌이 예상되는 에이전트 '그룹'만 PIBT로 재결정
+        """
+        if not self.agv_nums:
+            return
+
+        # 스냅샷
+        pos = {a: self.agv_pos[a] for a in self.agv_nums}
+        goals = {a: self.agv_goal[a] for a in self.agv_nums}
+
+        # 1) D*로 각자 다음 칸/경로 제안 (힌트로도 사용)
+        dstar_next = {}
+        dstar_hint = {}
+        for a in self.agv_nums:
+            p = pos[a]; g = goals[a]; planner = self.planners.get(a)
+            if (p is None) or (g is None) or (planner is None):
+                dstar_next[a] = p
+                dstar_hint[a] = None
+                self.agv_path[a] = [p]
+                continue
+
+            if p == g:
+                dstar_next[a] = p
+                dstar_hint[a] = None
+                self.agv_path[a] = [p]
+                continue
+
+            planner.start = p
+            planner.goal = g
+            try:
+                planner.compute_shortest_path()
+                path = planner.extract_path()
+            except Exception:
+                path = [p]
+
+            self.agv_path[a] = path
+            nx = path[1] if path and len(path) > 1 else p
+            dstar_next[a] = nx
+            dstar_hint[a] = (nx if (use_dstar_hint and nx != p) else None)
+
+        # 2) on_conflict 옵션: 충돌 예상 그룹만 PIBT 적용
+        def _detect_conflict_set(pos_dict, nxt_dict):
+            agents = list(nxt_dict.keys())
+            bad = set()
+            for i in range(len(agents)):
+                a = agents[i]
+                for j in range(i+1, len(agents)):
+                    b = agents[j]
+                    # 정점 충돌 (같은 칸으로 이동)
+                    if nxt_dict[a] == nxt_dict[b]:
+                        bad.update([a, b]); continue
+                    # 에지(스왑) 충돌
+                    if nxt_dict[a] == pos_dict[b] and nxt_dict[b] == pos_dict[a]:
+                        bad.update([a, b]); continue
+                    # 정지-진입 충돌
+                    if nxt_dict[b] == pos_dict[b] and nxt_dict[a] == pos_dict[b] and nxt_dict[a] != nxt_dict[b]:
+                        bad.update([a, b])
+            return bad
+
+        if on_conflict:
+            group = _detect_conflict_set(pos, dstar_next)
+            if not group:
+                # 충돌 없으면 D* 제안대로 진행
+                for a in self.agv_nums:
+                    nx = dstar_next[a]
+                    dx, dy = nx[0] - pos[a][0], nx[1] - pos[a][1]
+                    self.control_buffer[a] = (dx, dy)
+                return
+            # 그룹 밖은 고정 점유/엣지로 취급해 그룹만 PIBT 재결정
+            non_group = set(self.agv_nums) - set(group)
+            fixed_vertices = {dstar_next[b] for b in non_group}
+            fixed_edges = {(pos[b], dstar_next[b]) for b in non_group}
+            group_next = self.pibt.plan_one_step(
+                pos=pos, goals=goals,
+                dstar_hint={a: dstar_hint[a] for a in group},
+                subset=group,
+                fixed_vertices=fixed_vertices,
+                fixed_edges=fixed_edges,
+            )
+            final_next = dict(dstar_next)
+            final_next.update(group_next)
+        else:
+            # 전체를 PIBT로 한 스텝 결정 (D* 힌트는 후보 우선)
+            final_next = self.pibt.plan_one_step(
+                pos=pos, goals=goals, dstar_hint=dstar_hint
+            )
+
+        # 3) 제어 벡터 적용
+        for a in self.agv_nums:
+            nx = final_next.get(a, pos[a])
+            dx, dy = nx[0] - pos[a][0], nx[1] - pos[a][1]
+            self.control_buffer[a] = (dx, dy)
