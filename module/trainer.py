@@ -185,7 +185,7 @@ class Trainer:
         cfg = self.cfg
         for upd in tqdm(range(1, cfg.total_updates + 1)):
             if upd == 1:
-                wandb.init(project="smdp_mappo", config=self.config.__dict__)
+                wandb.init(project="smdp_mappo", config=self.cfg.__dict__)
             t0 = time.time()
             buf = self.collect_events(cfg.events_per_update)
             batch = buf.as_tensors()
@@ -195,7 +195,7 @@ class Trainer:
             avgR = float(batch["rewards"].mean().cpu())
             avgTau = float(batch["taus"].mean().cpu())
             print(f"[upd {upd:04d}] events={len(buf):5d}  avgR={avgR:+.3f}  avgTau={avgTau:.2f}  time={dt:.2f}s")
-            
+
             wandb.log({
                 "update": upd,
                 "avgR": avgR,
