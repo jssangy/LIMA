@@ -7,7 +7,7 @@ tqdm
 torch
 torchrl
 tensordict
-gymnasium=0.29
+gymnasium==0.29
 torch_geometric
 
 # torchrl ppo.py 수정
