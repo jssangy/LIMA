@@ -120,9 +120,9 @@ class TrafficGenerator2:
     def __init__(
         self,
         active_dirs: Optional[List[str]] = None,     # 활성 방향 집합
-        lam: float = 0.05,                           # 기본 λ (per-step, per-dir)
+        lam: float = 0.1,                           # 기본 λ (per-step, per-dir)
         lambda_per_dir: Optional[Dict[str, float]] = None,
-        max_spawn_per_step: int = 2,                 # 한 스텝 최대 스폰 수 (K)
+        max_spawn_per_step: int = 4,                 # 한 스텝 최대 스폰 수 (K)
         turn_probs: Optional[Dict[str, Dict[str, float]]] = None,
         seed: Optional[int] = None,
     ):

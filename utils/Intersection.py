@@ -75,13 +75,74 @@ class Intersection:
 
         return np.array(state_vector, dtype=np.float32)
 
+    def _dir_vec(self, d):  # 'N','E','S','W' -> (dx,dy)
+        return {'N':(0,-1), 'E':(1,0), 'S':(0,1), 'W':(-1,0)}[d]
+
+    def _lane_line(self, d):
+        """센터 바로 앞부터 팔 끝까지 좌표 리스트 [adj1,...,end]"""
+        L = {'N': self.len_N, 'E': self.len_E, 'S': self.len_S, 'W': self.len_W}[d]
+        dx, dy = self._dir_vec(d)
+        return [(self.center_x + dx*i, self.center_y + dy*i) for i in range(1, L+1)]
+
+    def _pos_occ_global(self, pos):
+        """맵 전역 점유 체크(컨트롤러가 들고 있는 포지션 사용)"""
+        return any(p == pos for p in self.controller.agv_pos.values())
+
+    def _push_chain_once(self, dname) -> bool:
+        """
+        dname 방향으로 체인 밀어내기 세팅:
+        - 팔 끝칸이 차 있으면 '그 다음 칸(out_next)'이 비어야 밀어낼 수 있음
+        - 끝에서부터 한 칸씩 모두 같은 (dx,dy)로 move 지시
+        - 마지막으로 센터도 같은 방향으로 move
+        반환: 성공적으로 세팅했으면 True, 불가하면 False
+        """
+        if self.center_agv is None:
+            return False
+
+        line = self._lane_line(dname)             # [adj1, ..., end]
+        dx, dy = self._dir_vec(dname)
+        end = line[-1]
+        out_next = (end[0] + dx, end[1] + dy)      # 팔 밖 한 칸
+
+        # 팔 끝칸에 AGV가 있고 out_next가 이미 전역 점유면 못 민다
+        occ_dir = self.agvs_in_lanes[dname]        # {agv_id: pos}
+        pos2id = {pos: aid for aid,pos in occ_dir.items()}
+
+        if end in pos2id and self._pos_occ_global(out_next):
+            return False
+
+        # 체인 세팅: far -> near (끝에서부터)
+        for pos in reversed(line):
+            if pos in pos2id:
+                aid = pos2id[pos]
+                self.controller.control_buffer[aid] = (dx, dy)
+
+        # 센터 앞칸에 최종적으로 빈자리가 생긴다고 가정하고 센터도 전진
+        self.controller.control_buffer[self.center_agv] = (dx, dy)
+
+        # (선택) 이동 순서 보장: 먼저 먼 것부터 이동시키기
+        seq = [pos2id[p] for p in reversed(line) if p in pos2id] + [self.center_agv]
+        setattr(self.controller, "push_sequence", seq)
+        return True
+
     def action_control(self, actions, is_push_out=False):
-        # 중앙 AGV 제어
-        if self.center_agv is not None:
-            move_map = {0: (0, -1), 1: (1, 0), 2: (0, 1), 3: (-1, 0)}
-            move = move_map[actions]
-                
-            self.controller.control_buffer[self.center_agv] = move
+        """actions: 0=N,1=E,2=S,3=W"""
+        if self.center_agv is None:
+            return
+        idx2dir = {0:'N',1:'E',2:'S',3:'W'}
+
+        # 밀어내기 모드가 아니라면 센터만 이동
+        if not is_push_out:
+            move_map = {0:(0,-1),1:(1,0),2:(0,1),3:(-1,0)}
+            self.controller.control_buffer[self.center_agv] = move_map[int(actions)]
+            return
+
+        # 밀어내기: 선택 방향 우선, 실패 시 다른 방향 순차 시도
+        order = [int(actions)] + [i for i in (0,1,2,3) if i != int(actions)]
+        for k in order:
+            if self._push_chain_once(idx2dir[k]):
+                return
+        # 모두 실패하면 아무 것도 안 함(혹은 센터만 대기/임의 방향 이동 등 정책 선택)                
 
     def _get_exit_direction(self, path):
         center_node = (self.center_x, self.center_y)

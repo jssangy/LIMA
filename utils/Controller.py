@@ -15,6 +15,8 @@ class controller():
         # Map of the environment
         self.map = map_data
 
+        self.push_sequence = []
+
         self.running_opt = 0
         self.pibt = PIBT(self.map)
 
@@ -25,6 +27,7 @@ class controller():
         self.agv_goal.clear()
         self.planners.clear()
         self.agv_path.clear()
+        self.push_sequence.clear()
     
     def add_agv(self, agv_num, start_pos, goal_pos):
         """AGV를 컨트롤러에 동적으로 추가"""

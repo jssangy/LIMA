@@ -46,12 +46,6 @@ def main():
     trainer = Trainer(cfg, env=env)
     trainer.train()
 
-    # ★ 최종 모델 저장
-    os.makedirs(os.path.dirname(args.out_model) or ".", exist_ok=True)
-    path = os.path.join("checkpoints", )
-    torch.save(trainer.model.state_dict(), args.out_model)
-    print(f"[model] saved → {args.out_model}")
-
 
 if __name__ == "__main__":
     main()

@@ -79,11 +79,9 @@ class ENV():
                 is_start = not self.prev_deadlock
                 if is_start:
                     try:
-                        print(obs_now)
-                        print(info_now)
                         a = self.rl_policy(obs_now, info_now.get("action_mask", None))  # int
                         self.intersection.action_control(a)
-                        print(a)
+                        print("Action:", a)
                     except Exception as e:
                         # 정책 오류 시 RL 비활성화하고 안전하게 계속
                         self.use_rl = False
@@ -93,10 +91,30 @@ class ENV():
             self.intersection.action_control(actions)
 
         # 2. Movement: 수정된 제어 신호에 따라 모든 AGV 이동
+        priority = getattr(self.controller, "push_sequence", [])
+        moved = set()
+
+        # (A) 우선순위 목록부터 이동 (먼 → 가까운 순서, 마지막이 center)
+        for agv_id in priority:
+            agv_obj = self.agv_list.get(agv_id)
+            if agv_obj is None:
+                continue
+            sig = self.controller.control_buffer.get(agv_id, (0, 0))
+            if self._is_valid_move(agv_obj, sig):
+                agv_obj.move(sig)
+                moved.add(agv_id)
+            # (선택) 실패 시 체인 전체 취소/스킵 로직을 넣고 싶다면 여기서 break/rollback 처리
+
+        # (B) 나머지 일반 이동
         for agv_id, agv_obj in list(self.agv_list.items()):
-            control_sig = self.controller.control_buffer[agv_id]
-            if self._is_valid_move(agv_obj, control_sig):
-                agv_obj.move(control_sig)
+            if agv_id in moved:
+                continue
+            sig = self.controller.control_buffer.get(agv_id, (0, 0))
+            if self._is_valid_move(agv_obj, sig):
+                agv_obj.move(sig)
+
+        # 사용 후 정리
+        self.controller.push_sequence = []
         
         # 3. 환경 변화 처리: AGV 완료 및 신규 생성
         self._check_amr_completion()
@@ -183,6 +201,7 @@ class ENV():
     def _is_valid_move(self, current_agv, control_signal):
         next_pos = (current_agv.pos[0] + control_signal[0], current_agv.pos[1] + control_signal[1])
         if self.map[next_pos[1]][next_pos[0]] == 1: return False
+        if not (0 <= next_pos[0] < self.map.shape[1] and 0 <= next_pos[1] < self.map.shape[0]): return False
         for agv_id, other_agv in self.agv_list.items():
             if current_agv != other_agv and next_pos == other_agv.pos: return False
         return True

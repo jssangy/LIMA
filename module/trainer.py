@@ -4,6 +4,7 @@ import time
 import wandb
 import numpy as np
 from tqdm import tqdm
+import os
 
 import torch
 import torch.nn as nn
@@ -13,6 +14,14 @@ from torch.distributions import Categorical
 from module.model import ActorCritic
 from module.buffer import EventBuffer, EventTransition
 from module.smdp_gae import compute_smdp_gae
+
+
+def _slug(v):
+    if isinstance(v, float):
+        s = f"{v:.6g}"
+    else:
+        s = str(v)
+    return s.replace(".", "p").replace("-", "m")
 
 
 @dataclass
@@ -183,9 +192,29 @@ class Trainer:
     # --------- 전체 학습 루프 ---------
     def train(self):
         cfg = self.cfg
+
+        # 1) 파일/런 공통 base 이름 구성
+        run_base = (
+            f"policy_"
+            f"lr{_slug(cfg.lr)}_"
+            f"clip{_slug(cfg.clip_eps)}_"
+            f"ent{_slug(cfg.entropy_coef)}_"
+            f"ep{cfg.epochs}_"
+            f"mb{cfg.minibatch_size}_"
+            f"eupd{cfg.events_per_update}"
+        )
+
+        # 2) W&B 초기화 + run.name을 파일명과 동일하게 설정
+        if wandb.run is None:
+            wandb.init(project="smdp_mappo", config=cfg, name=run_base)
+        # run.id 확보 후 최종 이름 확정(.pt 포함)
+        if wandb.run:
+            full_name = f"{run_base}_{wandb.run.id}.pt"
+            wandb.run.name = full_name    # ← W&B 대시보드 run 이름
+        else:
+            full_name = f"{run_base}.pt"  # W&B 미사용 시
+
         for upd in tqdm(range(1, cfg.total_updates + 1)):
-            if upd == 1:
-                wandb.init(project="smdp_mappo", config=self.cfg.__dict__)
             t0 = time.time()
             buf = self.collect_events(cfg.events_per_update)
             batch = buf.as_tensors()
@@ -196,11 +225,18 @@ class Trainer:
             avgTau = float(batch["taus"].mean().cpu())
             print(f"[upd {upd:04d}] events={len(buf):5d}  avgR={avgR:+.3f}  avgTau={avgTau:.2f}  time={dt:.2f}s")
 
-            wandb.log({
-                "update": upd,
-                "avgR": avgR,
-                "avgTau": avgTau,
-                "lr": self.opt.param_groups[0]["lr"],
-                "entropy_coef": self.cfg.entropy_coef,   # 스케줄링하면 값 반영
-            })
+            wandb.log({"update": upd, "avgR": avgR, "avgTau": avgTau,
+                       "lr": cfg.lr, "entropy_coef": cfg.entropy_coef,
+                       "clip": cfg.clip_eps, "epochs": cfg.epochs,
+                       "minibatch": cfg.minibatch_size,
+                       "events_per_update": cfg.events_per_update})
+            
+        # 3) 학습 종료 후, run.name과 동일한 파일명으로 저장
+        out_dir = "checkpoints"
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, full_name)
+        torch.save(self.model.state_dict(), out_path)
+        print(f"[model] saved → {out_path}")
+
+        wandb.finish()
 
