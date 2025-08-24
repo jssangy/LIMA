@@ -195,7 +195,6 @@ class Trainer:
 
         # 1) 파일/런 공통 base 이름 구성
         run_base = (
-            f"policy_"
             f"lr{_slug(cfg.lr)}_"
             f"clip{_slug(cfg.clip_eps)}_"
             f"ent{_slug(cfg.entropy_coef)}_"
@@ -209,8 +208,7 @@ class Trainer:
             wandb.init(project="smdp_mappo", config=cfg, name=run_base)
         # run.id 확보 후 최종 이름 확정(.pt 포함)
         if wandb.run:
-            full_name = f"{run_base}_{wandb.run.id}.pt"
-            wandb.run.name = full_name    # ← W&B 대시보드 run 이름
+            wandb.run.name = run_base    # ← W&B 대시보드 run 이름
         else:
             full_name = f"{run_base}.pt"  # W&B 미사용 시
 

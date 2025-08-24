@@ -1,6 +1,6 @@
 # sweep_1st.yaml
 program: train.py
-method: bayes
+method: grid
 metric:
   name: avgR
   goal: maximize
