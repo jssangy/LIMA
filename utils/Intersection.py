@@ -21,58 +21,53 @@ class Intersection:
         )
 
         # 이벤트 기반 AGV 추적
-        self.agvs_in_intersection = {}  # 교차로 내 AGV만 추적
-        self.agvs_in_lanes = {'N': {}, 'E': {}, 'S': {}, 'W': {}}
+        self.agvs_in_intersection = set()  # 교차로 내 AGV만 추적
+        self.agvs_in_lanes = {'N': [], 'E': [], 'S': [], 'W': []}
         self.center_agv = None
 
-    def get_state(self):        
+    def get_state(self):
         state_vector = []
         center = (self.center_x, self.center_y)
 
-        closest_agv_config = {
-            'N': {'func': max, 'key_idx': 1}, # y좌표가 가장 큰 (가장 아래쪽)
-            'E': {'func': min, 'key_idx': 0}, # x좌표가 가장 작은 (가장 왼쪽)
-            'S': {'func': min, 'key_idx': 1}, # y좌표가 가장 작은 (가장 위쪽)
-            'W': {'func': max, 'key_idx': 0}, # x좌표가 가장 큰 (가장 오른쪽)
+        closest_cfg = {
+            'N': ('y',  max),  # y가 가장 큰(아래쪽)
+            'E': ('x',  min),  # x가 가장 작은(왼쪽)
+            'S': ('y',  min),  # y가 가장 작은(위쪽)
+            'W': ('x',  max),  # x가 가장 큰(오른쪽)
         }
 
-        for dir_name in ['N', 'E', 'S', 'W']:
-            # 이미 분류된 방향별 AGV 사용
-            agvs_in_direction = self.agvs_in_lanes[dir_name]
-            
-            closest_agv_num = None
-            if agvs_in_direction:
-                config = closest_agv_config[dir_name]
-                key_func = lambda num: agvs_in_direction[num][config['key_idx']]
-                closest_agv_num = config['func'](agvs_in_direction, key=key_func)
-
-            # 상태 벡터 구성
+        for d in ['N', 'E', 'S', 'W']:
+            agvs = self.agvs_in_lanes[d]  # [AGV,...]
             goal_onehot = [0, 0, 0, 0]
             distance = 0
-            
-            if closest_agv_num is not None:
-                path = self.controller.agv_path[closest_agv_num]
-                exit_dir = self._get_exit_direction(path)
-                dir_map = {'N': 0, 'E': 1, 'S': 2, 'W': 3}
-                if exit_dir in dir_map:
-                    goal_onehot[dir_map[exit_dir]] = 1
 
-                pos = agvs_in_direction[closest_agv_num]
-                distance = abs(pos[0] - center[0]) + abs(pos[1] - center[1])
+            if agvs:
+                axis, sel = closest_cfg[d]
+                key_fn = (lambda a: a.pos[1]) if axis == 'y' else (lambda a: a.pos[0])
+                closest_agv = sel(agvs, key=key_fn)
+
+                agv_id = closest_agv.id
+                if agv_id is not None and agv_id in self.controller.agv_path:
+                    path = self.controller.agv_path[agv_id]
+                    exit_dir = self._get_exit_direction(path)
+                    idx = {'N':0,'E':1,'S':2,'W':3}.get(exit_dir, None)
+                    if idx is not None: goal_onehot[idx] = 1
+
+                distance = abs(closest_agv.pos[0] - center[0]) + abs(closest_agv.pos[1] - center[1])
 
             state_vector.extend(goal_onehot)
             state_vector.append(distance)
 
         center_goal_onehot = [0, 0, 0, 0]
         if self.center_agv is not None:
-            path = self.controller.agv_path[self.center_agv]
-            exit_dir = self._get_exit_direction(path)
-            dir_map = {'N': 0, 'E': 1, 'S': 2, 'W': 3}
-            if exit_dir in dir_map:
-                center_goal_onehot[dir_map[exit_dir]] = 1
+            agv_id = self.center_agv.id
+            if agv_id is not None and agv_id in self.controller.agv_path:
+                path = self.controller.agv_path[agv_id]
+                exit_dir = self._get_exit_direction(path)
+                idx = {'N':0,'E':1,'S':2,'W':3}.get(exit_dir, None)
+                if idx is not None: center_goal_onehot[idx] = 1
 
         state_vector.extend(center_goal_onehot)
-
         return np.array(state_vector, dtype=np.float32)
 
     def _dir_vec(self, d):  # 'N','E','S','W' -> (dx,dy)
@@ -134,7 +129,7 @@ class Intersection:
         # 밀어내기 모드가 아니라면 센터만 이동
         if not is_push_out:
             move_map = {0:(0,-1),1:(1,0),2:(0,1),3:(-1,0)}
-            self.controller.control_buffer[self.center_agv] = move_map[int(actions)]
+            self.controller.control_buffer[self.center_agv.id] = move_map[int(actions)]
             return
 
         # 밀어내기: 선택 방향 우선, 실패 시 다른 방향 순차 시도
@@ -160,19 +155,33 @@ class Intersection:
 
     def reset(self):
         self.agvs_in_intersection.clear()
-        self.agvs_in_lanes = {'N': {}, 'E': {}, 'S': {}, 'W': {}}
+        self.agvs_in_lanes = {'N': [], 'E': [], 'S': [], 'W': []}
         self.center_agv = None
 
-    def add_agv(self, agv_num, pos):
-        self.agvs_in_intersection[agv_num] = pos
+    def add_agv(self, agv_obj):
+        self.agvs_in_intersection.add(agv_obj)
 
-        if pos == (self.center_x, self.center_y):
-            self.center_agv = agv_num
+        if agv_obj.pos == (self.center_x, self.center_y):
+            self.center_agv = agv_obj
         
         for direction, coords in self.lane_coords.items():
-            if pos in coords:
-                self.agvs_in_lanes[direction][agv_num] = pos
+            if agv_obj.pos in coords:
+                self.agvs_in_lanes[direction].append(agv_obj)
                 break
+
+    def _back_action_index_from_prev(self):
+        if self.center_agv is None:
+            return None
+        cur = (self.center_x, self.center_y)
+        prev = self.center_agv.prev_pos
+        # 직전 위치가 센터 인접칸(맨해튼거리 1)일 때만 유효
+        if abs(prev[0]-cur[0]) + abs(prev[1]-cur[1]) != 1:
+            return None
+        # prev→cur로 들어왔으니, 그 반대가 '뒤로가기'
+        vx, vy = cur[0]-prev[0], cur[1]-prev[1]
+        back_vec = (-vx, -vy)
+        vec2idx = {(0,-1):0,(1,0):1,(0,1):2,(-1,0):3}
+        return vec2idx.get(back_vec)
 
     def calculate_action_mask(self):
         """
@@ -203,11 +212,17 @@ class Intersection:
             mask[2] = False  # 남쪽으로 이동 불가
         if state_W[4] > 0 and state_W[3] != 1:
             mask[3] = False  # 서쪽으로 이동 불가
+        
+        back_idx = self._back_action_index_from_prev()
+        if back_idx is not None:
+            mask[back_idx] = False
 
         # --- 2. [핵심 추가] '모두 막힘' 예외 처리 ---
         # 기본 마스킹 결과, 갈 수 있는 곳이 하나도 없는지 확인
         if not mask.any():
+            print("모든 방향이 막혔습니다. 밀어내기 모드로 전환합니다.")
             is_push_out = True
             mask[:] = True  # 모든 행동을 유효하게 설정
+            mask[back_idx] = False  # 뒤로가기는 여전히 불가
 
         return mask, is_push_out

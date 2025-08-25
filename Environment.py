@@ -211,7 +211,7 @@ class ENV():
         for agv_id, agv_obj in self.agv_list.items():
             pos = agv_obj.pos
             if pos in self.intersection.all_lane_coords:
-                self.intersection.add_agv(agv_id, pos)
+                self.intersection.add_agv(agv_obj)
 
     def _spawn_amrs_if_needed(self):
         # [수정] 새로운 TrafficGenerator 로직에 맞게 변경
@@ -235,7 +235,7 @@ class ENV():
                 goal_pos = self._direction_to_coords(task_info['goal_direction'], goal_intersection_data)
                 
                 color = self.color_map.get(agv_id, (255, 0, 0))
-                self.agv_list[agv_id] = agv(start_pos, color)
+                self.agv_list[agv_id] = agv(start_pos, agv_id, color)
                 
                 self.controller.add_agv(agv_id, start_pos, goal_pos)
 
@@ -424,7 +424,7 @@ class ENV():
 
         agv_states = {}
         for agv_id, agv_obj in self.agv_list.items():
-            mode = 2 if self.prev_deadlock and agv_id in self.intersection.agvs_in_intersection else 0
+            mode = 2 if self.prev_deadlock and agv_obj in self.intersection.agvs_in_intersection else 0
             agv_states[agv_id] = [f"Goal_{agv_id}", mode]
 
         # GUI가 쓰던 포맷 유지: [완료수, 스루풋, AGV상태]

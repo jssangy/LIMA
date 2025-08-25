@@ -1,11 +1,12 @@
-import random
-
 # AGV Object
 class agv():
     turns = {}
     
     # pos is given as coordinates on the grid ex (1,5)
-    def __init__(self, pos, color):
+    def __init__(self, pos, id, color):
+        # ID of AGV
+        self.id = id
+
         # Color of AGV
         self.color = color
 
@@ -14,6 +15,9 @@ class agv():
         
         # current position of agv
         self.pos = pos
+
+        # previous position of agv
+        self.prev_pos = pos
 
         # goal position
         self.goal = (0, 0)
@@ -34,6 +38,7 @@ class agv():
         return (self.pos[0] + self.move_x, self.pos[1] + self.move_y)
 
     def move(self, control_signal):
+        self.prev_pos = self.pos
         self.pos = (self.pos[0] + control_signal[0], self.pos[1] + control_signal[1])
 
     # Send position and state

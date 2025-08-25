@@ -1,4 +1,6 @@
 # sweep_1st.yaml
+project: smdp_mapf
+name: smdp_mapf_sweep
 program: train.py
 method: grid
 metric:

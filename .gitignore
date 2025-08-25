@@ -6,6 +6,9 @@ wandb/
 checkpoint/
 *.pth
 
+checkpoints/
+*.pt
+
 .vscode/
 
 .DS_Store
