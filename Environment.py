@@ -48,6 +48,8 @@ class ENV():
 
         self.use_rl = False
         self.rl_policy = None
+        
+        self.is_push_out = False
 
     def reset(self):        
         self.time = 0
@@ -65,6 +67,8 @@ class ENV():
         obs, info = self.generate_observation()
         self.prev_deadlock = False
 
+        self.is_push_out = False
+
         return obs, info
 
     def step(self, actions=None, train=True):
@@ -80,15 +84,14 @@ class ENV():
                 if is_start:
                     try:
                         a = self.rl_policy(obs_now, info_now.get("action_mask", None))  # int
-                        self.intersection.action_control(a)
-                        print("Action:", a)
+                        self.intersection.action_control(a, self.is_push_out)
                     except Exception as e:
                         # 정책 오류 시 RL 비활성화하고 안전하게 계속
                         self.use_rl = False
 
         # 1. Action 적용: 전달받은 actions을 기반으로 제어 신호 수정
         if actions is not None:
-            self.intersection.action_control(actions)
+            self.intersection.action_control(actions, self.is_push_out)
 
         # 2. Movement: 수정된 제어 신호에 따라 모든 AGV 이동
         priority = getattr(self.controller, "push_sequence", [])
@@ -195,6 +198,8 @@ class ENV():
             "action_mask": action_mask,
             "is_push_out": is_push_out,
         }
+
+        self.is_push_out = is_push_out
 
         return obs, info
 
