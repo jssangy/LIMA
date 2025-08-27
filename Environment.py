@@ -36,7 +36,7 @@ class ENV():
 
         # TrafficGenerator
         self.traffic_generator = TrafficGenerator2()
-        self.max_inside = 3
+        self.max_inside = 5
         self.traffic_generator.set_capacity_gate(self._spawn_gate)
 
         # Controller, DeadlockDetector, Intersections
@@ -183,6 +183,7 @@ class ENV():
             return None, None
 
         self._update_intersections_state()
+        self.intersection.resolve_arm_swaps_all()
         is_deadlock = self.deadlock_detector.check_deadlock(self.intersection)
 
         state = np.asarray(self.intersection.get_state())
@@ -362,34 +363,25 @@ class ENV():
         return [(cx, cy) for (cx, cy, *_) in self.intersection_data]
 
     def _center_occupied_any(self) -> bool:
-        """어느 교차로 중앙이라도 AMR이 있으면 True"""
-        centers = set(self._center_positions())
-        return any(agv_obj.pos in centers for agv_obj in self.agv_list.values())
+        """(단일 교차로 가정) 교차로 중앙 점유 여부"""
+        return self.intersection.center_agv is not None
 
     def _center_occupied_at(self, intersection_data) -> bool:
-        """지정 교차로의 중앙이 점유되어 있으면 True"""
+        """지정 교차로 중앙 점유 여부 (단일 교차로 대응)"""
         cx, cy, *_ = intersection_data
-        return any(agv_obj.pos == (cx, cy) for agv_obj in self.agv_list.values())
+        if (cx, cy) == (self.intersection.center_x, self.intersection.center_y):
+            return self.intersection.center_agv is not None
+        # TODO: 다교차로 지원 시, 인터섹션 맵으로 라우팅 필요
+        return False
 
     def _count_inside_intersection(self) -> int:
-        """교차로 내부(팔+중앙) AMR 수"""
-        lanes = getattr(self.intersection, "all_lane_coords", set())
-        return sum(1 for agv_obj in self.agv_list.values() if agv_obj.pos in lanes)
+        """교차로 내부(팔+중앙) AMR 수 (인덱스 사용)"""
+        # agvs_in_intersection: set of AGV objects
+        return len(self.intersection.agvs_in_intersection)
 
     def _arm_occupied(self, direction: str) -> bool:
-        """해당 방향 팔(교차로 내부 구간)에 AMR이 있으면 True"""
-        cx, cy, lenN, lenE, lenS, lenW = self.intersection_data[0]  # 단일 교차로 기준
-        L = {'N': lenN, 'E': lenE, 'S': lenS, 'W': lenW}[direction]
-        if direction == 'N':
-            cells = [(cx, cy - i) for i in range(1, L + 1)]
-        elif direction == 'S':
-            cells = [(cx, cy + i) for i in range(1, L + 1)]
-        elif direction == 'E':
-            cells = [(cx + i, cy) for i in range(1, L + 1)]
-        else:  # 'W'
-            cells = [(cx - i, cy) for i in range(1, L + 1)]
-        occ = {agv_obj.pos for agv_obj in self.agv_list.values()}
-        return any(p in occ for p in cells)
+        """해당 팔에 AMR이 하나라도 있으면 True (인덱스 사용)"""
+        return len(self.intersection.agvs_in_lanes.get(direction, [])) > 0
 
     def _spawn_gate(self, direction: str) -> bool:
         """

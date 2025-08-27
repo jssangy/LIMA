@@ -263,3 +263,4 @@ class TrafficGenerator2:
         probs = self.turn_probs[start_dir]
         ks, vs = zip(*probs.items())
         return self.rng.choice(ks, p=np.array(vs, dtype=float))
+
