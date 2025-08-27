@@ -7,7 +7,7 @@ checkpoint/
 *.pth
 
 checkpoints/
-*.pt
+
 
 .vscode/
 
