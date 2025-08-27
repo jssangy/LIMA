@@ -78,9 +78,10 @@ class ENV():
         if actions is None and (not train) and self.use_rl and (self.rl_policy is not None):
             # 현재 상태에서 이벤트 시작 여부를 보기 위해 '사전 관측' 1회
             obs_now, info_now = self.generate_observation()
+            print(obs_now["state"])
             if obs_now is not None and info_now.get("deadlock_active", False):
                 # 막 시작했는지 여부(상승엣지)
-                is_start = not self.prev_deadlock
+                is_start = not self.prev_deadlock and self.intersection.center_agv is not None
                 if is_start:
                     try:
                         a = self.rl_policy(obs_now, info_now.get("action_mask", None))  # int
