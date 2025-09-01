@@ -49,8 +49,6 @@ class ENV():
 
         self.use_rl = False
         self.rl_policy = None
-        
-        self.is_push_out = False
 
     def reset(self):        
         self.time = 0
@@ -60,55 +58,88 @@ class ENV():
 
         # 컨트롤러와 모든 교차로의 내부 상태 초기화
         self.controller.reset()
-        self.intersection.reset()
-
+        for I in self.intersections.values():
+            I.reset()
         self._spawn_amrs_if_needed()
 
         # 리셋 시에는 초기 관찰 상태만 반환
         obs, info = self.generate_observation()
         self.prev_deadlock = False
 
-        self.is_push_out = False
-
         return obs, info
 
-    def step(self, actions=None, train=True):
-        """한 스텝 '실행'에만 집중 (generate에서 최신화했으면 step에선 다시 최신화하지 않음)"""
+    def step(self, actions: dict[str, int] | None, train=True):
+        """
+        actions: { "x{cx}y{cy}": action_idx, ... }
+        반환: obs_next, reward_map, info_next
+        """
         self.time += 1
+        if actions is None:
+            actions = {}
 
-        # 0) 현재 스냅샷(상태/마스크/푸시아웃 플래그) 1회만 생성
+        # 0) 현재 스냅샷
         obs_now, info_now = self.generate_observation()
 
-        # 1) 액션 결정 (테스트 모드에서 RL on이면 상승엣지에만)
-        act_to_apply = actions
-        if act_to_apply is None and (not train) and self.use_rl and (self.rl_policy is not None):
-            if obs_now is not None and info_now.get("deadlock_active", False) and self.intersection.center_agv is not None:
-                is_start = (not self.prev_deadlock)
-                if is_start:
+        # 1) 액션 결정 (테스트 모드 + RL on → 교차로별 rising-edge에서만)
+        act_to_apply: dict[str, int] = dict(actions)
+        use_rl = (not train) and getattr(self, "use_rl", False) and (getattr(self, "rl_policy", None) is not None)
+
+        # 교차로별 deadlock 이전상태/지속시간 맵 초기화
+        if not hasattr(self, "prev_deadlock_map"):
+            self.prev_deadlock_map: dict[str, bool] = {}
+        if not hasattr(self, "tau_map"):
+            self.tau_map: dict[str, int] = {}
+
+        if use_rl:
+            for iid, meta in info_now.items():
+                if not isinstance(meta, dict):
+                    continue
+                curr_dl = bool(meta.get("deadlock_active", False))
+                prev_dl = self.prev_deadlock_map.get(iid, False)
+                rising = (not prev_dl) and curr_dl
+                if rising and (iid not in act_to_apply):
                     try:
-                        act_to_apply = self.rl_policy(obs_now, info_now.get("action_mask", None))
+                        # 정책 시그니처에 맞게 필요 시 조정
+                        a = self.rl_policy(
+                            obs={iid: obs_now[iid]},
+                            masks={iid: meta.get("action_mask")}
+                        )
+                        act_to_apply[iid] = int(a[iid] if isinstance(a, dict) else a)
                     except Exception:
-                        self.use_rl = False
+                        self.use_rl = False  # 실패 시 비활성화
 
-        # 2) (중요) 이번 스텝 이동 계획을 한 곳에서 모아 커밋
-        if hasattr(self.intersection, "begin_plan"):
-            self.intersection.begin_plan()             # 플래너 시작
+        # 2) 교차로별 플래닝 (begin → resolve → action → finalize)
+        for I in self.intersections.values():
+            if hasattr(I, "begin_plan"):
+                I.begin_plan()
 
-            # 2-1) 팔 스와핑 끌어오기 계획 (부작용은 여기서만)
-            self.intersection.resolve_arm_swaps_all()
+        invalid_actions: dict[str, str] = {}  # iid -> reason
+        for iid, I in self.intersections.items():
+            # 팔 스와핑/사전조정
+            if hasattr(I, "resolve_arm_swaps_all"):
+                I.resolve_arm_swaps_all()
+            elif hasattr(I, "resolve_arm_swaps"):
+                I.resolve_arm_swaps()
 
-            # 2-2) 중앙 액션/푸시아웃 계획 (마찬가지로 플래너에만 추가)
-            if act_to_apply is not None:
-                self.intersection.action_control(int(act_to_apply), self.is_push_out)
+            # 액션 적용
+            a_idx = act_to_apply.get(iid, None)
+            if a_idx is not None and hasattr(I, "action_control"):
+                mask = np.asarray(I.calculate_action_mask(), dtype=np.bool_)
+                if a_idx < 0 or a_idx >= len(mask) or not mask[a_idx]:
+                    invalid_actions[iid] = "mask_violation"
+                else:
+                    try:
+                        I.action_control(int(a_idx))
+                    except Exception:
+                        invalid_actions[iid] = "apply_failed"
+            elif a_idx is not None:
+                invalid_actions[iid] = "no_action_control"
 
-            self.intersection.finalize_plan()          # control_buffer / push_sequence 커밋
-        else:
-            # 플래너가 없다면, 기존 방식 fallback (권장: 플래너 도입)
-            self.intersection.resolve_arm_swaps_all()
-            if act_to_apply is not None:
-                self.intersection.action_control(int(act_to_apply), self.is_push_out)
+        for I in self.intersections.values():
+            if hasattr(I, "finalize_plan"):
+                I.finalize_plan()
 
-        # 3) Movement: push_sequence 우선 → 일반 이동
+        # 3) Movement 커밋: push_sequence 우선 → 일반 이동
         priority = getattr(self.controller, "push_sequence", [])
         moved = set()
 
@@ -135,45 +166,53 @@ class ENV():
         self._check_amr_completion()
         self._spawn_amrs_if_needed()
 
-        # 5) 다음 의사결정을 위한 상태 계산 (여기서만 다시 generate 호출)
+        # 5) 다음 관측
         obs_next, info_next = self.generate_observation()
 
+        # GUI/테스트 모드: 기존 요약 반환 유지
         if not train:
-            return self.make_info()   # GUI/테스트용 요약 반환 유지
+            return self.make_info()
 
-        # 6) 보상/이벤트
-        curr_deadlock = bool(info_next["deadlock_active"])
-        event_start = (not self.prev_deadlock) and curr_deadlock
-        event_end   = self.prev_deadlock and (not curr_deadlock)
+        # 6) 보상/이벤트 — 교차로별로 '개별 기록'
+        reward_map: dict[str, float] = {}
+        for iid, meta in info_next.items():
+            if not isinstance(meta, dict):
+                continue
 
-        reward = 0.0
-        if self.prev_deadlock:
-            reward -= 0.05
-            self.tau += 1
-        if event_end:
-            reward += 1.0
-            info_next["tau"] = self.tau
-            self.tau = 0
+            curr = bool(meta.get("deadlock_active", False))
+            prev = self.prev_deadlock_map.get(iid, False)
 
-        self.prev_deadlock = curr_deadlock
+            # 기본 보상 스킴(예시): 지속 -0.05, 해소 +1.0
+            r = 0.0
+            if curr:
+                r -= 0.05
+                self.tau_map[iid] = self.tau_map.get(iid, 0) + 1
+            if prev and not curr:
+                r += 1.0
+                meta["tau"] = self.tau_map.get(iid, 0)
+                self.tau_map[iid] = 0
 
+            # 교차로별 이벤트 플래그/invalid_action 기록
+            meta["event_start"] = (not prev) and curr
+            meta["event_end"] = prev and (not curr)
+            if iid in invalid_actions:
+                meta["invalid_action"] = invalid_actions[iid]
+
+            # prev 갱신 및 보상 저장
+            self.prev_deadlock_map[iid] = curr
+            reward_map[iid] = r
+
+        # 종료/트렁케이트: 전역 상태만 간단 요약(합산 지표는 넣지 않음)
         terminated = False
-        truncated  = (self.time >= self.max_steps)
-
-        if (terminated or truncated) and self.prev_deadlock:
-            info_next["event_end"] = True
-            info_next["tau"] = self.tau
-            self.tau = 0
-        else:
-            info_next["event_end"] = event_end
-
-        info_next.update({
-            "event_start": event_start,
+        truncated = (self.time >= self.max_steps)
+        info_next["_summary"] = {
             "terminated": terminated,
             "truncated": truncated,
-        })
+            "time": self.time,
+        }
 
-        return obs_next, reward, info_next
+        return obs_next, reward_map, info_next
+
 
 
     def generate_observation(self):
@@ -191,31 +230,26 @@ class ENV():
         # 2) 교차로 최신화 (여기서만 최신화! step에서는 하지 않음)
         self._update_intersections_state()
 
-        # 3) (중요) 계획 주입 함수는 여기서 호출하지 않음
-        #    self.intersection.resolve_arm_swaps_all()  # ← 제거
-
         # 4) 데드락/상태/마스크
-        is_deadlock = self.deadlock_detector.check_deadlock(self.intersection)
+        obs = {}
+        info = {}
 
-        state = np.asarray(self.intersection.get_state())
-        edge_index = np.array([[0], [0]], dtype=np.int64)
-        action_mask, is_push_out = self.intersection.calculate_action_mask()
-        action_mask = np.asarray(action_mask, dtype=np.bool_)
+        for iid, I in self.intersections.items():
+            state = np.asarray(I.get_state(), dtype=np.float32)
+            edge_index = np.array([[0], [0]], dtype=np.int64)
+            action_mask = I.calculate_action_mask()
+            action_mask = np.asarray(action_mask, dtype=np.bool_)
 
-        obs = {
-            "state": state,
-            "edge_index": edge_index,
-        }
-        info = {
-            "deadlock_active": is_deadlock,
-            "action_mask": action_mask,
-            "is_push_out": is_push_out,
-        }
+            obs[iid] = {
+                "state": state,
+                "edge_index": edge_index,
+            }
+            info[iid] = {
+                "deadlock_active": I.is_deadlock,
+                "action_mask": action_mask,
+            }
 
-        # step에서 사용하게 내부 플래그 저장
-        self.is_push_out = is_push_out
         return obs, info
-
 
     def _is_valid_move(self, current_agv, control_signal):
         next_pos = (current_agv.pos[0] + control_signal[0], current_agv.pos[1] + control_signal[1])
@@ -226,11 +260,17 @@ class ENV():
         return True
     
     def _update_intersections_state(self):
-        self.intersection.reset()
+        for I in self.intersections.values():
+            I.reset()
+
         for agv_id, agv_obj in self.agv_list.items():
             pos = agv_obj.pos
-            if pos in self.intersection.all_lane_coords:
-                self.intersection.add_agv(agv_obj)
+            for I in self.intersections.values():
+                if pos in I.all_lane_coords:
+                    I.add_agv(agv_obj)
+
+        for I in self.intersections.values():
+            I.check_deadlock()
 
     def _spawn_amrs_if_needed(self):
         # [수정] 새로운 TrafficGenerator 로직에 맞게 변경
