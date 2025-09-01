@@ -41,7 +41,10 @@ class ENV():
         self.color_map = Funct.Color_dict(self.traffic_generator.total_tasks_in_episode).dic
         self.controller = controller(self.map)
         self.deadlock_detector = DeadlockDetector(self.controller)
-        self.intersection = Intersection(self.intersection_data[0], self.controller)
+        self.intersections: Dict[tuple, Intersection] = {
+            inter_data: Intersection(inter_data, self.controller)
+            for inter_data in self.intersection_data
+        }
         self.prev_deadlock = False
 
         self.use_rl = False
