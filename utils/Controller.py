@@ -194,3 +194,5 @@ class controller():
             dx, dy = nx[0] - pos[a][0], nx[1] - pos[a][1]
             self.next_buffer[a] = (dx, dy)
             self.control_buffer[a] = (dx, dy)
+
+            
