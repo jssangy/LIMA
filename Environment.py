@@ -2,22 +2,20 @@ import os
 import json
 import random
 import numpy as np
+from typing import Dict
 from collections import defaultdict
 
 from utils.AGV import agv
 from utils.Intersection import Intersection
 from utils.DeadlockDetector import DeadlockDetector
 from utils import Funct
-from utils.traffic_generator import TrafficGenerator1, TrafficGenerator2
+from utils.traffic_generator import TrafficGenerator
 from utils.Controller import controller
 
 
 class ENV():
     def __init__(self, prob_path):
         super().__init__()
-        self._init_environment(prob_path)
-
-    def _init_environment(self, prob_path):
         """환경 초기화"""
         base_dir = os.path.dirname(prob_path)
         with open(prob_path, 'r') as f:
@@ -35,8 +33,8 @@ class ENV():
         self.max_steps = 1000
 
         # TrafficGenerator
-        self.traffic_generator = TrafficGenerator2()
-        self.max_inside = 5
+        self.traffic_generator = TrafficGenerator()
+        self.max_inside = 6
         self.traffic_generator.set_capacity_gate(self._spawn_gate)
 
         # Controller, DeadlockDetector, Intersections
@@ -72,33 +70,45 @@ class ENV():
         return obs, info
 
     def step(self, actions=None, train=True):
-        """한 스텝 '실행'에만 집중"""
+        """한 스텝 '실행'에만 집중 (generate에서 최신화했으면 step에선 다시 최신화하지 않음)"""
         self.time += 1
 
-        if actions is None and (not train) and self.use_rl and (self.rl_policy is not None):
-            # 현재 상태에서 이벤트 시작 여부를 보기 위해 '사전 관측' 1회
-            obs_now, info_now = self.generate_observation()
-            print(obs_now["state"])
-            if obs_now is not None and info_now.get("deadlock_active", False):
-                # 막 시작했는지 여부(상승엣지)
-                is_start = not self.prev_deadlock and self.intersection.center_agv is not None
+        # 0) 현재 스냅샷(상태/마스크/푸시아웃 플래그) 1회만 생성
+        obs_now, info_now = self.generate_observation()
+
+        # 1) 액션 결정 (테스트 모드에서 RL on이면 상승엣지에만)
+        act_to_apply = actions
+        if act_to_apply is None and (not train) and self.use_rl and (self.rl_policy is not None):
+            if obs_now is not None and info_now.get("deadlock_active", False) and self.intersection.center_agv is not None:
+                is_start = (not self.prev_deadlock)
                 if is_start:
                     try:
-                        a = self.rl_policy(obs_now, info_now.get("action_mask", None))  # int
-                        self.intersection.action_control(a, self.is_push_out)
-                    except Exception as e:
-                        # 정책 오류 시 RL 비활성화하고 안전하게 계속
+                        act_to_apply = self.rl_policy(obs_now, info_now.get("action_mask", None))
+                    except Exception:
                         self.use_rl = False
 
-        # 1. Action 적용: 전달받은 actions을 기반으로 제어 신호 수정
-        if actions is not None:
-            self.intersection.action_control(actions, self.is_push_out)
+        # 2) (중요) 이번 스텝 이동 계획을 한 곳에서 모아 커밋
+        if hasattr(self.intersection, "begin_plan"):
+            self.intersection.begin_plan()             # 플래너 시작
 
-        # 2. Movement: 수정된 제어 신호에 따라 모든 AGV 이동
+            # 2-1) 팔 스와핑 끌어오기 계획 (부작용은 여기서만)
+            self.intersection.resolve_arm_swaps_all()
+
+            # 2-2) 중앙 액션/푸시아웃 계획 (마찬가지로 플래너에만 추가)
+            if act_to_apply is not None:
+                self.intersection.action_control(int(act_to_apply), self.is_push_out)
+
+            self.intersection.finalize_plan()          # control_buffer / push_sequence 커밋
+        else:
+            # 플래너가 없다면, 기존 방식 fallback (권장: 플래너 도입)
+            self.intersection.resolve_arm_swaps_all()
+            if act_to_apply is not None:
+                self.intersection.action_control(int(act_to_apply), self.is_push_out)
+
+        # 3) Movement: push_sequence 우선 → 일반 이동
         priority = getattr(self.controller, "push_sequence", [])
         moved = set()
 
-        # (A) 우선순위 목록부터 이동 (먼 → 가까운 순서, 마지막이 center)
         for agv_id in priority:
             agv_obj = self.agv_list.get(agv_id)
             if agv_obj is None:
@@ -107,9 +117,7 @@ class ENV():
             if self._is_valid_move(agv_obj, sig):
                 agv_obj.move(sig)
                 moved.add(agv_id)
-            # (선택) 실패 시 체인 전체 취소/스킵 로직을 넣고 싶다면 여기서 break/rollback 처리
 
-        # (B) 나머지 일반 이동
         for agv_id, agv_obj in list(self.agv_list.items()):
             if agv_id in moved:
                 continue
@@ -119,42 +127,36 @@ class ENV():
 
         # 사용 후 정리
         self.controller.push_sequence = []
-        
-        # 3. 환경 변화 처리: AGV 완료 및 신규 생성
+
+        # 4) 환경 변화 처리
         self._check_amr_completion()
         self._spawn_amrs_if_needed()
 
-        # 4. 다음 의사결정을 위한 상태 계산
-        obs_next, info_next = self.generate_observation(train)
+        # 5) 다음 의사결정을 위한 상태 계산 (여기서만 다시 generate 호출)
+        obs_next, info_next = self.generate_observation()
 
         if not train:
-            return self.make_info()
-        
+            return self.make_info()   # GUI/테스트용 요약 반환 유지
+
+        # 6) 보상/이벤트
         curr_deadlock = bool(info_next["deadlock_active"])
         event_start = (not self.prev_deadlock) and curr_deadlock
-        event_end = self.prev_deadlock and (not curr_deadlock)
+        event_end   = self.prev_deadlock and (not curr_deadlock)
 
-        # 5. 보상 계산
         reward = 0.0
         if self.prev_deadlock:
-            reward -= 0.01
+            reward -= 0.05
             self.tau += 1
         if event_end:
             reward += 1.0
             info_next["tau"] = self.tau
             self.tau = 0
-        
+
         self.prev_deadlock = curr_deadlock
 
         terminated = False
-        truncated = False
+        truncated  = (self.time >= self.max_steps)
 
-        # 6. 종료 조건 확인
-        # (b) 시간 제한 초과
-        if self.time >= self.max_steps:
-            truncated = True
-        
-        # 에피소드가 이벤트 도중에 끝나면: 전이를 닫기 위해 강제 event_end 처리
         if (terminated or truncated) and self.prev_deadlock:
             info_next["event_end"] = True
             info_next["tau"] = self.tau
@@ -170,24 +172,30 @@ class ENV():
 
         return obs_next, reward, info_next
 
-    def generate_observation(self, train=True):
+
+    def generate_observation(self):
         """
-        GNN을 위한 Dict 형태의 관측 생성
+        관측 생성(부작용 없음):
+        - sensing/make_control
+        - 교차로 최신화(_update_intersections_state)
+        - 상태/마스크/푸시아웃 플래그 계산만 수행
         """
-        # 물리적 상태 업데이트 및 데드락 탐지 로직 (기존과 동일)
+        # 1) 센싱/컨트롤 업데이트
         for agv_id, agv_obj in self.agv_list.items():
             self.controller.get_sensing(agv_id, agv_obj.pos)
         self.controller.make_control()
-        
-        if not train:
-            return None, None
 
+        # 2) 교차로 최신화 (여기서만 최신화! step에서는 하지 않음)
         self._update_intersections_state()
-        self.intersection.resolve_arm_swaps_all()
+
+        # 3) (중요) 계획 주입 함수는 여기서 호출하지 않음
+        #    self.intersection.resolve_arm_swaps_all()  # ← 제거
+
+        # 4) 데드락/상태/마스크
         is_deadlock = self.deadlock_detector.check_deadlock(self.intersection)
 
         state = np.asarray(self.intersection.get_state())
-        edge_index = np.array([[0],[0]], dtype=np.int64)  # [2, E] (단일 노드 self-loop)
+        edge_index = np.array([[0], [0]], dtype=np.int64)
         action_mask, is_push_out = self.intersection.calculate_action_mask()
         action_mask = np.asarray(action_mask, dtype=np.bool_)
 
@@ -201,9 +209,10 @@ class ENV():
             "is_push_out": is_push_out,
         }
 
+        # step에서 사용하게 내부 플래그 저장
         self.is_push_out = is_push_out
-
         return obs, info
+
 
     def _is_valid_move(self, current_agv, control_signal):
         next_pos = (current_agv.pos[0] + control_signal[0], current_agv.pos[1] + control_signal[1])
@@ -357,31 +366,19 @@ class ENV():
         final_adj = {k: sorted(list(set(v))) for k, v in adj.items()}
 
         return intersections_data, final_adj
-    
-    def _center_positions(self):
-        """모든 교차로 중앙 좌표 리스트"""
-        return [(cx, cy) for (cx, cy, *_) in self.intersection_data]
 
     def _center_occupied_any(self) -> bool:
         """(단일 교차로 가정) 교차로 중앙 점유 여부"""
         return self.intersection.center_agv is not None
-
-    def _center_occupied_at(self, intersection_data) -> bool:
-        """지정 교차로 중앙 점유 여부 (단일 교차로 대응)"""
-        cx, cy, *_ = intersection_data
-        if (cx, cy) == (self.intersection.center_x, self.intersection.center_y):
-            return self.intersection.center_agv is not None
-        # TODO: 다교차로 지원 시, 인터섹션 맵으로 라우팅 필요
-        return False
 
     def _count_inside_intersection(self) -> int:
         """교차로 내부(팔+중앙) AMR 수 (인덱스 사용)"""
         # agvs_in_intersection: set of AGV objects
         return len(self.intersection.agvs_in_intersection)
 
-    def _arm_occupied(self, direction: str) -> bool:
-        """해당 팔에 AMR이 하나라도 있으면 True (인덱스 사용)"""
-        return len(self.intersection.agvs_in_lanes.get(direction, [])) > 0
+    def _arm_has_outgoing(self, direction: str) -> bool:
+        """해당 팔에서 바깥으로 나가려는(outgoing) AMR이 하나라도 있으면 True"""
+        return bool(getattr(self.intersection, 'outgoing', {}).get(direction, False))
 
     def _spawn_gate(self, direction: str) -> bool:
         """
@@ -394,7 +391,7 @@ class ENV():
             return False
         if self._count_inside_intersection() >= self.max_inside:
             return False
-        if self._arm_occupied(direction):
+        if self._arm_has_outgoing(direction):
             return False
         return True
 

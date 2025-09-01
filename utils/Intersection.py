@@ -1,5 +1,6 @@
 import numpy as np
 from itertools import chain
+from typing import Dict
 
 class Intersection:
     def __init__(self, intersection_data, controller_ref):
@@ -23,15 +24,34 @@ class Intersection:
         self.agvs_in_lanes = {'N': [], 'E': [], 'S': [], 'W': []}
         self.center_agv = None
 
-    def add_agv(self, agv_obj):
+        self.ingoing = {"N": False, "E": False, "S": False, "W": False}
+        self.outgoing = {"N": False, "E": False, "S": False, "W": False}
+
+        self._plan_moves: Dict[int, tuple] = {}   # agv_id -> move (dx,dy)
+        self._plan_prio:  Dict[int, int]   = {}   # agv_id -> priority(큰 게 먼저)
+        self._plan_order: Dict[int, tuple] = {}   # agv_id -> (order tuple)
+
+
+    def add_agv(self, agv_object):
+        agv_obj = agv_object
+        nxt = self.controller.next_buffer[agv_obj.id]
         self.agvs_in_intersection.add(agv_obj)
 
         if agv_obj.pos == (self.center_x, self.center_y):
             self.center_agv = agv_obj
-        
-        for direction, coords in self.lane_coords.items():
-            if agv_obj.pos in coords:
-                self.agvs_in_lanes[direction].append(agv_obj)
+        else:        
+            cx, cy = self.center_x, self.center_y
+            for direction, coords in self.lane_coords.items():
+                if agv_obj.pos in coords:
+                    self.agvs_in_lanes[direction].append(agv_obj)
+                    curd = (np.sign(agv_obj.pos[0] - cx), np.sign(agv_obj.pos[1] - cy))
+
+                    if curd == nxt:
+                        self.outgoing[direction] = True
+                    elif curd == (-nxt[0], -nxt[1]):
+                        self.ingoing[direction] = True
+                    break
+
 
     def get_state(self):
         state_vector = []
@@ -63,8 +83,11 @@ class Intersection:
 
                 distance = abs(closest_agv.pos[0] - center[0]) + abs(closest_agv.pos[1] - center[1])
 
+            ingoing = 1.0 if self.ingoing[d] else 0.0
+
             state_vector.extend(goal_onehot)
             state_vector.append(distance)
+            state_vector.append(ingoing)
 
         center_goal_onehot = [0, 0, 0, 0]
         if self.center_agv is not None:
@@ -79,17 +102,19 @@ class Intersection:
         return np.array(state_vector, dtype=np.float32)
 
     def action_control(self, actions, is_push_out=False):
-        """actions: 0=N,1=E,2=S,3=W"""
         if self.center_agv is None:
             return
-        
         move_map = {0:(0,-1),1:(1,0),2:(0,1),3:(-1,0)}
-        self.controller.control_buffer[self.center_agv.id] = move_map[int(actions)]
-        print("Action:", actions)
+        dir_map  = {0:'N', 1:'E', 2:'S', 3:'W'}
+        a = int(actions)
+
+        # 평소처럼 center 이동 의도만 기록(최종 커밋은 finalize_plan에서)
+        self._plan_add(self.center_agv.id, move_map[a], prio=90, order_key=(2,0))  # 기본 이동(푸시 아님)
 
         if is_push_out:
-            print("Push-out activated")
-            self.push_out(self.center_agv.pos, move_map[int(actions)])
+            d = dir_map[a]
+            self._plan_push_chain(d)  # ★ 체인 이동 계획만 추가 (버퍼 직접 X)
+
 
     def push_out(self, pos, direction):
         # direction: (dx, dy)
@@ -101,7 +126,6 @@ class Intersection:
 
         # 1) 다음 칸이 맵 밖이면 실패(더 밀 곳 없음)
         if not in_bounds(next_pos):
-            print(f"push_out: next {next_pos} OOB -> stop")
             return False
 
         # 2) 다음 칸에 AGV가 없으면(빈칸) 더 밀 필요 없음(베이스 케이스)
@@ -119,7 +143,6 @@ class Intersection:
 
         # 3-1) 벽/경계 체크
         if not in_bounds(beyond) or self.map[beyond[1]][beyond[0]] == 1:
-            print(f"push_out: {next_pos} -> {beyond} blocked (wall/OOB)")
             return False
 
         # 3-2) 그 다음 칸이 다른 AGV로 점유되어 있으면, 먼저 재귀로 비워라(테일-퍼스트)
@@ -136,7 +159,6 @@ class Intersection:
 
         # 4) 이제 비었거나 비워질 예정이므로, 현재 타깃을 한 칸 밀도록 기록
         self.controller.control_buffer[target_id] = direction
-        print(f"push_out: move {target_id} {next_pos} -> {beyond}")
         return True       
 
     def _get_exit_direction(self, path):
@@ -157,6 +179,8 @@ class Intersection:
         self.agvs_in_intersection.clear()
         self.agvs_in_lanes = {'N': [], 'E': [], 'S': [], 'W': []}
         self.center_agv = None
+        self.ingoing = {"N": False, "E": False, "S": False, "W": False}
+        self.outgoing = {"N": False, "E": False, "S": False, "W": False}
 
     def _back_action_index_from_prev(self):
         if self.center_agv is None:
@@ -171,90 +195,42 @@ class Intersection:
         return vec2idx.get(back_vec)
 
     def calculate_action_mask(self):
-        """
-        중앙 AMR의 행동 마스크 계산:
-        - 각 lane을 스캔해 '중앙으로 들어오려는(inbound)' AMR이 하나라도 있으면 그 방향 차단
-        - 모두 막히면 예외: 뒤로가기를 제외한 나머지 방향 다시 허용
-        """
         import numpy as np
-
-        is_push_out = False
-
-        # 중앙에 AMR이 없으면 아무 행동도 불가
+        # 중앙에 AMR 없으면 의미가 없으니 전부 False, push_out은 꺼둡니다.
         if self.center_agv is None:
-            return np.zeros(4, dtype=np.bool_), is_push_out
+            return np.zeros(4, dtype=np.bool_), False
 
-        dirs = ['N', 'E', 'S', 'W']
-        mask = np.ones(4, dtype=np.bool_)
-
-        center = (self.center_x, self.center_y)
-        def manhattan(p): return abs(p[0] - center[0]) + abs(p[1] - center[1])
-
-        # lane별 inbound 여부 탐지
-        inbound = {d: False for d in dirs}
-        for d in dirs:
-            lane_agvs = self.agvs_in_lanes.get(d, [])
-            if not lane_agvs:
-                continue
-
-            for agv in lane_agvs:
-                # 1) 컨트롤러에 예약된 이동 신호가 있으면 그것으로
-                move = self.controller.control_buffer.get(agv.id)
-
-                # 2) 없으면 경로 기반 다음 스텝으로 추정
-                if move is None:
-                    path = self.controller.agv_path.get(agv.id)
-                    if path:
-                        try:
-                            idx = path.index(agv.pos)
-                            if idx + 1 < len(path):
-                                nxt = path[idx + 1]
-                                move = (nxt[0] - agv.pos[0], nxt[1] - agv.pos[1])
-                        except ValueError:
-                            move = None
-
-                # 3) 여전히 불명확하면 inbound로 간주하지 않음(보수적)
-                if move is None:
-                    continue
-
-                curd = manhattan(agv.pos)
-                nxtp = (agv.pos[0] + move[0], agv.pos[1] + move[1])
-                nxtd = manhattan(nxtp)
-
-                if nxtd < curd:  # 중앙과의 거리가 줄어드는 이동 = inbound
-                    inbound[d] = True
-                    break  # 이 방향은 차단 결정 완료
-
-        # inbound 있는 방향은 차단
-        for i, d in enumerate(dirs):
-            if inbound[d]:
-                mask[i] = False
-
-        # 뒤로가기 금지
+        mask = np.ones(4, dtype=np.bool_)  # N E S W 전부 허용
         back_idx = self._back_action_index_from_prev()
         if back_idx is not None:
-            mask[back_idx] = False
+            mask[back_idx] = False         # 뒤로가기만 금지
 
-        # 모두 막혔으면 예외 처리: 뒤로가기를 제외하고 전부 다시 허용
-        if not mask.any():
-            is_push_out = True
-            mask[:] = True
-            if back_idx is not None:
-                mask[back_idx] = False
-
+        # 항상 밀어내기 활성화
+        is_push_out = True
         return mask, is_push_out
+
 
     def _dir_vec(self, d: str):
         return {'N': (0,-1), 'E': (1,0), 'S': (0,1), 'W': (-1,0)}[d]
 
     def _collect_chain_near_to_far(self, d: str):
-        """팔 d에서 센터에 가까운 칸부터 '연속 점유'된 AGV id 목록(near→far)"""
-        cells = self.lane_coords.get(d, [])
+        """팔 d에서 센터에 '가장 가까운 점유칸'부터 바깥으로 연속 점유된 AGV id 목록(near→far)."""
+        cells = self.lane_coords.get(d, [])  # 반드시 center→outside 순서의 '리스트'여야 함
         pos2id = {a.pos: a.id for a in self.agvs_in_lanes.get(d, [])}
+
         chain = []
+        started = False
         for p in cells:
-            if p in pos2id: chain.append(pos2id[p])
-            else: break
+            if not started:
+                if p in pos2id:
+                    chain.append(pos2id[p])
+                    started = True
+                # 아직 시작 못 했으면 다음 칸으로 continue
+            else:
+                if p in pos2id:
+                    chain.append(pos2id[p])
+                else:
+                    break  # 연속 끊기면 종료
         return chain
 
     def _planned_move(self, agv):
@@ -295,23 +271,17 @@ class Intersection:
         return False
 
     def resolve_arm_swaps_all(self):
-        """
-        모든 팔을 스캔해 스와핑 발생 팔에 대해
-        체인을 '센터 방향으로 1칸' 이동하도록 control_buffer/push_sequence 세팅.
-        - 팔 내부 순서: 헤드(가까운) → ... → 테일
-        - 전팔 글로벌 순서: 센터까지 맨해튼 거리 오름차순(동률은 N,E,S,W, chain idx, id)
-        - 센터 점유 여부와 무관하게 계획만 주입 (실제 이동 가능성은 _is_valid_move가 필터)
-        """
         dirs = ['N', 'E', 'S', 'W']
         dir_rank = {'N':0, 'E':1, 'S':2, 'W':3}
         cx, cy = self.center_x, self.center_y
 
-        # 스와핑 감지된 팔 수집
         hit = [d for d in dirs if self._detect_arm_swap_pairs(d)]
         if not hit:
             return
+        # print("Swapping Detected")
 
-        order = []  # (dist, dir_rank, k, agv_id)
+        PR_PULL = 50  # 끌어오기 우선순위(밀어내기보다 낮게)
+
         for d in hit:
             chain = self._collect_chain_near_to_far(d)  # [head,...,tail]
             if not chain:
@@ -319,20 +289,65 @@ class Intersection:
             dx, dy = self._dir_vec(d)
             move_in = (-dx, -dy)  # 센터 방향
 
-            # 체인 전원 센터 쪽 1칸 이동 지시
             for k, agv_id in enumerate(chain):
-                self.controller.control_buffer[agv_id] = move_in
                 pos = self.controller.agv_pos.get(agv_id)
                 if pos is None:
                     continue
-                dist = abs(pos[0] - cx) + abs(pos[1] - cy)
-                order.append((dist, dir_rank[d], k, agv_id))
+                dist = abs(pos[0]-cx) + abs(pos[1]-cy)
+                # head -> tail 순서가 먼저 움직이도록 order_key 구성
+                order_key = (dist, dir_rank[d], k)
+                self._plan_add(agv_id, move_in, PR_PULL, order_key)
 
-        # 글로벌 우선순위: 센터 가까운 순으로 이동
-        order.sort()
-        seq = [agv_id for (_, _, _, agv_id) in order]
 
-        # 기존 push_sequence와 병합(우리가 앞, 중복 제거)
-        prev = getattr(self.controller, "push_sequence", [])
-        merged = [x for x in seq if x not in prev] + prev
-        self.controller.push_sequence = merged
+    # Intersection에 유틸 3개 추가
+    def begin_plan(self):
+        """이번 스텝의 이동 계획을 수집하기 전에 호출"""
+        self._plan_moves.clear()
+        self._plan_prio.clear()
+        self._plan_order.clear()
+
+    def _plan_add(self, agv_id: int, move: tuple, prio: int, order_key: tuple):
+        """개별 AGV 이동 계획을 추가/갱신(prio 큰 쪽 우선)"""
+        prev = self._plan_prio.get(agv_id, -10**9)
+        if (prio > prev) or (prio == prev and agv_id not in self._plan_moves):
+            self._plan_moves[agv_id] = move
+            self._plan_prio[agv_id] = prio
+            self._plan_order[agv_id] = (prio, *order_key)
+
+    def finalize_plan(self):
+        """수집된 계획을 control_buffer/push_sequence로 커밋"""
+        # 1) control_buffer 채우기
+        for agv_id, mv in self._plan_moves.items():
+            self.controller.control_buffer[agv_id] = mv
+        # 2) 우선순위 정렬: prio 내림차순 → order_key 오름차순 → agv_id
+        items = []
+        for agv_id, (prio, *order) in self._plan_order.items():
+            items.append(( -prio, tuple(order), agv_id ))  # prio 큰 게 먼저이므로 음수
+        items.sort()
+        seq = []
+        seen = set()
+        for _, _, aid in items:
+            if aid not in seen:
+                seen.add(aid)
+                seq.append(aid)
+        self.controller.push_sequence = seq
+
+    def _plan_push_chain(self, d: str):
+        """센터에서 d 방향으로 밀어내기: tail→...→head→center 순으로 한 칸"""
+        chain = self._collect_chain_near_to_far(d)  # [head,...,tail]
+        if self.center_agv is None:
+            return
+        dx, dy = self._dir_vec(d)
+        move = (dx, dy)
+
+        PR_PUSH = 100  # 끌어오기보다 높은 우선순위
+
+        # tail -> ... -> head 순으로 order_key를 작게
+        for k, agv_id in enumerate(reversed(chain)):
+            # tail이 k=0이 되도록
+            order_key = (0, k)  # 같은 팔 내 상대순서만 있으면 충분
+            self._plan_add(agv_id, move, PR_PUSH, order_key)
+
+        # center는 마지막에
+        center_order = (1, 0)
+        self._plan_add(self.center_agv.id, move, PR_PUSH, center_order)

@@ -6,6 +6,7 @@ class controller():
     def __init__(self, map_data):
         # 동적 AGV 관리를 위해 초기화 시 비워둠
         self.agv_pos = {}
+        self.next_buffer = {}
         self.control_buffer = {}
         self.agv_nums = []
         self.agv_goal = {}
@@ -22,6 +23,7 @@ class controller():
 
     def reset(self):
         self.agv_pos.clear()
+        self.next_buffer.clear()
         self.control_buffer.clear()
         self.agv_nums.clear()
         self.agv_goal.clear()
@@ -34,6 +36,7 @@ class controller():
         self.agv_nums.append(agv_num)
         self.agv_pos[agv_num] = start_pos
         self.agv_goal[agv_num] = goal_pos
+        self.next_buffer[agv_num] = (0, 0)
         self.control_buffer[agv_num] = (0, 0)
         self.planners[agv_num] = DStar(self.map, start_pos, goal_pos)
         self.agv_path[agv_num] = []
@@ -44,12 +47,13 @@ class controller():
             self.agv_nums.remove(agv_num)
             self.agv_pos.pop(agv_num, None)
             self.agv_goal.pop(agv_num, None)
+            self.next_buffer.pop(agv_num, None)
             self.control_buffer.pop(agv_num, None)
             self.planners.pop(agv_num, None)
             self.agv_path.pop(agv_num, None)
 
     def get_sensing(self, agv_num, pos):
-        """GymEnv로부터 AGV의 현재 위치를 업데이트"""
+        """Env로부터 AGV의 현재 위치를 업데이트"""
         if agv_num in self.agv_nums:
             self.agv_pos[agv_num] = pos
 
@@ -76,6 +80,7 @@ class controller():
 
             # 목표에 도달하면 이동 멈춤 (제거는 gym_env에서 처리)
             if pos == goal:
+                self.next_buffer[num] = (0, 0)
                 self.control_buffer[num] = (0, 0)
                 continue
 
@@ -89,6 +94,7 @@ class controller():
             next_pos = path[1]
             dx = next_pos[0] - pos[0]
             dy = next_pos[1] - pos[1]
+            self.next_buffer[num] = (dx, dy)
             self.control_buffer[num] = (dx, dy)
 
     def pibt_rout(self, use_dstar_hint: bool = True, on_conflict: bool = False):
@@ -160,6 +166,7 @@ class controller():
                 for a in self.agv_nums:
                     nx = dstar_next[a]
                     dx, dy = nx[0] - pos[a][0], nx[1] - pos[a][1]
+                    self.next_buffer[a] = (dx, dy)
                     self.control_buffer[a] = (dx, dy)
                 return
             # 그룹 밖은 고정 점유/엣지로 취급해 그룹만 PIBT 재결정
@@ -185,4 +192,5 @@ class controller():
         for a in self.agv_nums:
             nx = final_next.get(a, pos[a])
             dx, dy = nx[0] - pos[a][0], nx[1] - pos[a][1]
+            self.next_buffer[a] = (dx, dy)
             self.control_buffer[a] = (dx, dy)
