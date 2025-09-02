@@ -80,12 +80,10 @@ class ENV():
         act_to_apply = actions
         if act_to_apply is None and (not train) and self.use_rl and (self.rl_policy is not None):
             if obs_now is not None and info_now.get("deadlock_active", False) and self.intersection.center_agv is not None:
-                is_start = (not self.prev_deadlock)
-                if is_start:
-                    try:
-                        act_to_apply = self.rl_policy(obs_now, info_now.get("action_mask", None))
-                    except Exception:
-                        self.use_rl = False
+                try:
+                    act_to_apply = self.rl_policy(obs_now, info_now.get("action_mask", None))
+                except Exception:
+                    self.use_rl = False
 
         # 2) (중요) 이번 스텝 이동 계획을 한 곳에서 모아 커밋
         if hasattr(self.intersection, "begin_plan"):
