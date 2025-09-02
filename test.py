@@ -90,7 +90,7 @@ def _infer_dims_from_env(env: ENV):
 
 def main():
     # 환경/모델 경로
-    prob_path = os.path.join('problems', 'multicross', 'cross_39.json')
+    prob_path = os.path.join('problems', 'multicross', 'cross_25.json')
     model_path = os.path.join('checkpoint', 'policy.pt')
 
     # 1) ENV 생성 및 초기화

@@ -1,6 +1,6 @@
 import random
 import numpy as np
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 DIRS = ("N", "E", "S", "W")
 
@@ -155,3 +155,149 @@ class TrafficGenerator:
         ks, vs = zip(*probs.items())
         return self.rng.choice(ks, p=np.array(vs, dtype=float))
 
+
+DIRS = ("N", "E", "S", "W")
+
+def discover_border_arms_3x3(intersections: Dict[str, object]) -> List[Tuple[str, str]]:
+    """
+    intersections: {iid(str) -> Intersection}이며 각 I가 center_x, center_y 속성을 가진다고 가정.
+    3x3 그리드(가운데 제외)에서 맵 바깥을 향하는 12개 팔만 골라 반환.
+    반환: [(iid, "N"/"E"/"S"/"W"), ...] 길이 12
+    """
+    # 1) 3개의 고유 x/y 추출 후 정렬
+    xs = sorted({I.center_x for I in intersections.values()})
+    ys = sorted({I.center_y for I in intersections.values()})
+    assert len(xs) == 3 and len(ys) == 3, "교차로가 3x3이 아니거나 좌표가 비정상"
+
+    xrank = {x: i for i, x in enumerate(xs)}        # 0:왼, 1:중앙, 2:오른
+    yrank = {y: j for j, y in enumerate(ys)}        # 0:위, 1:중앙, 2:아래  (y가 위->아래로 증가한다고 가정)
+
+    # 2) 각 교차로의 그리드 인덱스 계산
+    grid = {}  # (i,j) -> iid
+    for iid, I in intersections.items():
+        i = xrank[I.center_x]
+        j = yrank[I.center_y]
+        grid[(i, j)] = iid
+
+    # 3) 외곽 8개 교차로에서 바깥을 향하는 팔만 수집 (코너는 2개 팔)
+    arms: List[Tuple[str, str]] = []
+    for (i, j), iid in grid.items():
+        if (i == 1 and j == 1):
+            continue  # 중앙 제외
+
+        # 위쪽 행이면 북(N) 팔이 외곽
+        if j == 0:
+            arms.append((iid, "N"))
+        # 아래쪽 행이면 남(S) 팔이 외곽
+        if j == 2:
+            arms.append((iid, "S"))
+        # 왼쪽 열이면 서(W) 팔이 외곽
+        if i == 0:
+            arms.append((iid, "W"))
+        # 오른쪽 열이면 동(E) 팔이 외곽
+        if i == 2:
+            arms.append((iid, "E"))
+
+    # sanity check: 정확히 12개여야 함
+    assert len(arms) == 12, f"외곽 팔이 {len(arms)}개입니다(12가 아님). y축 방향이 반대라면 위/아래 매핑을 바꾸세요."
+    return arms
+
+
+class TrafficGenerator12:
+    """
+    12개 외곽 팔에서만 스폰하는 멀티-교차로 푸아송 생성기.
+    - 각 arm별 arrivals ~ Poisson(lambda_arm[(iid,dir)] or lam)
+    - 한 스텝에 k개가 오면 k개 전부 생성 (게이트/상한 없음)
+    - goal은 12개 팔 중에서 '출발 팔을 제외한 11개'에서 균등 샘플
+    """
+    def __init__(
+        self,
+        arms12: List[Tuple[str, str]],
+        lam: float = 0.01,
+        lambda_per_arm: Optional[Dict[Tuple[str, str], float]] = None,
+        seed: Optional[int] = None,
+    ):
+        self.rng = np.random.default_rng(seed)
+        self.arms = [(str(iid), d) for (iid, d) in arms12]
+        self.lam = float(lam)
+        self.lambda_arm = {
+            (iid, d): (lambda_per_arm[(iid, d)] if (lambda_per_arm and (iid, d) in lambda_per_arm) else self.lam)
+            for (iid, d) in self.arms
+        }
+        self.agv_id_counter = 0
+        self.spawned_total = 0
+        self.completed_total = 0
+        self.step_count = 0
+
+        # 미리 후보목록 준비
+        self._arm_idx = {a: k for k, a in enumerate(self.arms)}
+
+    # --- 외부 인터페이스 ---
+    def start_new_episode(self, reset_ids: bool = True):
+        if reset_ids:
+            self.agv_id_counter = 0
+            self.spawned_total = 0
+            self.completed_total = 0
+            self.step_count = 0
+
+    def should_spawn_next(self) -> bool:
+        return True
+
+    def get_next_task_pair(self) -> List[Dict]:
+        """
+        반환 task:
+          {
+            "id": int,
+            "intersection_id": str, "start_direction": "N|E|S|W",
+            "goal_intersection_id": str, "goal_direction": "N|E|S|W"
+          }
+        """
+        self.step_count += 1
+        tasks: List[Dict] = []
+
+        arms_rr = list(self.arms)
+        random.shuffle(arms_rr)
+        for (iid, d) in arms_rr:
+            k = int(self.rng.poisson(self.lambda_arm[(iid, d)]))
+            if k <= 0:
+                continue
+            for _ in range(k):
+                gid, gd = self._sample_goal_excluding((iid, d))
+                tasks.append({
+                    "id": self.agv_id_counter,
+                    "intersection_id": iid,
+                    "start_direction": d,
+                    "goal_intersection_id": gid,
+                    "goal_direction": gd,
+                })
+                self.agv_id_counter += 1
+                self.spawned_total += 1
+
+        return tasks
+
+    def complete_task(self, agv_id: int):
+        self.completed_total += 1
+
+    def is_episode_done(self) -> bool:
+        return False
+
+    def get_progress(self) -> Dict:
+        return {
+            "spawned_total": self.spawned_total,
+            "completed_total": self.completed_total,
+            "step": self.step_count,
+            "arms": list(self.arms),
+            "lambdas": {f"{iid}:{d}": self.lambda_arm[(iid, d)] for (iid, d) in self.arms},
+        }
+
+    # --- 내부 ---
+    def _sample_goal_excluding(self, src_arm: Tuple[str, str]) -> Tuple[str, str]:
+        # 12개 목록에서 src_arm만 제외하고 균등 샘플
+        # (성능상 인덱스 운용)
+        src_idx = self._arm_idx[src_arm]
+        n = len(self.arms)  # 12
+        # 0..n-2 중 하나 뽑고, src보다 크면 +1 해서 건너뛰기
+        j = int(self.rng.integers(n - 1))
+        if j >= src_idx:
+            j += 1
+        return self.arms[j]
