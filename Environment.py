@@ -81,6 +81,8 @@ class ENV():
 
         # 0) 현재 스냅샷
         obs_now, info_now = self.generate_observation()
+        for iid, meta in obs_now.items():
+            print(f'{iid}: {meta["state"]}')
 
         # 1) 액션 결정 (테스트 모드 + RL on → 교차로별 rising-edge에서만)
         act_to_apply: dict[str, int] = dict(actions)
