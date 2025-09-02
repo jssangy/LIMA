@@ -9,7 +9,7 @@ from utils.AGV import agv
 from utils.Intersection import Intersection
 from utils.DeadlockDetector import DeadlockDetector
 from utils import Funct
-from utils.traffic_generator import TrafficGenerator12, discover_border_arms_3x3
+from utils.traffic_generator import TrafficGenerator, TrafficGenerator12, discover_border_arms_3x3
 from utils.Controller import controller
 
 
@@ -42,6 +42,7 @@ class ENV():
         # TrafficGenerator
         arms12 = discover_border_arms_3x3(self.intersections)
         self.traffic_generator = TrafficGenerator12(arms12=arms12)
+        self.traffic_generator.set_arm_gate(lambda iid, d: self.is_arm_outgoing_clear(iid, d))
         self.max_inside = 6
         # self.traffic_generator.set_capacity_gate(self._spawn_gate)
 
@@ -84,7 +85,7 @@ class ENV():
         for iid, meta in obs_now.items():
             print(f'{iid}: {meta["state"]}')
 
-        # 1) 액션 결정 (테스트 모드 + RL on → 교차로별 rising-edge에서만)
+        # 1) 액션 결정 (데드락인 동안 매 스텝 RL 보충)
         act_to_apply: dict[str, int] = dict(actions)
         use_rl = (not train) and getattr(self, "use_rl", False) and (getattr(self, "rl_policy", None) is not None)
 
@@ -98,19 +99,28 @@ class ENV():
             for iid, meta in info_now.items():
                 if not isinstance(meta, dict):
                     continue
-                curr_dl = bool(meta.get("deadlock_active", False))
-                prev_dl = self.prev_deadlock_map.get(iid, False)
-                rising = (not prev_dl) and curr_dl
-                if rising and (iid not in act_to_apply):
-                    try:
-                        # 정책 시그니처에 맞게 필요 시 조정
-                        a = self.rl_policy(
-                            obs={iid: obs_now[iid]},
-                            masks={iid: meta.get("action_mask")}
-                        )
-                        act_to_apply[iid] = int(a[iid] if isinstance(a, dict) else a)
-                    except Exception:
-                        self.use_rl = False  # 실패 시 비활성화
+                # 데드락 & center AMR 존재 교차로만
+                if not bool(meta.get("deadlock_active", False)):
+                    continue
+                I = self.intersections.get(iid)
+                if I is None or I.center_agv is None:
+                    continue
+                # 이미 외부에서 액션이 온 경우는 건너뜀
+                if iid in act_to_apply:
+                    continue
+
+                try:
+                    # ★ 단일 교차로 입력 방식: dict 래핑 없이 그대로 넣음
+                    #   obs_now[iid] == {"state": ..., "edge_index": ...}
+                    #   meta["action_mask"] == np.ndarray(bool) or None
+                    a_idx = int(self.rl_policy(obs_now[iid], meta.get("action_mask")))
+                    act_to_apply[iid] = a_idx
+                    # (선택) 디버그
+                    # print(f"[STEP {self.time}] RL → {iid}: {a_idx}")
+                except Exception as e:
+                    self.use_rl = False
+                    print(f"[STEP {self.time}] RL disabled due to error: {e}")
+                    break
 
         if act_to_apply:
             print(f"[STEP {self.time}] intended_actions="
@@ -128,8 +138,6 @@ class ENV():
             # 팔 스와핑/사전조정
             if hasattr(I, "resolve_arm_swaps_all"):
                 I.resolve_arm_swaps_all()
-            elif hasattr(I, "resolve_arm_swaps"):
-                I.resolve_arm_swaps()
 
             # 액션 적용
             a_idx = act_to_apply.get(iid, None)
@@ -225,7 +233,6 @@ class ENV():
         }
 
         return obs_next, reward_map, info_next
-
 
 
     def generate_observation(self):
@@ -441,6 +448,11 @@ class ENV():
         final_adj = {k: sorted(list(set(v))) for k, v in adj.items()}
 
         return intersections_data, final_adj
+    
+    def is_arm_outgoing_clear(self, iid: str, d: str) -> bool:
+        I = self.intersections[iid]
+        # I.outgoing: {"N": bool, "E": bool, "S": bool, "W": bool} 라고 가정
+        return not bool(getattr(I, "outgoing", {}).get(d, False))
 
     """
     def _center_occupied_any(self) -> bool:

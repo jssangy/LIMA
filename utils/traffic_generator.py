@@ -1,6 +1,6 @@
 import random
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Callable
 
 DIRS = ("N", "E", "S", "W")
 
@@ -209,13 +209,16 @@ class TrafficGenerator12:
     - 각 arm별 arrivals ~ Poisson(lambda_arm[(iid,dir)] or lam)
     - 한 스텝에 k개가 오면 k개 전부 생성 (게이트/상한 없음)
     - goal은 12개 팔 중에서 '출발 팔을 제외한 11개'에서 균등 샘플
+    - (추가) arm_gate(iid, dir) 콜백이 False면 해당 팔에서 생성하지 않음
     """
     def __init__(
         self,
         arms12: List[Tuple[str, str]],
-        lam: float = 0.01,
+        lam: float = 0.02,
         lambda_per_arm: Optional[Dict[Tuple[str, str], float]] = None,
-        seed: Optional[int] = None,
+        seed: Optional[int] = 7,
+        arm_gate: Optional[Callable[[str, str], bool]] = None,  # ★ 추가
+        debug: bool = False,                                    # ★ 선택
     ):
         self.rng = np.random.default_rng(seed)
         self.arms = [(str(iid), d) for (iid, d) in arms12]
@@ -231,6 +234,14 @@ class TrafficGenerator12:
 
         # 미리 후보목록 준비
         self._arm_idx = {a: k for k, a in enumerate(self.arms)}
+
+        # ★ 추가: ENV에서 넘겨줄 (iid,dir)->bool 게이트
+        self._arm_gate = arm_gate
+        self.debug = bool(debug)
+
+    # ★ 추가: 런타임에 게이트 교체/설정 가능
+    def set_arm_gate(self, fn: Callable[[str, str], bool]) -> None:
+        self._arm_gate = fn
 
     # --- 외부 인터페이스 ---
     def start_new_episode(self, reset_ids: bool = True):
@@ -258,6 +269,18 @@ class TrafficGenerator12:
         arms_rr = list(self.arms)
         random.shuffle(arms_rr)
         for (iid, d) in arms_rr:
+            # ★ 스폰 전 게이트 체크: False면 이번 스텝엔 이 팔에서 생성하지 않음
+            if self._arm_gate is not None:
+                try:
+                    if not self._arm_gate(iid, d):
+                        if self.debug:
+                            print(f"[TG12:{self.step_count}] gate-block {iid}:{d}")
+                        continue
+                except Exception as e:
+                    # 게이트 오류 시 안전하게 통과(필요하면 막도록 바꿔도 됨)
+                    if self.debug:
+                        print(f"[TG12:{self.step_count}] gate-error {iid}:{d} -> {e}")
+
             k = int(self.rng.poisson(self.lambda_arm[(iid, d)]))
             if k <= 0:
                 continue
@@ -293,11 +316,9 @@ class TrafficGenerator12:
     # --- 내부 ---
     def _sample_goal_excluding(self, src_arm: Tuple[str, str]) -> Tuple[str, str]:
         # 12개 목록에서 src_arm만 제외하고 균등 샘플
-        # (성능상 인덱스 운용)
         src_idx = self._arm_idx[src_arm]
         n = len(self.arms)  # 12
-        # 0..n-2 중 하나 뽑고, src보다 크면 +1 해서 건너뛰기
-        j = int(self.rng.integers(n - 1))
+        j = int(self.rng.integers(n - 1))  # 0..n-2
         if j >= src_idx:
             j += 1
         return self.arms[j]
