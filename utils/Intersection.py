@@ -2,6 +2,8 @@ import numpy as np
 from itertools import chain
 from typing import Dict
 
+DIR2IDX = {"N": 0, "E": 1, "S": 2, "W": 3}
+
 class Intersection:
     def __init__(self, intersection_data, controller_ref):
         self.center_x, self.center_y, self.len_N, self.len_E, self.len_S, self.len_W = intersection_data
@@ -251,15 +253,84 @@ class Intersection:
         return vec2idx.get(back_vec)
 
     def calculate_action_mask(self):
+        # 중앙 AMR 없으면 전부 금지
         if self.center_agv is None:
             return np.zeros(4, dtype=np.bool_)
 
-        mask = np.ones(4, dtype=np.bool_)  # N E S W 전부 허용
+        mask = np.ones(4, dtype=np.bool_)  # N E S W
+
+        # 1) 뒤로가기 금지 (기존 로직)
         back_idx = self._back_action_index_from_prev()
-        if back_idx is not None:
-            mask[back_idx] = False         # 뒤로가기만 금지
+        if back_idx is not None and 0 <= back_idx < 4:
+            mask[back_idx] = False
+
+        # 2) 이웃 락다운 방향 금지
+        #    env.lockdown_on_deadlock == True 이고, 이웃.is_deadlock == True 면 해당 방향 False
+        env = getattr(self, "env", None) or getattr(self.controller, "env", None)
+        lockdown_on = True if env is None else bool(getattr(env, "lockdown_on_deadlock", True))
+        if lockdown_on:
+            for d, idx in DIR2IDX.items():
+                if mask[idx] and self._neighbor_lockdown_active(d):
+                    mask[idx] = False
+
+        # 3) (선택) ingoing/blocked_dirs 등 다른 금지 조건도 같이 적용하고 싶으면 여기서 AND 처리
+        # 예) self.ingoing 이 있으면 해당 방향 금지
+        ingo = getattr(self, "ingoing", None)
+        if ingo:
+            if isinstance(ingo, str):
+                i = DIR2IDX.get(ingo)
+                if i is not None: mask[i] = False
+            else:
+                for dd in ingo:
+                    i = DIR2IDX.get(dd)
+                    if i is not None: mask[i] = False
+
+        # 4) 안전장치: 전부 False면 back 제외 첫 방향 하나 살려둠(원치 않으면 제거)
+        if not mask.any():
+            for i in range(4):
+                if i != back_idx:
+                    mask[i] = True
+                    break
 
         return mask
+    
+    def _neighbor_lockdown_active(self, d: str) -> bool:
+        """
+        방향 d 이웃 교차로가 '락다운(데드락 정책 활성)'이면 True.
+        env.use_rl 여부를 묶고 싶지 않다면 is_deadlock만 보면 됨.
+        """
+        nb = self._get_neighbor_intersection(d)
+        if nb is None:
+            return False
+
+        # 락다운 조건: 이웃이 데드락 상태
+        # (원하면 RL 사용 중일 때만 막으려면 and getattr(self.env, "use_rl", False) 추가)
+        return bool(getattr(nb, "is_deadlock", False))
+
+    def _get_neighbor_intersection(self, d: str):
+        """
+        d 방향 이웃 Intersection 객체 반환.
+        self.neighbors_by_dir 가 {'N': iid or Intersection, ...} 형태라고 가정.
+        """
+        nb_map = getattr(self, "neighbors_by_dir", None) or getattr(self, "neighbor_by_dir", None)
+        if not isinstance(nb_map, dict):
+            return None
+
+        ref = nb_map.get(d)
+        if ref is None:
+            return None
+
+        # 이미 Intersection 객체면 그대로
+        if hasattr(ref, "center_agv") and hasattr(ref, "is_deadlock"):
+            return ref
+
+        # iid 문자열이면 env에서 찾아오기
+        env = getattr(self, "env", None) or getattr(self.controller, "env", None)
+        if env is not None and hasattr(env, "intersections"):
+            return env.intersections.get(ref)
+        return None
+
+
 
 
     def _dir_vec(self, d: str):

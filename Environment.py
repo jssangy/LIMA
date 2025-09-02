@@ -272,12 +272,48 @@ class ENV():
         return obs, info
 
     def _is_valid_move(self, current_agv, control_signal):
-        next_pos = (current_agv.pos[0] + control_signal[0], current_agv.pos[1] + control_signal[1])
-        if self.map[next_pos[1]][next_pos[0]] == 1: return False
-        if not (0 <= next_pos[0] < self.map.shape[1] and 0 <= next_pos[1] < self.map.shape[0]): return False
-        for agv_id, other_agv in self.agv_list.items():
-            if current_agv != other_agv and next_pos == other_agv.pos: return False
+        nx = current_agv.pos[0] + control_signal[0]
+        ny = current_agv.pos[1] + control_signal[1]
+        next_pos = (nx, ny)
+
+        # 0) 경계/지형 체크 (경계 먼저)
+        if not (0 <= nx < self.map.shape[1] and 0 <= ny < self.map.shape[0]):
+            return False
+        if self.map[ny][nx] == 1:
+            return False
+
+        # 1) 데드락-락다운: 다음 칸이 데드락 교차로 영역이면, 그 교차로 '구성원'만 입장 허용
+        #    env.lockdown_on_deadlock = True 로 켜짐 (없으면 기본 True로 취급)
+        if getattr(self, "lockdown_on_deadlock", True):
+            # cell -> intersection 매핑이 있으면 사용
+            inters = []
+            if hasattr(self, "cell2inters"):
+                inters = self.cell2inters.get(next_pos, [])
+                if not isinstance(inters, list):
+                    inters = [inters]
+            else:
+                # 매핑이 없다면 느리지만 스캔 (성능 필요시 매핑 만들 것)
+                for I in self.intersections.values():
+                    if next_pos in I.all_lane_coords:
+                        inters.append(I)
+
+            for I in inters:
+                # (필요하면 RL 활성화 조건까지 묶고 싶다면: and getattr(self, "use_rl", False))
+                if getattr(I, "is_deadlock", False):
+                    # 현재 그 교차로 '구성원'인가? (이미 안에 있거나 멤버 리스트에 존재)
+                    cur_in_I = (current_agv.pos in I.all_lane_coords)
+                    is_member = any(a.id == current_agv.id for a in getattr(I, "agvs_in_intersection", []))
+                    if not cur_in_I and not is_member:
+                        # 외부에서 해당 교차로로 들어오는 진입은 금지
+                        return False
+
+        # 2) 다른 AGV 점유 충돌
+        for other_agv in self.agv_list.values():
+            if other_agv is not current_agv and next_pos == other_agv.pos:
+                return False
+
         return True
+
     
     def _update_intersections_state(self):
         for I in self.intersections.values():
