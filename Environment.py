@@ -1,13 +1,12 @@
 import os
 import json
-import random
+import math
 import numpy as np
 from typing import Dict
 from collections import defaultdict
 
 from utils.AGV import agv
 from utils.Intersection import Intersection
-from utils.DeadlockDetector import DeadlockDetector
 from utils import Funct
 from utils.traffic_generator import TrafficGenerator, TrafficGenerator12, discover_border_arms_3x3
 from utils.Controller import controller
@@ -38,6 +37,7 @@ class ENV():
             f'x{inter_data[0]}y{inter_data[1]}': Intersection(inter_data, self.controller)
             for inter_data in self.intersection_data
         }
+        self.deadlock_queue = []
 
         # TrafficGenerator
         arms12 = discover_border_arms_3x3(self.intersections)
@@ -48,14 +48,14 @@ class ENV():
 
         # Color mapping
         self.color_map = Funct.Color_dict(6).dic
-        self.prev_deadlock = False
+        self.prev_deadlock_map: dict[str, bool] = {}
 
         self.use_rl = False
         self.rl_policy = None
 
     def reset(self):        
         self.time = 0
-        self.tau = 0
+        self.tau_map: dict[str, int] = {}
         self.agv_list.clear()
         self.traffic_generator.start_new_episode()
 
@@ -63,11 +63,12 @@ class ENV():
         self.controller.reset()
         for I in self.intersections.values():
             I.reset()
+        self.deadlock_queue = []
         self._spawn_amrs_if_needed()
 
         # 리셋 시에는 초기 관찰 상태만 반환
         obs, info = self.generate_observation()
-        self.prev_deadlock = False
+        self.prev_deadlock_map: dict[str, bool] = {}
 
         return obs, info
 
@@ -82,45 +83,23 @@ class ENV():
 
         # 0) 현재 스냅샷
         obs_now, info_now = self.generate_observation()
-        for iid, meta in obs_now.items():
-            print(f'{iid}: {meta["state"]}')
 
         # 1) 액션 결정 (데드락인 동안 매 스텝 RL 보충)
         act_to_apply: dict[str, int] = dict(actions)
-        use_rl = (not train) and getattr(self, "use_rl", False) and (getattr(self, "rl_policy", None) is not None)
 
-        # 교차로별 deadlock 이전상태/지속시간 맵 초기화
-        if not hasattr(self, "prev_deadlock_map"):
-            self.prev_deadlock_map: dict[str, bool] = {}
-        if not hasattr(self, "tau_map"):
-            self.tau_map: dict[str, int] = {}
-
-        if use_rl:
+        # 1) 적용할 액션 결정 (RL 정책 보충)
+        act_to_apply = dict(actions)
+        if (not train) and self.use_rl and self.rl_policy:
             for iid, meta in info_now.items():
+                # 유효한 교차로 정보인지 확인
                 if not isinstance(meta, dict):
                     continue
-                # 데드락 & center AMR 존재 교차로만
-                if not bool(meta.get("deadlock_active", False)):
-                    continue
-                I = self.intersections.get(iid)
-                if I is None or I.center_agv is None:
-                    continue
-                # 이미 외부에서 액션이 온 경우는 건너뜀
-                if iid in act_to_apply:
-                    continue
-
-                try:
-                    # ★ 단일 교차로 입력 방식: dict 래핑 없이 그대로 넣음
-                    #   obs_now[iid] == {"state": ..., "edge_index": ...}
-                    #   meta["action_mask"] == np.ndarray(bool) or None
-                    a_idx = int(self.rl_policy(obs_now[iid], meta.get("action_mask")))
-                    act_to_apply[iid] = a_idx
-                    # (선택) 디버그
-                    # print(f"[STEP {self.time}] RL → {iid}: {a_idx}")
-                except Exception as e:
-                    self.use_rl = False
-                    print(f"[STEP {self.time}] RL disabled due to error: {e}")
-                    break
+                
+                # 데드락이 활성화된 교차로에 대해서만 RL 정책 적용
+                if meta.get("deadlock_active", False) and self.intersections[iid].center_agv and iid not in act_to_apply:
+                    action_mask = meta.get("action_mask")
+                    rl_action = int(self.rl_policy(obs_now[iid], action_mask))
+                    act_to_apply[iid] = rl_action
 
         if act_to_apply:
             print(f"[STEP {self.time}] intended_actions="
@@ -128,57 +107,68 @@ class ENV():
         else:
             print(f"[STEP {self.time}] intended_actions=empty")
 
+        print(f"Deadlock Queue: {self.deadlock_queue}")
+
+        sorted_iids = sorted(self.intersections.keys(), key=self._inter_rank, reverse=True)
+
         # 2) 교차로별 플래닝 (begin → resolve → action → finalize)
         for I in self.intersections.values():
-            if hasattr(I, "begin_plan"):
-                I.begin_plan()
+            I.begin_plan()
 
-        invalid_actions: dict[str, str] = {}  # iid -> reason
-        for iid, I in self.intersections.items():
-            # 팔 스와핑/사전조정
-            if hasattr(I, "resolve_arm_swaps_all"):
-                I.resolve_arm_swaps_all()
+        for iid in sorted_iids:
+            I = self.intersections[iid]
+
+            # 사전 충돌 해결 로직 (예: 팔 스와핑)
+            I.resolve_arm_swaps_all()
 
             # 액션 적용
-            a_idx = act_to_apply.get(iid, None)
-            if a_idx is not None and hasattr(I, "action_control"):
-                mask = np.asarray(I.calculate_action_mask(), dtype=np.bool_)
-                if a_idx < 0 or a_idx >= len(mask) or not mask[a_idx]:
-                    invalid_actions[iid] = "mask_violation"
-                else:
-                    try:
-                        I.action_control(int(a_idx))
-                    except Exception:
-                        invalid_actions[iid] = "apply_failed"
-            elif a_idx is not None:
-                invalid_actions[iid] = "no_action_control"
+            if iid in act_to_apply:
+                a_idx = act_to_apply[iid]
+                I.action_control(a_idx)
+
+        final_plan_moves = {}
+        final_plan_prio = {}
+        final_plan_order = {}
 
         for I in self.intersections.values():
-            if hasattr(I, "finalize_plan"):
-                I.finalize_plan()
+            for agv_id, prio in I._plan_prio.items():
+                prev_prio = final_plan_prio.get(agv_id, -10**9)
+                if prio > prev_prio:
+                    final_plan_prio[agv_id] = prio
+                    final_plan_moves[agv_id] = I._plan_moves[agv_id]
+                    final_plan_order[agv_id] = I._plan_order[agv_id]
 
-        # 3) Movement 커밋: push_sequence 우선 → 일반 이동
-        priority = getattr(self.controller, "push_sequence", [])
+        self.controller.control_buffer.update(final_plan_moves)
+        
+        items = []
+        for agv_id, (prio, *order) in final_plan_order.items():
+            items.append((-prio, tuple(order), agv_id))
+        items.sort()
+        
+        seq = []
+        seen = set()
+        for _, _, aid in items:
+            if aid not in seen:
+                seen.add(aid)
+                seq.append(aid)
+        self.controller.push_sequence = seq
+
+        # 3) Movement 커밋 (컨트롤러의 우선순위 큐 먼저 처리)
         moved = set()
-
-        applied_iids = [iid for iid in act_to_apply.keys() if iid not in invalid_actions]
-        print(f"[STEP {self.time}] applied={applied_iids} invalid={invalid_actions}")
-
-        for agv_id in priority:
+        for agv_id in self.controller.push_sequence:
             agv_obj = self.agv_list.get(agv_id)
-            if agv_obj is None:
-                continue
-            sig = self.controller.control_buffer.get(agv_id, (0, 0))
-            if self._is_valid_move(agv_obj, sig):
-                agv_obj.move(sig)
-                moved.add(agv_id)
-
-        for agv_id, agv_obj in list(self.agv_list.items()):
-            if agv_id in moved:
-                continue
-            sig = self.controller.control_buffer.get(agv_id, (0, 0))
-            if self._is_valid_move(agv_obj, sig):
-                agv_obj.move(sig)
+            if agv_obj:
+                sig = self.controller.control_buffer.get(agv_id, (0, 0))
+                if self._is_valid_move(agv_obj, sig):
+                    agv_obj.move(sig)
+                    moved.add(agv_id)
+        
+        # 나머지 AGV 이동
+        for agv_id, agv_obj in self.agv_list.items():
+            if agv_id not in moved:
+                sig = self.controller.control_buffer.get(agv_id, (0, 0))
+                if self._is_valid_move(agv_obj, sig):
+                    agv_obj.move(sig)
 
         # 사용 후 정리
         self.controller.push_sequence = []
@@ -187,12 +177,12 @@ class ENV():
         self._check_amr_completion()
         self._spawn_amrs_if_needed()
 
-        # 5) 다음 관측
-        obs_next, info_next = self.generate_observation()
-
         # GUI/테스트 모드: 기존 요약 반환 유지
         if not train:
             return self.make_info()
+
+        # 5) 다음 관측
+        obs_next, info_next = self.generate_observation()
 
         # 6) 보상/이벤트 — 교차로별로 '개별 기록'
         reward_map: dict[str, float] = {}
@@ -216,8 +206,6 @@ class ENV():
             # 교차로별 이벤트 플래그/invalid_action 기록
             meta["event_start"] = (not prev) and curr
             meta["event_end"] = prev and (not curr)
-            if iid in invalid_actions:
-                meta["invalid_action"] = invalid_actions[iid]
 
             # prev 갱신 및 보상 저장
             self.prev_deadlock_map[iid] = curr
@@ -265,54 +253,90 @@ class ENV():
                 "edge_index": edge_index,
             }
             info[iid] = {
-                "deadlock_active": I.is_deadlock,
+                "deadlock_active": I.center_deadlock,
+                "is_deadlock": I.is_deadlock,
                 "action_mask": action_mask,
             }
+        
+        self._update_deadlock_queue(info)
 
         return obs, info
+    
+    def _update_deadlock_queue(self, info):
+        for iid, meta in info.items():
+            if not isinstance(meta, dict):
+                continue
+            if bool(meta.get("is_deadlock", False)):
+                if iid not in self.deadlock_queue:
+                    self.deadlock_queue.append(iid)
+            else:
+                if iid in self.deadlock_queue:
+                    self.deadlock_queue.remove(iid)
+
+    def _inter_rank(self, iid):
+        try:
+            return self.deadlock_queue.index(iid)
+        except ValueError:
+            return math.inf
 
     def _is_valid_move(self, current_agv, control_signal):
         nx = current_agv.pos[0] + control_signal[0]
         ny = current_agv.pos[1] + control_signal[1]
         next_pos = (nx, ny)
 
-        # 0) 경계/지형 체크 (경계 먼저)
+        # 0) 경계/지형
         if not (0 <= nx < self.map.shape[1] and 0 <= ny < self.map.shape[0]):
             return False
         if self.map[ny][nx] == 1:
             return False
 
-        # 1) 데드락-락다운: 다음 칸이 데드락 교차로 영역이면, 그 교차로 '구성원'만 입장 허용
-        #    env.lockdown_on_deadlock = True 로 켜짐 (없으면 기본 True로 취급)
-        if getattr(self, "lockdown_on_deadlock", True):
-            # cell -> intersection 매핑이 있으면 사용
-            inters = []
-            if hasattr(self, "cell2inters"):
-                inters = self.cell2inters.get(next_pos, [])
-                if not isinstance(inters, list):
-                    inters = [inters]
+        # --- 유틸: pos가 속한 교차로들(겹침 포함) ---
+        def owners(pos):
+            res = []
+            for I in self.intersections.values():
+                if pos in I.all_lane_coords:   # all_lane_coords는 set이면 더 빠름
+                    res.append(I)
+            return res
+
+        here_inters  = owners(current_agv.pos)
+        target_inters = owners(next_pos)
+
+        # 현재 위치 타입 분류
+        cur_is_outside = (len(here_inters) == 0)
+        cur_is_center  = any(current_agv.pos == (I.center_x, I.center_y) for I in here_inters)
+        # 팔(arm)이라면 cur_is_outside/cur_is_center 둘 다 False
+
+        # --- 우선순위 비교는 center/outside 에서만 수행 ---
+        if cur_is_center or cur_is_outside:
+            # 현재 위치의 랭크(겹침이면 최소 랭크), 없으면 inf
+            cur_rank = min(
+                (self._inter_rank(getattr(I, "id", "")) for I in here_inters),
+                default=math.inf
+            )
+
+            # 다음 위치의 교차로(겹치면 현재 위치 교차로 제외)
+            if here_inters:
+                here_ids = {getattr(I, "id", None) for I in here_inters}
+                candidates = [J for J in target_inters if getattr(J, "id", None) not in here_ids]
             else:
-                # 매핑이 없다면 느리지만 스캔 (성능 필요시 매핑 만들 것)
-                for I in self.intersections.values():
-                    if next_pos in I.all_lane_coords:
-                        inters.append(I)
+                candidates = list(target_inters)
 
-            for I in inters:
-                # (필요하면 RL 활성화 조건까지 묶고 싶다면: and getattr(self, "use_rl", False))
-                if getattr(I, "is_deadlock", False):
-                    # 현재 그 교차로 '구성원'인가? (이미 안에 있거나 멤버 리스트에 존재)
-                    cur_in_I = (current_agv.pos in I.all_lane_coords)
-                    is_member = any(a.id == current_agv.id for a in getattr(I, "agvs_in_intersection", []))
-                    if not cur_in_I and not is_member:
-                        # 외부에서 해당 교차로로 들어오는 진입은 금지
-                        return False
+            # 다음 위치가 교차로가 아니면 우선순위 비교 스킵(허용)
+            if candidates:
+                next_rank = min(self._inter_rank(getattr(J, "id", "")) for J in candidates)
 
-        # 2) 다른 AGV 점유 충돌
-        for other_agv in self.agv_list.values():
-            if other_agv is not current_agv and next_pos == other_agv.pos:
+                # 네 규칙: next_rank < cur_rank -> 이동 불가
+                if next_rank < cur_rank:
+                    return False
+            # candidates가 비면 교차로가 아닌 칸으로 이동 → 비교 없이 통과
+
+        # 2) 동일 칸 점유 충돌
+        for other in self.agv_list.values():
+            if other is not current_agv and next_pos == other.pos:
                 return False
 
         return True
+
 
     
     def _update_intersections_state(self):
@@ -543,8 +567,7 @@ class ENV():
 
         agv_states = {}
         for agv_id, agv_obj in self.agv_list.items():
-            mode = 2 if self.prev_deadlock and agv_obj in self.intersection.agvs_in_intersection else 0
-            agv_states[agv_id] = [f"Goal_{agv_id}", mode]
+            agv_states[agv_id] = [f"Goal_{agv_id}", 0]
 
         # GUI가 쓰던 포맷 유지: [완료수, 스루풋, AGV상태]
         return [total_pairs_done, throughput, agv_states]

@@ -89,6 +89,16 @@ class GUI():
         )
         # Environment의 RL 사용 여부에 따라 초기값 설정
         self.rl_agent_var.set(getattr(self.env, 'use_rl', False))
+
+        # Show Goal Line Setting
+        self.show_goal_var = tk.BooleanVar()
+        self.show_goal_check = tk.Checkbutton(
+            self.setting,
+            text="Show Goal Lines",
+            variable=self.show_goal_var,
+            font=self.font_style2
+        )
+        self.show_goal_var.set(False)
         
         # State (Right side)
         self.state = tk.Frame(self.win_frame, width = 400, height = 350, highlightbackground = '#595959', highlightthickness=2)   
@@ -133,6 +143,7 @@ class GUI():
         self.algorithm_label.pack()
         self.algorithm_box.pack()
         self.rl_agent_check.pack()
+        self.show_goal_check.pack()
         self.setting.pack_propagate(0)
         
         self.state.pack()
@@ -182,6 +193,16 @@ class GUI():
                 (int((x + 0.5) * self.dis), int((y + 0.5) * self.dis)),
                 int(self.dis / 2) - 2
             )
+
+        # Draw goal lines if enabled
+        if self.show_goal_var.get():
+            for agv_id, agv in agv_list.items():
+                goal_pos = self.env.controller.agv_goal.get(agv_id)
+                if goal_pos:
+                    start_pixel = (int((agv.pos[0] + 0.5) * self.dis), int((agv.pos[1] + 0.5) * self.dis))
+                    end_pixel = (int((goal_pos[0] + 0.5) * self.dis), int((goal_pos[1] + 0.5) * self.dis))
+                    pygame.draw.line(self.win, agv.color, start_pixel, end_pixel, 2)
+        
         pygame.display.flip()
         
         return
