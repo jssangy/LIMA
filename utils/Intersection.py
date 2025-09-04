@@ -4,6 +4,10 @@ from typing import Dict
 
 DIR2IDX = {"N": 0, "E": 1, "S": 2, "W": 3}
 
+PR_PULL = 50      # Pull to Center (플래닝/실행 우선순위 가장 낮음)
+PR_ACTION = 90    # Center Action
+PR_PUSH = 100     # Center Action Push (플래닝/실행 우선순위 가장 높음)
+
 class Intersection:
     def __init__(self, intersection_data, controller_ref):
         self.center_x, self.center_y, self.len_N, self.len_E, self.len_S, self.len_W = intersection_data
@@ -119,11 +123,11 @@ class Intersection:
         dir_map  = {0:'N', 1:'E', 2:'S', 3:'W'}
         a = int(actions)
 
-        # 평소처럼 center 이동 의도만 기록(최종 커밋은 finalize_plan에서)
-        self._plan_add(self.center_agv.id, move_map[a], prio=90, order_key=(2,0))  # 기본 이동(푸시 아님)
-
         d = dir_map[a]
         self._plan_push_chain(d)  # ★ 체인 이동 계획만 추가 (버퍼 직접 X)
+
+        # 평소처럼 center 이동 의도만 기록(최종 커밋은 finalize_plan에서)
+        self._plan_add(self.center_agv.id, move_map[a], prio=PR_ACTION, order_key=(2,0))  # 기본 이동(푸시 아님)
 
     def check_deadlock(self):
         """

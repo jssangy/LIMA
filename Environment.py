@@ -129,25 +129,30 @@ class ENV():
         final_plan_moves = {}
         final_plan_prio = {}
         final_plan_order = {}
+        final_plan_owner = {}
 
-        for I in self.intersections.values():
+        for iid in sorted_iids:
+            I = self.intersections[iid]
             for agv_id, prio in I._plan_prio.items():
                 prev_prio = final_plan_prio.get(agv_id, -10**9)
-                if prio > prev_prio:
+                if prio >= prev_prio:
                     final_plan_prio[agv_id] = prio
                     final_plan_moves[agv_id] = I._plan_moves[agv_id]
                     final_plan_order[agv_id] = I._plan_order[agv_id]
+                    final_plan_owner[agv_id] = iid
 
         self.controller.control_buffer.update(final_plan_moves)
         
         items = []
         for agv_id, (prio, *order) in final_plan_order.items():
-            items.append((-prio, tuple(order), agv_id))
+            owner_iid = final_plan_owner[agv_id]
+            rank = self._inter_rank(owner_iid)
+            items.append((rank, -prio, tuple(order), agv_id))
         items.sort()
         
         seq = []
         seen = set()
-        for _, _, aid in items:
+        for _, _, _, aid in items:
             if aid not in seen:
                 seen.add(aid)
                 seq.append(aid)
@@ -511,8 +516,19 @@ class ENV():
     
     def is_arm_outgoing_clear(self, iid: str, d: str) -> bool:
         I = self.intersections[iid]
-        # I.outgoing: {"N": bool, "E": bool, "S": bool, "W": bool} 라고 가정
-        return not bool(getattr(I, "outgoing", {}).get(d, False))
+        
+        # 1. 해당 팔에 나가는 AGV가 있으면 생성 금지
+        has_outgoing = bool(getattr(I, "outgoing", {}).get(d, False))
+        if has_outgoing:
+            return False
+            
+        # 2. 해당 교차로가 데드락 상태이면 생성 금지
+        is_deadlocked = iid in self.deadlock_queue
+        if is_deadlocked:
+            return False
+            
+        # 두 조건 모두 통과하면 생성 허용
+        return True
 
     """
     def _center_occupied_any(self) -> bool:
