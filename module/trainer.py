@@ -50,7 +50,7 @@ class TrainConfig:
     steps_per_update: int = 4096
 
     # logging
-    project: str = "smdp_mappo"
+    project: str = "MAPF"
 
 
 # -------------------- trainer --------------------
@@ -287,8 +287,8 @@ class Trainer:
         pbar.close()
 
         # 저장
-        os.makedirs("checkpoints", exist_ok=True)
-        out_path = os.path.join("checkpoints", self._save_name)
+        os.makedirs("checkpoint", exist_ok=True)
+        out_path = os.path.join("checkpoint", "policy.pt")
         torch.save(self.model.state_dict(), out_path)
         print(f"[model] saved → {out_path}")
         wandb.finish()

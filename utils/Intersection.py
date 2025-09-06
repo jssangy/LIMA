@@ -374,3 +374,32 @@ class Intersection:
         # center는 마지막에
         center_order = (1, 0)
         self._plan_add(self.center_agv.id, move, PR_PUSH, center_order)
+
+    def _plan_general_by_center(self):
+        """
+        push/center/pull로 이미 계획된 AGV를 제외하고,
+        교차로 내부 일반 D* 이동을 '센터에 가까운 순'으로 계획한다.
+        - 우선순위: PR_GENERAL(=10)  ← push(100) > center(90) > pull(50) > general(10)
+        - order_key: (센터 맨해튼 거리, agv_id)
+        """
+        if self.center_agv is None:
+            return
+
+        PR_GENERAL = 10
+        cx, cy = self.center_x, self.center_y
+        center_id = self.center_agv.id
+
+        for a in self.agvs_in_intersection:
+            if a.id == center_id:
+                continue
+            # 이미 push/center/pull 등으로 계획된 AGV는 제외
+            if a.id in self._plan_moves:
+                continue
+
+            mv = self._planned_move(a)  # 경로/버퍼 기반 다음 이동 벡터
+            if not mv or mv == (0, 0):
+                continue
+
+            dist = abs(a.pos[0] - cx) + abs(a.pos[1] - cy)
+            order_key = (dist, a.id)  # 가까운 순 → 먼저
+            self._plan_add(a.id, mv, PR_GENERAL, order_key)

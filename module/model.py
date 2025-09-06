@@ -16,7 +16,7 @@ class GraphEncoder(nn.Module):
     Output
       - [B, hidden]
     """
-    def __init__(self, in_dim: int, hidden: int = 128, layers: int = 2):
+    def __init__(self, in_dim: int, hidden: int, layers: int):
         super().__init__()
         self.convs = nn.ModuleList(
             [GCNConv(in_dim, hidden)] +

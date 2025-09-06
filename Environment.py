@@ -81,127 +81,121 @@ class ENV():
         반환: obs_next, reward_map, info_next
         """
         self.time += 1
-        if actions is None:
-            actions = {}
+        actions = actions or {}
 
-        # 0) 현재 스냅샷
+        # 0) 스냅샷
         obs_now, info_now = self.generate_observation()
 
-        # 1) 액션 결정 (데드락인 동안 매 스텝 RL 보충)
-        act_to_apply: dict[str, int] = dict(actions)
-
-        # 1) 적용할 액션 결정 (RL 정책 보충)
-        act_to_apply = dict(actions)
-        if (not train) and self.use_rl and self.rl_policy:
+        # 1) 액션 결정 (데드락 활성 + center 존재 교차로만 RL 보충)
+        act_to_apply: Dict[str, int] = dict(actions)
+        if (not train) and self.use_rl and (self.rl_policy is not None):
             for iid, meta in info_now.items():
-                # 유효한 교차로 정보인지 확인
                 if not isinstance(meta, dict):
                     continue
-                
-                # 데드락이 활성화된 교차로에 대해서만 RL 정책 적용
-                if meta.get("deadlock_active", False) and self.intersections[iid].center_agv and iid not in act_to_apply:
-                    action_mask = meta.get("action_mask")
-                    rl_action = int(self.rl_policy(obs_now[iid], action_mask))
-                    act_to_apply[iid] = rl_action
+                if meta.get("deadlock_active", False) and (iid not in act_to_apply) and self.intersections[iid].center_agv:
+                    am = meta.get("action_mask")
+                    act_to_apply[iid] = int(self.rl_policy(obs_now[iid], am))
 
-        if act_to_apply:
-            print(f"[STEP {self.time}] intended_actions="
-                f"{ {iid: int(a) for iid, a in act_to_apply.items()} }")
-            print(f"Deadlock Queue: {self.deadlock_queue}")
-        else:
-            print(f"[STEP {self.time}] intended_actions=empty")
-            print(f"Deadlock Queue: {self.deadlock_queue}")
+        if self.use_rl and self.rl_policy:
+            if act_to_apply:
+                print(f"[STEP {self.time}] intended actions="
+                      f"{ {iid: int(a) for iid, a in act_to_apply.items()} }")
+                print(f"Deadlock Queue: {self.deadlock_queue}")
+            else:
+                print(f"[STEP {self.time}] intended_actions=empty")
+                print(f"Deadlock Queue: {self.deadlock_queue}")
 
-        sorted_iids = sorted(self.intersections.keys(), key=self._inter_rank, reverse=True)
+        # deadlock_queue 기준 정렬: rank가 큰(낮은 우선순위) 교차로 먼저
+        sorted_iids = sorted(self.intersections.keys(), key=lambda k: self._inter_rank(k), reverse=True)
 
-        # 2) 교차로별 플래닝 (begin → resolve → action → finalize)
+        # 2) 플래닝 수집 (begin → resolve_arm_swaps → action_control → 일반 D*)  — 로컬만 채움
         for I in self.intersections.values():
             I.begin_plan()
 
         for iid in sorted_iids:
             I = self.intersections[iid]
-
-            # 사전 충돌 해결 로직 (예: 팔 스와핑)
+            # 1) pull(스왑 해소)
             I.resolve_arm_swaps_all()
+            # 2) center action (+ 해당 팔 push)
+            a_idx = act_to_apply.get(iid, None)
+            if a_idx is not None:
+                mask = np.asarray(I.calculate_action_mask(), dtype=np.bool_)
+                if 0 <= a_idx < len(mask) and mask[a_idx]:
+                    # action_control 내부에서 push가 group 1, center가 group 2로 들어가도록 구현되어 있어야 함
+                    I.action_control(int(a_idx))
+            # 3) 일반 D* (센터 가까운 순) — push/center/pull에 잡히지 않은 나머지만
+            #   Intersection에 _plan_general_by_center()가 구현되어 있다는 전제
+            I._plan_general_by_center()
 
-            # 액션 적용
-            if iid in act_to_apply:
-                a_idx = act_to_apply[iid]
-                I.action_control(a_idx)
-
-        final_plan_moves = {}
-        final_plan_prio = {}
-        final_plan_order = {}
-        final_plan_owner = {}
-
+        # 3) 전역 머지 (같은 AGV에 대해 prio 큰 쪽 채택) + 전역 정렬 키 생성
+        final_moves, final_prio, final_order, final_owner = {}, {}, {}, {}
         for iid in sorted_iids:
             I = self.intersections[iid]
-            for agv_id, prio in I._plan_prio.items():
-                prev_prio = final_plan_prio.get(agv_id, -10**9)
-                if prio >= prev_prio:
-                    final_plan_prio[agv_id] = prio
-                    final_plan_moves[agv_id] = I._plan_moves[agv_id]
-                    final_plan_order[agv_id] = I._plan_order[agv_id]
-                    final_plan_owner[agv_id] = iid
+            for agv_id, pr in I._plan_prio.items():
+                prev = final_prio.get(agv_id, -10**9)
+                if pr >= prev:
+                    final_prio[agv_id]  = pr
+                    final_moves[agv_id] = I._plan_moves[agv_id]
+                    final_order[agv_id] = I._plan_order[agv_id]   # (group/prio, *order_key)
+                    final_owner[agv_id] = iid
 
-        self.controller.control_buffer.update(final_plan_moves)
-        
+        # control_buffer 갱신
+        self.controller.control_buffer.update(final_moves)
+
+        # 전역 실행 순서: (deadlock_rank_key, -prio, order_key, agv_id)
+        #  - deadlock_rank_key = -rank  (rank가 클수록 먼저 오게)
         items = []
-        for agv_id, (prio, *order) in final_plan_order.items():
-            owner_iid = final_plan_owner[agv_id]
-            rank = self._inter_rank(owner_iid)
-            items.append((rank, -prio, tuple(order), agv_id))
+        for agv_id, (prio, *order) in final_order.items():
+            owner = final_owner[agv_id]
+            rank_key = -self._inter_rank(owner)   # 낮은 우선순위(뒤쪽)가 먼저
+            items.append((rank_key, -prio, tuple(order), agv_id))
         items.sort()
-        
-        seq = []
-        seen = set()
+
+        seq, seen = [], set()
         for _, _, _, aid in items:
             if aid not in seen:
                 seen.add(aid)
                 seq.append(aid)
         self.controller.push_sequence = seq
 
-        # 3) Movement 커밋 (컨트롤러의 우선순위 큐 먼저 처리)
+        # 4) Movement 커밋
         moved = set()
         for agv_id in self.controller.push_sequence:
             agv_obj = self.agv_list.get(agv_id)
-            if agv_obj:
-                sig = self.controller.control_buffer.get(agv_id, (0, 0))
-                if self._is_valid_move(agv_obj, sig):
-                    agv_obj.move(sig)
-                    moved.add(agv_id)
-        
-        # 나머지 AGV 이동
-        for agv_id, agv_obj in self.agv_list.items():
-            if agv_id not in moved:
-                sig = self.controller.control_buffer.get(agv_id, (0, 0))
-                if self._is_valid_move(agv_obj, sig):
-                    agv_obj.move(sig)
+            if not agv_obj:
+                continue
+            mv = self.controller.control_buffer.get(agv_id, (0, 0))
+            if self._is_valid_move(agv_obj, mv):
+                agv_obj.move(mv)
+                moved.add(agv_id)
 
-        # 사용 후 정리
+        for agv_id, agv_obj in list(self.agv_list.items()):
+            if agv_id in moved:
+                continue
+            mv = self.controller.control_buffer.get(agv_id, (0, 0))
+            if self._is_valid_move(agv_obj, mv):
+                agv_obj.move(mv)
+
+        # 정리
         self.controller.push_sequence = []
 
-        # 4) 환경 변화 처리
+        # 5) 환경 업데이트
         self._check_amr_completion()
         self._spawn_amrs_if_needed()
 
-        # GUI/테스트 모드: 기존 요약 반환 유지
         if not train:
             return self.make_info()
 
-        # 5) 다음 관측
+        # 6) 다음 관측/보상
         obs_next, info_next = self.generate_observation()
 
-        # 6) 보상/이벤트 — 교차로별로 '개별 기록'
-        reward_map: dict[str, float] = {}
+        reward_map: Dict[str, float] = {}
         for iid, meta in info_next.items():
             if not isinstance(meta, dict):
                 continue
-
             curr = bool(meta.get("deadlock_active", False))
             prev = self.prev_deadlock_map.get(iid, False)
 
-            # 기본 보상 스킴(예시): 지속 -0.05, 해소 +1.0
             r = 0.0
             if curr:
                 r -= 0.05
@@ -211,22 +205,15 @@ class ENV():
                 meta["tau"] = self.tau_map.get(iid, 0)
                 self.tau_map[iid] = 0
 
-            # 교차로별 이벤트 플래그/invalid_action 기록
             meta["event_start"] = (not prev) and curr
-            meta["event_end"] = prev and (not curr)
+            meta["event_end"]   = prev and (not curr)
 
-            # prev 갱신 및 보상 저장
             self.prev_deadlock_map[iid] = curr
             reward_map[iid] = r
 
-        # 종료/트렁케이트: 전역 상태만 간단 요약(합산 지표는 넣지 않음)
         terminated = False
         truncated = (self.time >= self.max_steps)
-        info_next["_summary"] = {
-            "terminated": terminated,
-            "truncated": truncated,
-            "time": self.time,
-        }
+        info_next["_summary"] = {"terminated": terminated, "truncated": truncated, "time": self.time}
 
         return obs_next, reward_map, info_next
 
@@ -601,7 +588,6 @@ class ENV():
             return False
 
         return True
-
 
     # --- [GUI 연동을 위한 어댑터 함수들] ---
     def Get_AGV(self):
