@@ -39,12 +39,12 @@ def main():
 
     # 환경 설정 파일 경로
     prob_path = os.path.join('problems', 'cross', 'cross_1.json')
-    model_path = os.path.join('policy.pt')
+    model_path = os.path.join('checkpoint', 'best_policy.pt')
 
     # 1. ENV 환경 인스턴스 생성
     env = ENV(prob_path)
     # RL 정책 로드 & 연결
-    state_dim = int(np.asarray(env.intersection.get_state()).shape[-1])
+    state_dim = int(np.asarray(next(iter(env.intersections.values())).get_state()).shape[-1])
     env.rl_policy = load_policy(model_path, state_dim, device=("cuda" if torch.cuda.is_available() else "cpu"), hidden=128, gnn_layers=2, greedy=True)
     
     env.use_rl = True  # GUI 체크박스도 자동으로 켜지게 하려면 True로

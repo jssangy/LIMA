@@ -2,10 +2,16 @@ import numpy as np
 from itertools import chain
 from typing import Dict
 
+DIR2IDX = {"N": 0, "E": 1, "S": 2, "W": 3}
+
+PR_PULL = 50      # Pull to Center (플래닝/실행 우선순위 가장 낮음)
+PR_ACTION = 90    # Center Action
+PR_PUSH = 100     # Center Action Push (플래닝/실행 우선순위 가장 높음)
+
 class Intersection:
     def __init__(self, intersection_data, controller_ref):
-        self.id = intersection_data
         self.center_x, self.center_y, self.len_N, self.len_E, self.len_S, self.len_W = intersection_data
+        self.id = f'x{self.center_x}y{self.center_y}'
         self.controller = controller_ref
         self.map = self.controller.map
 
@@ -23,6 +29,8 @@ class Intersection:
         self.agvs_in_intersection = set()  # 교차로 내 AGV만 추적
         self.agvs_in_lanes = {'N': [], 'E': [], 'S': [], 'W': []}
         self.center_agv = None
+        self.center_deadlock = False
+        self.is_deadlock = False
 
         self.ingoing = {"N": False, "E": False, "S": False, "W": False}
         self.outgoing = {"N": False, "E": False, "S": False, "W": False}
@@ -31,6 +39,14 @@ class Intersection:
         self._plan_prio:  Dict[int, int]   = {}   # agv_id -> priority(큰 게 먼저)
         self._plan_order: Dict[int, tuple] = {}   # agv_id -> (order tuple)
 
+    def reset(self):
+        self.agvs_in_intersection.clear()
+        self.agvs_in_lanes = {'N': [], 'E': [], 'S': [], 'W': []}
+        self.center_agv = None
+        self.ingoing = {"N": False, "E": False, "S": False, "W": False}
+        self.outgoing = {"N": False, "E": False, "S": False, "W": False}
+        self.center_deadlock = False
+        self.is_deadlock = False
 
     def add_agv(self, agv_object):
         agv_obj = agv_object
@@ -51,7 +67,6 @@ class Intersection:
                     elif curd == (-nxt[0], -nxt[1]):
                         self.ingoing[direction] = True
                     break
-
 
     def get_state(self):
         state_vector = []
@@ -101,66 +116,85 @@ class Intersection:
         state_vector.extend(center_goal_onehot)
         return np.array(state_vector, dtype=np.float32)
 
-    def action_control(self, actions, is_push_out=False):
+    def action_control(self, actions):
         if self.center_agv is None:
             return
         move_map = {0:(0,-1),1:(1,0),2:(0,1),3:(-1,0)}
         dir_map  = {0:'N', 1:'E', 2:'S', 3:'W'}
         a = int(actions)
 
+        d = dir_map[a]
+        self._plan_push_chain(d)  # ★ 체인 이동 계획만 추가 (버퍼 직접 X)
+
         # 평소처럼 center 이동 의도만 기록(최종 커밋은 finalize_plan에서)
-        self._plan_add(self.center_agv.id, move_map[a], prio=90, order_key=(2,0))  # 기본 이동(푸시 아님)
+        self._plan_add(self.center_agv.id, move_map[a], prio=PR_ACTION, order_key=(2,0))  # 기본 이동(푸시 아님)
 
-        if is_push_out:
-            d = dir_map[a]
-            self._plan_push_chain(d)  # ★ 체인 이동 계획만 추가 (버퍼 직접 X)
-
-
-    def push_out(self, pos, direction):
-        # direction: (dx, dy)
-        dx, dy = direction
-        next_pos = (pos[0] + dx, pos[1] + dy)
-
-        H, W = self.map.shape[0], self.map.shape[1]
-        def in_bounds(p): return 0 <= p[0] < W and 0 <= p[1] < H
-
-        # 1) 다음 칸이 맵 밖이면 실패(더 밀 곳 없음)
-        if not in_bounds(next_pos):
+    def check_deadlock(self):
+        """
+        데드락 판정:
+        - center_deadlock: 중앙 AMR이 관련된 스와핑 데드락 여부
+        - is_deadlock    : 교차로 내 '어떤' 쌍이라도 스와핑 데드락이면 True
+        """
+        agvs = list(self.agvs_in_intersection or [])
+        if len(agvs) < 2:
             return False
 
-        # 2) 다음 칸에 AGV가 없으면(빈칸) 더 밀 필요 없음(베이스 케이스)
-        target_id = None
-        for agv_id, agv_p in self.controller.agv_pos.items():
-            if agv_p == next_pos:
-                target_id = agv_id
-                break
-        if target_id is None:
-            # nothing ahead — success
-            return True
+        center_id = getattr(self.center_agv, "id", None)
 
-        # 3) target이 이동해야 할 칸(그 다음 칸)
-        beyond = (next_pos[0] + dx, next_pos[1] + dy)
+        # (선택) 센터 먼저 검사되도록 앞으로 배치
+        if center_id is not None:
+            agvs.sort(key=lambda a: a.id != center_id)  # center가 맨 앞
 
-        # 3-1) 벽/경계 체크
-        if not in_bounds(beyond) or self.map[beyond[1]][beyond[0]] == 1:
+        n = len(agvs)
+        for i in range(n - 1):
+            ai = agvs[i]
+            for j in range(i + 1, n):
+                aj = agvs[j]
+                # 양방향 스와핑 위험 검사 (한 번만)
+                if self._check_swapping_path(ai, aj) or self._check_swapping_path(aj, ai):
+                    self.is_deadlock = True
+                    self.deadlock_pair = (ai.id, aj.id)
+
+                    if center_id is not None and (ai.id == center_id or aj.id == center_id):
+                        self.center_deadlock = True
+                        self.deadlock_pair_center = (ai.id, aj.id)
+                    # 센터가 아니면 center_deadlock은 False 그대로
+
+                    return True
+
+        # 발견 못함
+        return False
+
+    def _check_swapping_path(self, agv1, agv2):
+        """
+        A(agv1)의 경로 상에 B(agv2)의 현재 위치가 포함되어 있고,
+        A의 해당 구간 역순이 B의 경로에 서브시퀀스로 포함되면 스와핑 위험으로 판단.
+        """
+        path1 = self.controller.agv_path.get(agv1.id)
+        path2 = self.controller.agv_path.get(agv2.id)
+        if not path1 or not path2:
             return False
 
-        # 3-2) 그 다음 칸이 다른 AGV로 점유되어 있으면, 먼저 재귀로 비워라(테일-퍼스트)
-        occupied = False
-        for oid, opos in self.controller.agv_pos.items():
-            if opos == beyond:
-                occupied = True
-                break
-        if occupied:
-            ok = self.push_out(next_pos, direction)
-            if not ok:
-                # 꼬리를 못 밀면 현재도 못 민다
-                return False
+        pos2 = agv2.pos
 
-        # 4) 이제 비었거나 비워질 예정이므로, 현재 타깃을 한 칸 밀도록 기록
-        self.controller.control_buffer[target_id] = direction
-        return True       
+        # A의 경로에서 B의 현재 위치 인덱스 찾기
+        try:
+            index2_in_1 = path1.index(pos2)
+        except ValueError:
+            return False
 
+        # A의 경로 구간을 뒤집고, B의 경로에 포함되는지 확인
+        sub_path1 = path1[:index2_in_1 + 1]
+        if not sub_path1:
+            return False
+        reversed_sub_path1 = sub_path1[::-1]
+
+        L = len(reversed_sub_path1)
+        for i in range(len(path2) - L + 1):
+            if path2[i:i + L] == reversed_sub_path1:
+                return True
+        return False
+    
     def _get_exit_direction(self, path):
         center_node = (self.center_x, self.center_y)
         if center_node in path:
@@ -175,13 +209,6 @@ class Intersection:
             if coords in lane_coords:
                 return direction
 
-    def reset(self):
-        self.agvs_in_intersection.clear()
-        self.agvs_in_lanes = {'N': [], 'E': [], 'S': [], 'W': []}
-        self.center_agv = None
-        self.ingoing = {"N": False, "E": False, "S": False, "W": False}
-        self.outgoing = {"N": False, "E": False, "S": False, "W": False}
-
     def _back_action_index_from_prev(self):
         if self.center_agv is None:
             return None
@@ -195,20 +222,18 @@ class Intersection:
         return vec2idx.get(back_vec)
 
     def calculate_action_mask(self):
-        import numpy as np
-        # 중앙에 AMR 없으면 의미가 없으니 전부 False, push_out은 꺼둡니다.
+        # 중앙 AMR 없으면 전부 금지
         if self.center_agv is None:
-            return np.zeros(4, dtype=np.bool_), False
+            return np.zeros(4, dtype=np.bool_)
 
-        mask = np.ones(4, dtype=np.bool_)  # N E S W 전부 허용
+        mask = np.ones(4, dtype=np.bool_)  # N E S W
+
+        # 1) 뒤로가기 금지 (기존 로직)
         back_idx = self._back_action_index_from_prev()
-        if back_idx is not None:
-            mask[back_idx] = False         # 뒤로가기만 금지
+        if back_idx is not None and 0 <= back_idx < 4:
+            mask[back_idx] = False
 
-        # 항상 밀어내기 활성화
-        is_push_out = True
-        return mask, is_push_out
-
+        return mask
 
     def _dir_vec(self, d: str):
         return {'N': (0,-1), 'E': (1,0), 'S': (0,1), 'W': (-1,0)}[d]
@@ -235,7 +260,7 @@ class Intersection:
 
     def _planned_move(self, agv):
         """제어버퍼 > 경로기반으로 다음 이동 벡터 추정"""
-        mv = self.controller.control_buffer.get(agv.id)
+        mv = self.controller.next_buffer.get(agv.id)
         if mv is not None:
             return mv
         path = self.controller.agv_path.get(agv.id)
@@ -278,7 +303,6 @@ class Intersection:
         hit = [d for d in dirs if self._detect_arm_swap_pairs(d)]
         if not hit:
             return
-        # print("Swapping Detected")
 
         PR_PULL = 50  # 끌어오기 우선순위(밀어내기보다 낮게)
 
@@ -301,7 +325,6 @@ class Intersection:
 
     # Intersection에 유틸 3개 추가
     def begin_plan(self):
-        """이번 스텝의 이동 계획을 수집하기 전에 호출"""
         self._plan_moves.clear()
         self._plan_prio.clear()
         self._plan_order.clear()
