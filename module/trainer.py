@@ -287,8 +287,8 @@ class Trainer:
         pbar.close()
 
         # 저장
-        os.makedirs("checkpoint", exist_ok=True)
-        out_path = os.path.join("checkpoint", "policy.pt")
+        os.makedirs("checkpoints", exist_ok=True)
+        out_path = os.path.join("checkpoints", self._save_name)
         torch.save(self.model.state_dict(), out_path)
         print(f"[model] saved → {out_path}")
         wandb.finish()

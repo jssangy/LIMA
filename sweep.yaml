@@ -1,6 +1,6 @@
 # sweep_1st.yaml
-project: smdp_mapf
-name: smdp_mapf_sweep
+project: MAPF
+name: MAPF_SWEEP
 program: train.py
 method: grid
 metric:
@@ -9,16 +9,16 @@ metric:
 
 parameters:
   lr:
-    values: [1e-5, 1e-4, 1e-3]
+    values: [1e-5, 5e-5, 1e-4, 5e-4, 1e-3]
   clip:
     values: [0.10, 0.20, 0.30]
   entropy_coef:
     values: [0.01, 0.02, 0.03]
   epochs:
-    values: [2, 4, 6]
+    values: [2, 4, 6, 8]
   minibatch:
-    values: [64, 128, 256]
-  events_per_update:
+    values: [64, 128, 256, 512]
+  steps_per_update:
     values: [64, 128, 256, 512]
 
 command:
