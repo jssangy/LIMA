@@ -19,13 +19,12 @@ class TrafficGenerator:
     def __init__(
         self,
         active_dirs: Optional[List[str]] = None,     # 활성 방향 집합
-        lam: float = 0.1,                           # 기본 λ (per-step, per-dir)
+        lam: float = 0.2,                           # 기본 λ (per-step, per-dir)
         lambda_per_dir: Optional[Dict[str, float]] = None,
         max_spawn_per_step: int = 4,                 # 한 스텝 최대 스폰 수 (K)
         turn_probs: Optional[Dict[str, Dict[str, float]]] = None,
-        seed: Optional[int] = None,
     ):
-        self.rng = np.random.default_rng(seed)
+        self.rng = np.random.default_rng()
         self.active_dirs = tuple(active_dirs) if active_dirs else DIRS
         self.lambda_d = {d: (lambda_per_dir[d] if lambda_per_dir and d in lambda_per_dir else lam)
                          for d in self.active_dirs}
@@ -216,11 +215,10 @@ class TrafficGenerator12:
         arms12: List[Tuple[str, str]],
         lam: float = 0.02,
         lambda_per_arm: Optional[Dict[Tuple[str, str], float]] = None,
-        seed: Optional[int] = 7,
         arm_gate: Optional[Callable[[str, str], bool]] = None,  # ★ 추가
         debug: bool = False,                                    # ★ 선택
     ):
-        self.rng = np.random.default_rng(seed)
+        self.rng = np.random.default_rng()
         self.arms = [(str(iid), d) for (iid, d) in arms12]
         self.lam = float(lam)
         self.lambda_arm = {

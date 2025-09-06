@@ -30,7 +30,7 @@ class ENV():
         self.time = 0
         self.agv_list = {}
         self.l_hop = 1
-        self.max_steps = 1000
+        self.max_steps = 1024
 
         # Intersections, Controller
         self.controller = controller(self.map)
@@ -45,7 +45,7 @@ class ENV():
         # self.traffic_generator = TrafficGenerator12(arms12=arms12)
         # self.traffic_generator.set_arm_gate(lambda iid, d: self.is_arm_outgoing_clear(iid, d))
         self.traffic_generator = TrafficGenerator()
-        self.max_inside = 6
+        self.max_inside = 4
         iid = next(iter(self.intersections))  # 첫 교차로 id
         self.traffic_generator.set_capacity_gate(lambda d: self._spawn_gate(iid, d))
 
@@ -107,10 +107,10 @@ class ENV():
         if act_to_apply:
             print(f"[STEP {self.time}] intended_actions="
                 f"{ {iid: int(a) for iid, a in act_to_apply.items()} }")
+            print(f"Deadlock Queue: {self.deadlock_queue}")
         else:
             print(f"[STEP {self.time}] intended_actions=empty")
-
-        print(f"Deadlock Queue: {self.deadlock_queue}")
+            print(f"Deadlock Queue: {self.deadlock_queue}")
 
         sorted_iids = sorted(self.intersections.keys(), key=self._inter_rank, reverse=True)
 
@@ -574,19 +574,32 @@ class ENV():
     def _arm_has_outgoing(self, iid, direction: str) -> bool:
         # 해당 팔에서 바깥으로 나가려는(outgoing) AMR이 하나라도 있으면 True
         return bool(getattr(self.intersections[iid], 'outgoing', {}).get(direction, False))
+    
+    def _is_spawn_pos_occupied(self, spawn_pos: tuple) -> bool:
+        """특정 좌표에 AGV가 이미 있는지 확인"""
+        for agv_obj in self.agv_list.values():
+            if agv_obj.pos == spawn_pos:
+                return True
+        return False
 
     def _spawn_gate(self, iid, direction: str) -> bool:    
         # Poisson 스폰을 막는 글로벌 게이트:
         # - 중앙 점유 시 전체 스폰 정지
         # - 교차로 내부 AMR 수가 임계치 이상이면 정지
         # - 해당 팔 점유 시 해당 방향 스폰 금지
+        spawn_pos = self._direction_to_coords(direction, iid)
 
+        if self._is_spawn_pos_occupied(spawn_pos): # ★ 가장 먼저, 가장 중요한 검사
+            return False
         if self._center_occupied_any(iid):               # ★ 중앙 점유 금지
             return False
         if self._count_inside() >= self.max_inside:
             return False
         if self._arm_has_outgoing(iid, direction):
             return False
+        if iid in self.deadlock_queue:
+            return False
+
         return True
 
 
