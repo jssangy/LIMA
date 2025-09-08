@@ -31,8 +31,6 @@ def main():
 
     # 2) 학습 설정 (env 경로는 Config에 넣지 않음)
     cfg = TrainConfig(
-        total_updates=args.updates,
-        events_per_update=args.events_per_update,
         epochs=args.epochs,
         minibatch_size=args.minibatch,
         gamma=args.gamma,

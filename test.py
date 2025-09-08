@@ -39,7 +39,11 @@ def main():
 
     # 환경 설정 파일 경로
     prob_path = os.path.join('problems', 'cross', 'cross_1.json')
+<<<<<<< HEAD
     model_path = os.path.join('checkpoint', 'final_mlp_policy.pt')
+=======
+    model_path = os.path.join('checkpoint', 'final_policy.pt')
+>>>>>>> recover
 
     # 1. ENV 환경 인스턴스 생성
     env = ENV(prob_path)

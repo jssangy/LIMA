@@ -58,7 +58,6 @@ class ENV():
 
     def reset(self):        
         self.time = 0
-        self.tau_map: dict[str, int] = {}
         self.agv_list.clear()
         self.traffic_generator.start_new_episode()
 
@@ -80,15 +79,14 @@ class ENV():
         actions: { "x{cx}y{cy}": action_idx, ... }
         반환: obs_next, reward_map, info_next
         """
+
         self.time += 1
         actions = actions or {}
-
-        # 0) 스냅샷
-        obs_now, info_now = self.generate_observation()
 
         # 1) 액션 결정 (데드락 활성 + center 존재 교차로만 RL 보충)
         act_to_apply: Dict[str, int] = dict(actions)
         if (not train) and self.use_rl and (self.rl_policy is not None):
+            obs_now, info_now = self.generate_observation()
             for iid, meta in info_now.items():
                 if not isinstance(meta, dict):
                     continue
@@ -119,10 +117,7 @@ class ENV():
             # 2) center action (+ 해당 팔 push)
             a_idx = act_to_apply.get(iid, None)
             if a_idx is not None:
-                mask = np.asarray(I.calculate_action_mask(), dtype=np.bool_)
-                if 0 <= a_idx < len(mask) and mask[a_idx]:
-                    # action_control 내부에서 push가 group 1, center가 group 2로 들어가도록 구현되어 있어야 함
-                    I.action_control(int(a_idx))
+                I.action_control(int(a_idx))
             # 3) 일반 D* (센터 가까운 순) — push/center/pull에 잡히지 않은 나머지만
             #   Intersection에 _plan_general_by_center()가 구현되어 있다는 전제
             I._plan_general_by_center()
@@ -193,17 +188,14 @@ class ENV():
         for iid, meta in info_next.items():
             if not isinstance(meta, dict):
                 continue
-            curr = bool(meta.get("deadlock_active", False))
+            curr = bool(meta.get("is_deadlock", False))
             prev = self.prev_deadlock_map.get(iid, False)
 
             r = 0.0
             if curr:
                 r -= 0.05
-                self.tau_map[iid] = self.tau_map.get(iid, 0) + 1
             if prev and not curr:
                 r += 1.0
-                meta["tau"] = self.tau_map.get(iid, 0)
-                self.tau_map[iid] = 0
 
             meta["event_start"] = (not prev) and curr
             meta["event_end"]   = prev and (not curr)
@@ -331,8 +323,6 @@ class ENV():
                 return False
 
         return True
-
-
     
     def _update_intersections_state(self):
         for I in self.intersections.values():
