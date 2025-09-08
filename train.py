@@ -19,7 +19,7 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--value_coef", type=float, default=0.5)
     parser.add_argument("--max_grad_norm", type=float, default=0.5)
-    parser.add_argument("--total_steps", type=int, default=100_000)
+    parser.add_argument("--total_steps", type=int, default=500_000)
     parser.add_argument("--steps_per_update", type=int, default=256)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")

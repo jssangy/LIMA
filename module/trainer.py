@@ -259,14 +259,6 @@ class Trainer:
             batch = compute_gae(batch, self.cfg.gamma, self.cfg.lam)
             logs  = self.update(batch)
 
-            # [수정] 버퍼 내 보상 분포 출력
-            rewards_tensor = batch["rewards"]
-            count_pos_one = torch.isclose(rewards_tensor, torch.tensor(1.0, device=self.device)).sum().item()
-            count_neg_penalty = torch.isclose(rewards_tensor, torch.tensor(-0.05, device=self.device)).sum().item()
-            count_zero = torch.isclose(rewards_tensor, torch.tensor(0.0, device=self.device)).sum().item()
-            print(f"  [Buffer Stats] +1.0: {count_pos_one}, -0.05: {count_neg_penalty}, 0.0: {count_zero} (Total: {len(buf)})")
-
-
             # 베스트(최소 loss) 저장
             cur_loss = float(logs.get("loss", float("inf")))
             avgR   = float(batch["rewards"].mean().cpu()) if len(buf) else 0.0
