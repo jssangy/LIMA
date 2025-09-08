@@ -214,7 +214,7 @@ class TrafficGenerator12:
     def __init__(
         self,
         arms12: List[Tuple[str, str]],
-        lam: float = 0.02,
+        lam: float = 0.03,
         lambda_per_arm: Optional[Dict[Tuple[str, str], float]] = None,
         seed: Optional[int] = 7,
         arm_gate: Optional[Callable[[str, str], bool]] = None,  # ★ 추가

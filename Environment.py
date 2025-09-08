@@ -29,7 +29,7 @@ class ENV():
         self.time = 0
         self.agv_list = {}
         self.l_hop = 1
-        self.max_steps = 1000
+        self.max_steps = 1024
 
         # Intersections, Controller
         self.controller = controller(self.map)
