@@ -7,7 +7,7 @@ import torch, numpy as np
 from module.model import ActorCritic
 
 class RLPolicy:
-    def __init__(self, model: ActorCritic, device="cpu", greedy=True):
+    def __init__(self, model: ActorCritic, device="cpu", greedy=False):
         self.model = model.to(device).eval()
         self.device = device
         self.greedy = greedy
@@ -29,7 +29,7 @@ class RLPolicy:
             a, _, _ = self.model.act(obs, action_mask=am)
             return int(a.item())
 
-def load_policy(model_path: str, state_dim: int, device="cpu", greedy=True):
+def load_policy(model_path: str, state_dim: int, device="cpu", greedy=False):
     model = ActorCritic(state_dim=state_dim, action_dim=4)
     sd = torch.load(model_path, map_location=device)
     model.load_state_dict(sd, strict=True)
@@ -39,13 +39,13 @@ def main():
 
     # 환경 설정 파일 경로
     prob_path = os.path.join('problems', 'cross', 'cross_1.json')
-    model_path = os.path.join('checkpoint', 'policy.pt')
+    model_path = os.path.join('checkpoint', 'final_mlp_policy.pt')
 
     # 1. ENV 환경 인스턴스 생성
     env = ENV(prob_path)
     # RL 정책 로드 & 연결
     state_dim = int(np.asarray(next(iter(env.intersections.values())).get_state()).shape[-1])
-    env.rl_policy = load_policy(model_path, state_dim, device=("cuda" if torch.cuda.is_available() else "cpu"), greedy=True)
+    env.rl_policy = load_policy(model_path, state_dim, device=("cuda" if torch.cuda.is_available() else "cpu"), greedy=False)
 
     env.use_rl = True  # GUI 체크박스도 자동으로 켜지게 하려면 True로
 

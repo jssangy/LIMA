@@ -10,8 +10,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--prob_path", type=str, default="problems/cross/cross_1.json",
                         help="Path to your problem JSON for ENV(prob_path)")
-    parser.add_argument("--updates", type=int, default=100)
-    parser.add_argument("--events_per_update", type=int, default=128)
     parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--minibatch", type=int, default=256)
     parser.add_argument("--gamma", type=float, default=0.99)

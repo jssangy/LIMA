@@ -29,8 +29,6 @@ def _slug(v):
 @dataclass
 class TrainConfig:
     # PPO / optimization
-    total_updates: int = 0                 # (event 학습용) 사용하지 않음
-    events_per_update: int = 0             # (event 학습용) 사용하지 않음
     epochs: int = 4
     minibatch_size: int = 256
     gamma: float = 0.99
