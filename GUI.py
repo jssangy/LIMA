@@ -13,16 +13,24 @@ class GUI():
         self.env = env
         grid = self.env.map
         height, width = grid.shape
-        self.dis = min(self.width_window // width, self.height_window // height)
-        self.width = self.dis * width
-        self.height = self.dis * height
+        initial_dis = min(self.width_window // width, self.height_window // height)
+        self.width = initial_dis * width
+        self.height = initial_dis * height
 
+        # [추가] 확대/축소 및 패닝 상태 변수
+        self.zoom_level = float(initial_dis)
+        self.min_zoom = 0.5
+        self.max_zoom = 50.0
+        self.view_offset_x = 0.0
+        self.view_offset_y = 0.0
+        self.panning = False
+        self.pan_start_pos = (0, 0)
         
         # Main window
         self.root = tk.Tk()  
         pyglet.font.add_file('utils/D2Coding.ttf')
         self.root.title("Multi AGV System Simulator")
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
         self.root.configure(background='#000000')
         
         # IF GUI mode is running
@@ -73,7 +81,7 @@ class GUI():
         # AGV Algorithm Setting
         self.algorithm_label = tk.Label(self.setting, text = 'Algorithms', font = self.font_style2)
         self.algorithm_box = ttk.Combobox(self.setting, 
-                                    values=["D*", "PIBT", "MADDPG"], state = 'readonly',
+                                    values=["D*", "PIBT", "MAAPF-LNS2"], state = 'readonly',
                                     font=self.font_style2)
         self.algorithm_box.current(0)
         self.algorithm_box.bind("<<ComboboxSelected>>", self.algorithm_changed)
@@ -158,12 +166,21 @@ class GUI():
         
         # Start pygame
         pygame.init()
-        # [추가] 데드락 우선순위 표시용 폰트
-        self.priority_font = pygame.font.Font('utils/D2Coding.ttf', int(self.dis * 0.8))        
+
+        # [수정] 데드락 우선순위 표시용 폰트 (zoom_level에 따라 동적으로 크기 조절되므로 초기화 방식 변경)
+        # self.priority_font = pygame.font.Font('utils/D2Coding.ttf', int(self.dis * 0.8))
+        self.font_renderer = lambda size: pygame.font.Font('utils/D2Coding.ttf', max(1, int(size)))
+
         self.win = pygame.display.set_mode((self.width, self.height))
         self.redrawWindow(self.env.Get_AGV())
         self.root.after(100, self.run_env())
         self.root.mainloop()
+
+    def map_to_screen(self, map_x, map_y):
+        """[추가] 맵 좌표를 현재 zoom/pan 상태에 맞는 화면 좌표로 변환"""
+        screen_x = (map_x * self.zoom_level) - self.view_offset_x
+        screen_y = (map_y * self.zoom_level) - self.view_offset_y
+        return int(screen_x), int(screen_y)
         
     # Update windows
     def redrawWindow(self, agv_list):
@@ -175,98 +192,74 @@ class GUI():
         active_tasks = self.env.get_active_tasks()  # {agv_id: (row, col)}
         for num, (row, col) in active_tasks.items():
             color = self.env.color_map[num]
-            pygame.draw.rect(
-                self.win,
-                color,
-                (
-                    int((row + 0.5) * self.dis - self.dis / 2),
-                    int((col + 0.5) * self.dis - self.dis / 2),
-                    int(self.dis),
-                    int(self.dis)
-                )
-            )
+            # [수정] 좌표 변환 함수 및 zoom_level 사용
+            sx, sy = self.map_to_screen(row, col)
+            pygame.draw.rect(self.win, color, (sx, sy, self.zoom_level, self.zoom_level))
 
         # Draw AGVs as circles
         for num, agv in agv_list.items():
             x, y = agv.pos[0], agv.pos[1]
-            pygame.draw.circle(
-                self.win,
-                agv.color,
-                (int((x + 0.5) * self.dis), int((y + 0.5) * self.dis)),
-                int(self.dis / 2) - 2
-            )
+            # [수정] 좌표 변환 함수 및 zoom_level 사용
+            sx, sy = self.map_to_screen(x + 0.5, y + 0.5)
+            pygame.draw.circle(self.win, agv.color, (sx, sy), int(self.zoom_level / 2) - 2)
 
         # Draw goal lines if enabled
         if self.show_goal_var.get():
             for agv_id, agv in agv_list.items():
                 goal_pos = self.env.controller.agv_goal.get(agv_id)
                 if goal_pos:
-                    start_pixel = (int((agv.pos[0] + 0.5) * self.dis), int((agv.pos[1] + 0.5) * self.dis))
-                    end_pixel = (int((goal_pos[0] + 0.5) * self.dis), int((goal_pos[1] + 0.5) * self.dis))
-                    pygame.draw.line(self.win, agv.color, start_pixel, end_pixel, 2)
+                    # [수정] 좌표 변환 함수 사용
+                    start_sx, start_sy = self.map_to_screen(agv.pos[0] + 0.5, agv.pos[1] + 0.5)
+                    end_sx, end_sy = self.map_to_screen(goal_pos[0] + 0.5, goal_pos[1] + 0.5)
+                    pygame.draw.line(self.win, (start_sx, start_sy), (end_sx, end_sy), 2)
 
         # [수정] 데드락 교차로에 우선순위별 색상 박스 및 우선순위 표시
         if hasattr(self.env, 'deadlock_queue'):
-            # 우선순위별 색상 정의 (1순위: 빨강, 2순위: 주황, 3순위: 노랑, 그 외: 회색)
-            priority_colors = [
-                (255, 0, 0),    # 1순위 (가장 시급)
-                (255, 165, 0),  # 2순위
-                (255, 255, 0),  # 3순위
-            ]
-            default_color = (100, 100, 100) # 4순위 이상
+            priority_colors = [(255, 0, 0), (255, 165, 0), (255, 255, 0)]
+            default_color = (0, 0, 255)
 
             for priority, iid in reversed(list(enumerate(self.env.deadlock_queue))):
                 intersection = self.env.intersections.get(iid)
-                if not intersection:
-                    continue
+                if not intersection: continue
 
-                # 교차로의 전체 영역 계산
-                x_min = intersection.center_x - intersection.len_W
-                x_max = intersection.center_x + intersection.len_E
-                y_min = intersection.center_y - intersection.len_N
-                y_max = intersection.center_y + intersection.len_S
+                x_min, x_max = intersection.center_x - intersection.len_W, intersection.center_x + intersection.len_E
+                y_min, y_max = intersection.center_y - intersection.len_N, intersection.center_y + intersection.len_S
 
-                # 그리드 좌표를 픽셀 좌표로 변환
-                px = x_min * self.dis
-                py = y_min * self.dis
-                p_width = (x_max - x_min + 1) * self.dis
-                p_height = (y_max - y_min + 1) * self.dis
+                # [수정] 좌표 변환 함수 및 zoom_level 사용
+                px, py = self.map_to_screen(x_min, y_min)
+                p_width = (x_max - x_min + 1) * self.zoom_level
+                p_height = (y_max - y_min + 1) * self.zoom_level
 
-                # 우선순위에 따라 색상 선택
-                if priority < len(priority_colors):
-                    box_color = priority_colors[priority]
-                else:
-                    box_color = default_color
-
-                # 선택된 색상으로 테두리 박스 그리기
+                box_color = priority_colors[priority] if priority < len(priority_colors) else default_color
                 pygame.draw.rect(self.win, box_color, (px, py, p_width, p_height), 3)
 
-                # 우선순위 숫자(1, 2, 3...) 텍스트 생성
                 priority_text = str(priority + 1)
-                # [수정] 텍스트 색상을 검은색으로 변경하여 가시성 확보
-                text_surface = self.priority_font.render(priority_text, True, (255, 255, 0))
+                # [수정] 폰트 크기를 zoom_level에 비례하게 동적으로 조절
+                font = self.font_renderer(self.zoom_level * 0.8)
+                text_surface = font.render(priority_text, True, (255, 255, 0))
                 
-                # 박스의 좌측 상단에 숫자 위치시키기
                 text_rect = text_surface.get_rect(topleft=(px + 5, py + 5))
                 self.win.blit(text_surface, text_rect)
         
         pygame.display.flip()
-        
         return
     
     # Draw Map
     def drawMap(self):
-        for x in range (len(self.env.map[0])):
-            for y in range(len(self.env.map)):
+        # [수정] 전체 맵을 그리는 대신, 현재 보이는 영역만 그리도록 최적화
+        grid_h, grid_w = self.env.map.shape
+        
+        # 화면에 보일 맵의 시작/끝 좌표 계산
+        start_col = max(0, int(self.view_offset_x / self.zoom_level))
+        end_col = min(grid_w, int((self.view_offset_x + self.width) / self.zoom_level) + 1)
+        start_row = max(0, int(self.view_offset_y / self.zoom_level))
+        end_row = min(grid_h, int((self.view_offset_y + self.height) / self.zoom_level) + 1)
+
+        for y in range(start_row, end_row):
+            for x in range(start_col, end_col):
+                sx, sy = self.map_to_screen(x, y)
                 if self.env.map[y][x] == 1:
-                    pygame.draw.rect(self.win, (160, 160, 160), (x * self.dis+1, y * self.dis+1, self.dis-2, self.dis-2))
-                if self.env.map[y][x] == 6:
-                    lines = self.env.find_line(x,y)
-                    for line in lines:
-                        pygame.draw.line(self.win, (51, 153, 255), [(x + 1/2) * self.dis, (y + 1/2) * self.dis] , [(line[0] + 1/2) * self.dis, (line[1] + 1/2) * self.dis] , 1)
-                        # pygame.draw.circle(self.win, (0, 0, 255), ( (x + 1/2) * self.dis, (y + 1/2) * self.dis), self.dis / 2, 1)
-                if type(self.env.map[y][x]) == str:
-                    pygame.draw.rect(self.win, self.env.color.dic[self.env.map[y][x][1]], ((x + 1/2) * self.dis, (y + 1/2) * self.dis), self.dis / 2)
+                    pygame.draw.rect(self.win, (160, 160, 160), (sx + 1, sy + 1, self.zoom_level - 2, self.zoom_level - 2))
 
     # Run environment
     def run_env(self, event = None):
@@ -275,8 +268,50 @@ class GUI():
             if run == False:
                 self.running_check = False
             self.make_state_info(run)
-            self.redrawWindow(self.env.Get_AGV())
-        pygame.event.get()
+        
+        # [추가] 마우스 이벤트 처리 (확대/축소 및 패닝)
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.root.quit()
+                return
+            # 마우스 휠: 확대/축소
+            if event.type == pygame.MOUSEWHEEL:
+                mouse_x, mouse_y = pygame.mouse.get_pos()
+                
+                # 마우스 위치에 해당하는 맵 좌표 계산
+                map_x_before_zoom = (mouse_x + self.view_offset_x) / self.zoom_level
+                map_y_before_zoom = (mouse_y + self.view_offset_y) / self.zoom_level
+                
+                # 줌 레벨 변경
+                if event.y > 0: # 휠 위로
+                    self.zoom_level *= 1.1
+                else: # 휠 아래로
+                    self.zoom_level /= 1.1
+                self.zoom_level = max(self.min_zoom, min(self.max_zoom, self.zoom_level))
+
+                # 줌 이후, 마우스 커서가 동일한 맵 좌표를 가리키도록 오프셋 조정
+                self.view_offset_x = (map_x_before_zoom * self.zoom_level) - mouse_x
+                self.view_offset_y = (map_y_before_zoom * self.zoom_level) - mouse_y
+
+            # 마우스 버튼 누름: 패닝 시작
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1: # 좌클릭
+                self.panning = True
+                self.pan_start_pos = event.pos
+            
+            # 마우스 버튼 뗌: 패닝 종료
+            if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                self.panning = False
+
+            # 마우스 이동: 패닝 중일 때 화면 이동
+            if event.type == pygame.MOUSEMOTION and self.panning:
+                dx = event.pos[0] - self.pan_start_pos[0]
+                dy = event.pos[1] - self.pan_start_pos[1]
+                self.view_offset_x -= dx
+                self.view_offset_y -= dy
+                self.pan_start_pos = event.pos
+
+        # 화면 다시 그리기
+        self.redrawWindow(self.env.Get_AGV())
         self.root.after(self.speed_var.get(), self.run_env)
     
     # If start button is clicked
@@ -307,7 +342,8 @@ class GUI():
     def update_state(self, msg):
         self.state_box.insert(tk.END, "{}".format(msg))
         self.state_box.update()
-        self.state_box.see(tk.END)
+        # [수정] 자동 스크롤을 방지하기 위해 아래 줄을 주석 처리
+        # self.state_box.see(tk.END)
     
     # Clear all Log
     def clear_log(self, event = None):
@@ -321,15 +357,17 @@ class GUI():
             self.env.controller.running_opt = 0
         if event.widget.get() == "PIBT":
             self.env.controller.running_opt = 1
-        if event.widget.get() == "MADDPG":
-            self.use_maddpg = True                
-            
+        if event.widget.get() == "MAPF-LNS2":
+            self.env.controller.running_opt = 2
+
     def make_state_info(self, info_list):
         if info_list == False:
             return
         self.state_box.delete(0, self.state_box.size())
         self.update_state('{:>20} {:<10}'.format('Whole Product: ', info_list[0]))
         self.update_state('{:>20} {:<10}'.format('Throughput (/min): ', round(info_list[1], 3)))
+        # [추가] 현재 활성화된 AGV 수 출력
+        self.update_state('{:>20} {:<10}'.format('Active AGVs: ', len(info_list[2])))
         self.update_state(' ')
         self.update_state('{:^7} {:^7} {:^7}'.format('AGVs', 'Products', 'Mode'))
         for num, info in info_list[2].items():

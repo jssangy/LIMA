@@ -23,9 +23,8 @@ class TrafficGenerator:
         lambda_per_dir: Optional[Dict[str, float]] = None,
         max_spawn_per_step: int = 4,                 # 한 스텝 최대 스폰 수 (K)
         turn_probs: Optional[Dict[str, Dict[str, float]]] = None,
-        seed: Optional[int] = None,
     ):
-        self.rng = np.random.default_rng(seed)
+        self.rng = np.random.default_rng()
         self.active_dirs = tuple(active_dirs) if active_dirs else DIRS
         self.lambda_d = {d: (lambda_per_dir[d] if lambda_per_dir and d in lambda_per_dir else lam)
                          for d in self.active_dirs}
@@ -158,88 +157,102 @@ class TrafficGenerator:
 
 DIRS = ("N", "E", "S", "W")
 
-def discover_border_arms_3x3(intersections: Dict[str, object]) -> List[Tuple[str, str]]:
+def discover_border_arms_NxM(intersections: Dict[str, object]) -> List[Tuple[str, str]]:
     """
-    intersections: {iid(str) -> Intersection}이며 각 I가 center_x, center_y 속성을 가진다고 가정.
-    3x3 그리드(가운데 제외)에서 맵 바깥을 향하는 12개 팔만 골라 반환.
-    반환: [(iid, "N"/"E"/"S"/"W"), ...] 길이 12
+    [새로 추가된 함수]
+    N x M 그리드에서 맵 바깥을 향하는 모든 외곽 팔을 찾아 반환.
     """
-    # 1) 3개의 고유 x/y 추출 후 정렬
-    xs = sorted({I.center_x for I in intersections.values()})
-    ys = sorted({I.center_y for I in intersections.values()})
-    assert len(xs) == 3 and len(ys) == 3, "교차로가 3x3이 아니거나 좌표가 비정상"
+    if not intersections:
+        return []
 
-    xrank = {x: i for i, x in enumerate(xs)}        # 0:왼, 1:중앙, 2:오른
-    yrank = {y: j for j, y in enumerate(ys)}        # 0:위, 1:중앙, 2:아래  (y가 위->아래로 증가한다고 가정)
+    # 1) 모든 교차로의 x, y 좌표를 수집하여 고유한 값만 정렬
+    all_x = sorted(list({I.center_x for I in intersections.values()}))
+    all_y = sorted(list({I.center_y for I in intersections.values()}))
 
-    # 2) 각 교차로의 그리드 인덱스 계산
-    grid = {}  # (i,j) -> iid
+    N = len(all_x)
+    M = len(all_y)
+
+    if N == 0 or M == 0:
+        return []
+
+    # 2) 좌표 값을 그리드 인덱스(0, 1, ...)로 변환하기 위한 맵 생성
+    x_to_idx = {x: i for i, x in enumerate(all_x)}
+    y_to_idx = {y: i for i, y in enumerate(all_y)}
+
+    # 3) 외곽 팔 수집
+    border_arms: List[Tuple[str, str]] = []
     for iid, I in intersections.items():
-        i = xrank[I.center_x]
-        j = yrank[I.center_y]
-        grid[(i, j)] = iid
+        ix = x_to_idx.get(I.center_x)
+        iy = y_to_idx.get(I.center_y)
 
-    # 3) 외곽 8개 교차로에서 바깥을 향하는 팔만 수집 (코너는 2개 팔)
-    arms: List[Tuple[str, str]] = []
-    for (i, j), iid in grid.items():
-        if (i == 1 and j == 1):
-            continue  # 중앙 제외
+        if ix is None or iy is None:
+            continue
 
-        # 위쪽 행이면 북(N) 팔이 외곽
-        if j == 0:
-            arms.append((iid, "N"))
-        # 아래쪽 행이면 남(S) 팔이 외곽
-        if j == 2:
-            arms.append((iid, "S"))
-        # 왼쪽 열이면 서(W) 팔이 외곽
-        if i == 0:
-            arms.append((iid, "W"))
-        # 오른쪽 열이면 동(E) 팔이 외곽
-        if i == 2:
-            arms.append((iid, "E"))
-
-    # sanity check: 정확히 12개여야 함
-    assert len(arms) == 12, f"외곽 팔이 {len(arms)}개입니다(12가 아님). y축 방향이 반대라면 위/아래 매핑을 바꾸세요."
-    return arms
+        # 가장 왼쪽 열에 있는 교차로의 '서쪽(W)' 팔
+        if ix == 0:
+            border_arms.append((iid, "W"))
+        # 가장 오른쪽 열에 있는 교차로의 '동쪽(E)' 팔
+        if ix == N - 1:
+            border_arms.append((iid, "E"))
+        # 가장 위쪽 행에 있는 교차로의 '북쪽(N)' 팔
+        if iy == 0:
+            border_arms.append((iid, "N"))
+        # 가장 아래쪽 행에 있는 교차로의 '남쪽(S)' 팔
+        if iy == M - 1:
+            border_arms.append((iid, "S"))
+            
+    print(f"Discovered {len(border_arms)} border arms from a {N}x{M} grid.")
+    return border_arms
 
 
 class TrafficGenerator12:
     """
-    12개 외곽 팔에서만 스폰하는 멀티-교차로 푸아송 생성기.
-    - 각 arm별 arrivals ~ Poisson(lambda_arm[(iid,dir)] or lam)
-    - 한 스텝에 k개가 오면 k개 전부 생성 (게이트/상한 없음)
-    - goal은 12개 팔 중에서 '출발 팔을 제외한 11개'에서 균등 샘플
-    - (추가) arm_gate(iid, dir) 콜백이 False면 해당 팔에서 생성하지 않음
+    외곽 팔에서만 스폰하는 트래픽 생성기.
+    - 각 arm별로 Poisson 분포에 따라 AGV 생성.
+    - [수정] goal은 항상 출발 팔의 '반대 방향'에 있는 팔 중에서 균등 샘플.
+    - arm_gate 콜백이 False면 해당 팔에서 생성하지 않음.
+    - max_agvs를 초과하여 생성하지 않음.
     """
     def __init__(
         self,
         arms12: List[Tuple[str, str]],
-        lam: float = 0.03,
+        lam: float = 0.05,
         lambda_per_arm: Optional[Dict[Tuple[str, str], float]] = None,
-        seed: Optional[int] = 7,
-        arm_gate: Optional[Callable[[str, str], bool]] = None,  # ★ 추가
-        debug: bool = False,                                    # ★ 선택
+        arm_gate: Optional[Callable[[str, str], bool]] = None,
+        debug: bool = False,
+        max_agvs: int = 32,
     ):
-        self.rng = np.random.default_rng(seed)
+        self.rng = np.random.default_rng()
         self.arms = [(str(iid), d) for (iid, d) in arms12]
         self.lam = float(lam)
         self.lambda_arm = {
-            (iid, d): (lambda_per_arm[(iid, d)] if (lambda_per_arm and (iid, d) in lambda_per_arm) else self.lam)
+            (iid, d): (lambda_per_arm.get((iid, d), self.lam) if lambda_per_arm else self.lam)
             for (iid, d) in self.arms
         }
         self.agv_id_counter = 0
         self.spawned_total = 0
         self.completed_total = 0
         self.step_count = 0
+        self.max_agvs = max_agvs
 
-        # 미리 후보목록 준비
-        self._arm_idx = {a: k for k, a in enumerate(self.arms)}
+        # [추가] 방향별로 팔을 분류하고, 반대 방향을 매핑
+        self.arms_by_direction = {"N": [], "S": [], "E": [], "W": []}
+        for iid, d in self.arms:
+            if d in self.arms_by_direction:
+                self.arms_by_direction[d].append((iid, d))
+        
+        self.opposite_direction = {"N": "S", "S": "N", "E": "W", "W": "E"}
 
-        # ★ 추가: ENV에서 넘겨줄 (iid,dir)->bool 게이트
+        # [추가] 유효성 검사: 모든 방향에 대해 반대 방향 팔이 존재하는지 확인
+        for direction, arm_list in self.arms_by_direction.items():
+            if arm_list:  # 해당 방향에 출발 팔이 있다면
+                opposite_dir = self.opposite_direction[direction]
+                if not self.arms_by_direction[opposite_dir]:
+                    print(f"Warning: Arms exist for direction '{direction}', but no arms found for the opposite direction '{opposite_dir}'. This may cause errors.")
+
         self._arm_gate = arm_gate
         self.debug = bool(debug)
 
-    # ★ 추가: 런타임에 게이트 교체/설정 가능
     def set_arm_gate(self, fn: Callable[[str, str], bool]) -> None:
         self._arm_gate = fn
 
@@ -255,46 +268,46 @@ class TrafficGenerator12:
         return True
 
     def get_next_task_pair(self) -> List[Dict]:
-        """
-        반환 task:
-          {
-            "id": int,
-            "intersection_id": str, "start_direction": "N|E|S|W",
-            "goal_intersection_id": str, "goal_direction": "N|E|S|W"
-          }
-        """
         self.step_count += 1
         tasks: List[Dict] = []
+        active_agvs = self.spawned_total - self.completed_total
+
+        if active_agvs >= self.max_agvs:
+            return []
 
         arms_rr = list(self.arms)
         random.shuffle(arms_rr)
         for (iid, d) in arms_rr:
-            # ★ 스폰 전 게이트 체크: False면 이번 스텝엔 이 팔에서 생성하지 않음
-            if self._arm_gate is not None:
-                try:
-                    if not self._arm_gate(iid, d):
-                        if self.debug:
-                            print(f"[TG12:{self.step_count}] gate-block {iid}:{d}")
-                        continue
-                except Exception as e:
-                    # 게이트 오류 시 안전하게 통과(필요하면 막도록 바꿔도 됨)
-                    if self.debug:
-                        print(f"[TG12:{self.step_count}] gate-error {iid}:{d} -> {e}")
+            if (active_agvs + len(tasks)) >= self.max_agvs:
+                break
 
-            k = int(self.rng.poisson(self.lambda_arm[(iid, d)]))
+            if self._arm_gate is not None and not self._arm_gate(iid, d):
+                continue
+
+            k = int(self.rng.poisson(self.lambda_arm.get((iid, d), self.lam)))
             if k <= 0:
                 continue
+            
             for _ in range(k):
-                gid, gd = self._sample_goal_excluding((iid, d))
-                tasks.append({
-                    "id": self.agv_id_counter,
-                    "intersection_id": iid,
-                    "start_direction": d,
-                    "goal_intersection_id": gid,
-                    "goal_direction": gd,
-                })
-                self.agv_id_counter += 1
-                self.spawned_total += 1
+                if (active_agvs + len(tasks)) >= self.max_agvs:
+                    break
+
+                # [수정] 새로운 목적지 샘플링 함수 호출
+                try:
+                    gid, gd = self._sample_goal_opposite((iid, d))
+                    tasks.append({
+                        "id": self.agv_id_counter,
+                        "intersection_id": iid,
+                        "start_direction": d,
+                        "goal_intersection_id": gid,
+                        "goal_direction": gd,
+                    })
+                    self.agv_id_counter += 1
+                    self.spawned_total += 1
+                except ValueError as e:
+                    if self.debug:
+                        print(f"[TG12:{self.step_count}] Goal sampling error: {e}")
+                    continue # 목적지를 찾을 수 없으면 해당 AGV는 생성하지 않음
 
         return tasks
 
@@ -308,17 +321,26 @@ class TrafficGenerator12:
         return {
             "spawned_total": self.spawned_total,
             "completed_total": self.completed_total,
+            "active_agvs": self.spawned_total - self.completed_total,
+            "max_agvs": self.max_agvs,
             "step": self.step_count,
             "arms": list(self.arms),
-            "lambdas": {f"{iid}:{d}": self.lambda_arm[(iid, d)] for (iid, d) in self.arms},
+            "lambdas": {f"{iid}:{d}": self.lambda_arm.get((iid,d)) for (iid, d) in self.arms},
         }
 
     # --- 내부 ---
-    def _sample_goal_excluding(self, src_arm: Tuple[str, str]) -> Tuple[str, str]:
-        # 12개 목록에서 src_arm만 제외하고 균등 샘플
-        src_idx = self._arm_idx[src_arm]
-        n = len(self.arms)  # 12
-        j = int(self.rng.integers(n - 1))  # 0..n-2
-        if j >= src_idx:
-            j += 1
-        return self.arms[j]
+    def _sample_goal_opposite(self, src_arm: Tuple[str, str]) -> Tuple[str, str]:
+        """
+        [새로운 함수]
+        출발 팔의 반대 방향에 있는 팔들 중에서 목적지를 균등하게 샘플링.
+        """
+        _, src_dir = src_arm
+        
+        target_dir = self.opposite_direction[src_dir]
+        candidate_goals = self.arms_by_direction[target_dir]
+        
+        if not candidate_goals:
+            raise ValueError(f"No goal arms found for opposite direction '{target_dir}'.")
+
+        goal_idx = self.rng.integers(len(candidate_goals))
+        return candidate_goals[goal_idx]

@@ -258,7 +258,10 @@ class Intersection:
         vec2idx = {(0,-1):0,(1,0):1,(0,1):2,(-1,0):3}
         return vec2idx.get(back_vec)
 
-    def calculate_action_mask(self):
+    def calculate_action_mask(self, deadlock_queue: list, all_intersections: dict):
+        """
+        [수정] 우선순위가 높은 교차로로 진입하는 액션만 선택적으로 마스킹.
+        """
         # 중앙 AMR 없으면 전부 금지
         if self.center_agv is None:
             return np.zeros(4, dtype=np.bool_)
@@ -270,6 +273,49 @@ class Intersection:
         if back_idx is not None and 0 <= back_idx < 4:
             mask[back_idx] = False
 
+        # 2) 우선순위 규칙에 따른 마스킹
+        # 데드락 큐가 비어있으면 우선순위 비교가 무의미하므로 마스킹 안 함
+        if not deadlock_queue:
+            return mask
+
+        try:
+            current_rank = deadlock_queue.index(self.id)
+        except ValueError:
+            current_rank = float('inf') # 큐에 없으면 가장 낮은 순위
+
+        move_map = {0:(0,-1), 1:(1,0), 2:(0,1), 3:(-1,0)} # N, E, S, W
+
+        for action_idx, move in move_map.items():
+            # 이미 다른 이유로 마스킹되었다면 건너뜀
+            if not mask[action_idx]:
+                continue
+
+            next_pos = (self.center_x + move[0], self.center_y + move[1])
+            
+            # 다음 위치가 속한 교차로 찾기
+            target_inter = None
+            for iid, I in all_intersections.items():
+                # 자기 자신으로 다시 돌아오는 경우는 제외
+                if iid == self.id:
+                    continue
+                if next_pos in I.all_lane_coords:
+                    target_inter = I
+                    break
+            
+            # 다음 위치가 다른 교차로 영역이 아니면 마스킹할 필요 없음
+            if target_inter is None:
+                continue
+
+            # 다음 교차로의 우선순위(랭크) 확인
+            try:
+                next_rank = deadlock_queue.index(target_inter.id)
+            except ValueError:
+                next_rank = float('inf')
+
+            # 우선순위 규칙: 더 높은 순위(낮은 랭크)의 교차로로 진입 금지
+            if next_rank < current_rank:
+                mask[action_idx] = False
+        
         return mask
 
     def _dir_vec(self, d: str):

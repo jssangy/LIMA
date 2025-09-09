@@ -8,7 +8,7 @@ from collections import defaultdict
 from utils.AGV import agv
 from utils.Intersection import Intersection
 from utils import Funct
-from utils.traffic_generator import TrafficGenerator, TrafficGenerator12, discover_border_arms_3x3
+from utils.traffic_generator import TrafficGenerator, TrafficGenerator12, discover_border_arms_NxM
 from utils.Controller import controller
 
 
@@ -22,6 +22,8 @@ class ENV():
         map_path = os.path.join(base_dir, data['mapFile'])
         
         self.map = self._load_map(map_path)
+        self.walkable_tiles = np.count_nonzero(self.map == 0)
+        print(f"Map loaded. Walkable tiles (value 0): {self.walkable_tiles}")
         self.intersection_data, self.full_adjacency = self._find_intersections_and_build_graph()
         if not self.intersection_data:
             raise ValueError("No intersection found in the map")
@@ -29,7 +31,7 @@ class ENV():
         self.time = 0
         self.agv_list = {}
         self.l_hop = 1
-        self.max_steps = 1024
+        self.max_steps = 10000
 
         # Intersections, Controller
         self.controller = controller(self.map)
@@ -40,11 +42,10 @@ class ENV():
         self.deadlock_queue = []
 
         # TrafficGenerator
-        arms12 = discover_border_arms_3x3(self.intersections)
+        arms12 = discover_border_arms_NxM(self.intersections)
         self.traffic_generator = TrafficGenerator12(arms12=arms12)
         self.traffic_generator.set_arm_gate(lambda iid, d: self.is_arm_outgoing_clear(iid, d))
         self.max_inside = 6
-        # self.traffic_generator.set_capacity_gate(self._spawn_gate)
 
         # Color mapping
         self.color_map = Funct.Color_dict(6).dic
@@ -100,14 +101,6 @@ class ENV():
                     action_mask = meta.get("action_mask")
                     rl_action = int(self.rl_policy(obs_now[iid], action_mask))
                     act_to_apply[iid] = rl_action
-
-        if act_to_apply:
-            print(f"[STEP {self.time}] intended_actions="
-                f"{ {iid: int(a) for iid, a in act_to_apply.items()} }")
-        else:
-            print(f"[STEP {self.time}] intended_actions=empty")
-
-        print(f"Deadlock Queue: {self.deadlock_queue}")
 
         sorted_iids = sorted(self.intersections.keys(), key=self._inter_rank, reverse=True)
 
@@ -243,6 +236,12 @@ class ENV():
         # 2) 교차로 최신화 (여기서만 최신화! step에서는 하지 않음)
         self._update_intersections_state()
 
+        # 3) 데드락 큐를 먼저 업데이트
+        temp_info_for_queue = {
+            iid: {"is_deadlock": I.is_deadlock} for iid, I in self.intersections.items()
+        }
+        self._update_deadlock_queue(temp_info_for_queue)
+
         # 4) 데드락/상태/마스크
         obs = {}
         info = {}
@@ -250,7 +249,9 @@ class ENV():
         for iid, I in self.intersections.items():
             state = np.asarray(I.get_state(), dtype=np.float32)
             edge_index = np.array([[0], [0]], dtype=np.int64)
-            action_mask = I.calculate_action_mask()
+            
+            # [수정] deadlock_queue와 all_intersections를 인자로 전달
+            action_mask = I.calculate_action_mask(self.deadlock_queue, self.intersections)
             action_mask = np.asarray(action_mask, dtype=np.bool_)
 
             obs[iid] = {
@@ -263,8 +264,6 @@ class ENV():
                 "action_mask": action_mask,
             }
         
-        self._update_deadlock_queue(info)
-
         return obs, info
     
     def _update_deadlock_queue(self, info):
@@ -294,55 +293,54 @@ class ENV():
             return False
         if self.map[ny][nx] == 1:
             return False
-
-        # --- 유틸: pos가 속한 교차로들(겹침 포함) ---
-        def owners(pos):
-            res = []
-            for I in self.intersections.values():
-                if pos in I.all_lane_coords:   # all_lane_coords는 set이면 더 빠름
-                    res.append(I)
-            return res
-
-        here_inters  = owners(current_agv.pos)
-        target_inters = owners(next_pos)
-
-        # 현재 위치 타입 분류
-        cur_is_outside = (len(here_inters) == 0)
-        cur_is_center  = any(current_agv.pos == (I.center_x, I.center_y) for I in here_inters)
-        # 팔(arm)이라면 cur_is_outside/cur_is_center 둘 다 False
-
-        # --- 우선순위 비교는 center/outside 에서만 수행 ---
-        if cur_is_center or cur_is_outside:
-            # 현재 위치의 랭크(겹침이면 최소 랭크), 없으면 inf
-            cur_rank = min(
-                (self._inter_rank(getattr(I, "id", "")) for I in here_inters),
-                default=math.inf
-            )
-
-            # 다음 위치의 교차로(겹치면 현재 위치 교차로 제외)
-            if here_inters:
-                here_ids = {getattr(I, "id", None) for I in here_inters}
-                candidates = [J for J in target_inters if getattr(J, "id", None) not in here_ids]
-            else:
-                candidates = list(target_inters)
-
-            # 다음 위치가 교차로가 아니면 우선순위 비교 스킵(허용)
-            if candidates:
-                next_rank = min(self._inter_rank(getattr(J, "id", "")) for J in candidates)
-
-                # 네 규칙: next_rank < cur_rank -> 이동 불가
-                if next_rank < cur_rank:
-                    return False
-            # candidates가 비면 교차로가 아닌 칸으로 이동 → 비교 없이 통과
-
+        
         # 2) 동일 칸 점유 충돌
         for other in self.agv_list.values():
             if other is not current_agv and next_pos == other.pos:
                 return False
+                
+        # 3) 교차로 우선순위 규칙 (강화학습 활성화 시 적용)
+        if self.rl_policy and self.use_rl:
+            # --- 유틸: pos가 속한 교차로들(겹침 포함) ---
+            def owners(pos):
+                res = []
+                for I in self.intersections.values():
+                    if pos in I.all_lane_coords:   # all_lane_coords는 set이면 더 빠름
+                        res.append(I)
+                return res
+
+            here_inters  = owners(current_agv.pos)
+            target_inters = owners(next_pos)
+
+            # 현재 위치 타입 분류
+            cur_is_center  = any(current_agv.pos == (I.center_x, I.center_y) for I in here_inters)
+            # 팔(arm)이라면 cur_is_center 둘 다 False
+
+            # --- 우선순위 비교는 center에서만 수행 ---
+            if cur_is_center:
+                # 현재 위치의 랭크(겹침이면 최소 랭크), 없으면 inf
+                cur_rank = min(
+                    (self._inter_rank(getattr(I, "id", "")) for I in here_inters),
+                    default=math.inf
+                )
+
+                # 다음 위치의 교차로(겹치면 현재 위치 교차로 제외)
+                if here_inters:
+                    here_ids = {getattr(I, "id", None) for I in here_inters}
+                    candidates = [J for J in target_inters if getattr(J, "id", None) not in here_ids]
+                else:
+                    candidates = list(target_inters)
+
+                # 다음 위치가 교차로가 아니면 우선순위 비교 스킵(허용)
+                if candidates:
+                    next_rank = min(self._inter_rank(getattr(J, "id", "")) for J in candidates)
+
+                    # 네 규칙: next_rank < cur_rank -> 이동 불가
+                    if next_rank < cur_rank:
+                        return False
+                # candidates가 비면 교차로가 아닌 칸으로 이동 → 비교 없이 통과
 
         return True
-
-
     
     def _update_intersections_state(self):
         for I in self.intersections.values():

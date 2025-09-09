@@ -81,7 +81,7 @@ class DStar:
                 self.update_vertex(s)
 
     def extract_path(self):
-        if self.start not in self.g:
+        if self.start not in self.g or self.g.get(self.start) == float('inf'):
             return []
 
         path = [self.start]
@@ -89,14 +89,29 @@ class DStar:
         while current != self.goal:
             neighbors = self.get_neighbors(current)
             if not neighbors:
-                return []
-            current = min(
-                neighbors,
-                key=lambda n: self.g.get(n, float('inf'))
-            )
-            if self.g.get(current, float('inf')) == float('inf'):
-                return []
+                return [] # 막다른 길
+
+            # [수정 시작] 비용이 같은 최적 경로가 여러 개일 때 무작위 선택
+            
+            # 1. 모든 이웃의 비용(g-value)을 계산
+            costs = {n: self.g.get(n, float('inf')) for n in neighbors}
+            
+            # 2. 최소 비용 찾기
+            min_cost = min(costs.values())
+            
+            # 최소 비용이 무한대이면 길이 없는 것
+            if min_cost == float('inf'):
+                return [] 
+
+            # 3. 최소 비용을 가진 모든 이웃 노드를 후보로 수집
+            best_neighbors = [n for n, cost in costs.items() if cost == min_cost]
+            
+            # 4. 후보 중에서 하나를 무작위로 선택
+            current = random.choice(best_neighbors)
+            # [수정 끝]
+
             path.append(current)
+            
         return path
 
 
