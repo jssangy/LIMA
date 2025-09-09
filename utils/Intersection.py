@@ -137,6 +137,8 @@ class Intersection:
         """
         agvs = list(self.agvs_in_intersection or [])
         if len(agvs) < 2:
+            self.is_deadlock = False
+            self.center_deadlock = False
             return False
 
         center_id = getattr(self.center_agv, "id", None)
@@ -150,25 +152,28 @@ class Intersection:
             ai = agvs[i]
             for j in range(i + 1, n):
                 aj = agvs[j]
-                # 양방향 스와핑 위험 검사 (한 번만)
-                if self._check_swapping_path(ai, aj) or self._check_swapping_path(aj, ai):
+
+                # [수정] 즉각적인 스와핑과 경로 기반 스와핑을 모두 검사
+                is_immediate_swap = self._check_immediate_swap(ai, aj)
+                is_path_conflict = self._check_swapping_path(ai, aj) or self._check_swapping_path(aj, ai)
+
+                if is_immediate_swap or is_path_conflict:
                     self.is_deadlock = True
-                    self.deadlock_pair = (ai.id, aj.id)
 
                     if center_id is not None and (ai.id == center_id or aj.id == center_id):
                         self.center_deadlock = True
-                        self.deadlock_pair_center = (ai.id, aj.id)
-                    # 센터가 아니면 center_deadlock은 False 그대로
+                    
+                    return True # 데드락 발견 시 즉시 종료
 
-                    return True
-
-        # 발견 못함
+        # 루프를 모두 돌았는데 데드락이 없으면 상태 초기화
+        self.is_deadlock = False
+        self.center_deadlock = False
         return False
 
     def _check_swapping_path(self, agv1, agv2):
         """
         A(agv1)의 경로 상에 B(agv2)의 현재 위치가 포함되어 있고,
-        A의 해당 구간 역순이 B의 경로에 서브시퀀스로 포함되면 스와핑 위험으로 판단.
+        [수정] A의 '다음 위치'부터 B의 '이전 위치'까지의 경로 구간 역순이 B의 경로에 서브시퀀스로 포함되면 스와핑 위험으로 판단.
         """
         path1 = self.controller.agv_path.get(agv1.id)
         path2 = self.controller.agv_path.get(agv2.id)
@@ -183,16 +188,48 @@ class Intersection:
         except ValueError:
             return False
 
-        # A의 경로 구간을 뒤집고, B의 경로에 포함되는지 확인
-        sub_path1 = path1[:index2_in_1 + 1]
+        # A의 다음 위치(인덱스 1)부터 B의 이전 위치(인덱스 index2_in_1 - 1)까지
+        # 경로 구간이 존재하려면, 최소한 A -> A+1 -> B 순서여야 함 (index2_in_1 >= 2)
+        if index2_in_1 < 2:
+            return False
+
+        # [수정] A의 경로 구간을 'A+1'부터 'B-1'까지로 변경
+        sub_path1 = path1[1:index2_in_1]
         if not sub_path1:
             return False
         reversed_sub_path1 = sub_path1[::-1]
 
         L = len(reversed_sub_path1)
+        if len(path2) < L:
+            return False
+            
         for i in range(len(path2) - L + 1):
             if path2[i:i + L] == reversed_sub_path1:
                 return True
+        return False
+    
+    def _check_immediate_swap(self, agv1, agv2):
+        """
+        [추가된 함수]
+        A의 다음 위치가 B의 현재 위치이고, B의 다음 위치가 A의 현재 위치인지 확인.
+        """
+        # _planned_move를 사용하여 다음 이동 벡터를 가져옴
+        move1 = self._planned_move(agv1)
+        move2 = self._planned_move(agv2)
+
+        if move1 is None or move2 is None:
+            return False
+
+        pos1 = agv1.pos
+        pos2 = agv2.pos
+
+        next_pos1 = (pos1[0] + move1[0], pos1[1] + move1[1])
+        next_pos2 = (pos2[0] + move2[0], pos2[1] + move2[1])
+
+        # 스와핑 조건 확인
+        if next_pos1 == pos2 and next_pos2 == pos1:
+            return True
+        
         return False
     
     def _get_exit_direction(self, path):

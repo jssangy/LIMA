@@ -158,6 +158,8 @@ class GUI():
         
         # Start pygame
         pygame.init()
+        # [추가] 데드락 우선순위 표시용 폰트
+        self.priority_font = pygame.font.Font('utils/D2Coding.ttf', int(self.dis * 0.8))        
         self.win = pygame.display.set_mode((self.width, self.height))
         self.redrawWindow(self.env.Get_AGV())
         self.root.after(100, self.run_env())
@@ -202,6 +204,51 @@ class GUI():
                     start_pixel = (int((agv.pos[0] + 0.5) * self.dis), int((agv.pos[1] + 0.5) * self.dis))
                     end_pixel = (int((goal_pos[0] + 0.5) * self.dis), int((goal_pos[1] + 0.5) * self.dis))
                     pygame.draw.line(self.win, agv.color, start_pixel, end_pixel, 2)
+
+        # [수정] 데드락 교차로에 우선순위별 색상 박스 및 우선순위 표시
+        if hasattr(self.env, 'deadlock_queue'):
+            # 우선순위별 색상 정의 (1순위: 빨강, 2순위: 주황, 3순위: 노랑, 그 외: 회색)
+            priority_colors = [
+                (255, 0, 0),    # 1순위 (가장 시급)
+                (255, 165, 0),  # 2순위
+                (255, 255, 0),  # 3순위
+            ]
+            default_color = (100, 100, 100) # 4순위 이상
+
+            for priority, iid in reversed(list(enumerate(self.env.deadlock_queue))):
+                intersection = self.env.intersections.get(iid)
+                if not intersection:
+                    continue
+
+                # 교차로의 전체 영역 계산
+                x_min = intersection.center_x - intersection.len_W
+                x_max = intersection.center_x + intersection.len_E
+                y_min = intersection.center_y - intersection.len_N
+                y_max = intersection.center_y + intersection.len_S
+
+                # 그리드 좌표를 픽셀 좌표로 변환
+                px = x_min * self.dis
+                py = y_min * self.dis
+                p_width = (x_max - x_min + 1) * self.dis
+                p_height = (y_max - y_min + 1) * self.dis
+
+                # 우선순위에 따라 색상 선택
+                if priority < len(priority_colors):
+                    box_color = priority_colors[priority]
+                else:
+                    box_color = default_color
+
+                # 선택된 색상으로 테두리 박스 그리기
+                pygame.draw.rect(self.win, box_color, (px, py, p_width, p_height), 3)
+
+                # 우선순위 숫자(1, 2, 3...) 텍스트 생성
+                priority_text = str(priority + 1)
+                # [수정] 텍스트 색상을 검은색으로 변경하여 가시성 확보
+                text_surface = self.priority_font.render(priority_text, True, (255, 255, 0))
+                
+                # 박스의 좌측 상단에 숫자 위치시키기
+                text_rect = text_surface.get_rect(topleft=(px + 5, py + 5))
+                self.win.blit(text_surface, text_rect)
         
         pygame.display.flip()
         
