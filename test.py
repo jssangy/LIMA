@@ -38,7 +38,7 @@ def load_policy(model_path: str, state_dim: int, device="cpu", greedy=False):
 def main():
 
     # 환경 설정 파일 경로
-    prob_path = os.path.join('problems', 'multicross', 'cross_25.json')
+    prob_path = os.path.join('problems', 'cross_3030', 'cross_3030.json')
     model_path = os.path.join('checkpoint', 'final_mlp_policy.pt')
 
     # 1. ENV 환경 인스턴스 생성

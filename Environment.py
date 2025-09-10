@@ -8,7 +8,7 @@ from collections import defaultdict
 from utils.AGV import agv
 from utils.Intersection import Intersection
 from utils import Funct
-from utils.traffic_generator import TrafficGenerator, TrafficGenerator12, discover_border_arms_NxM
+from utils.traffic_generator import discover_border_arms_NxM, TrafficGenerator, TrafficGenerator12, TaskSetGenerator
 from utils.Controller import controller
 
 
@@ -24,31 +24,37 @@ class ENV():
         self.map = self._load_map(map_path)
         self.walkable_tiles = np.count_nonzero(self.map == 0)
         print(f"Map loaded. Walkable tiles (value 0): {self.walkable_tiles}")
-        self.intersection_data, self.full_adjacency = self._find_intersections_and_build_graph()
-        if not self.intersection_data:
-            raise ValueError("No intersection found in the map")
+        processed_intersections = self._find_intersections_and_build_graph()
         
         self.time = 0
         self.agv_list = {}
         self.l_hop = 1
         self.max_steps = 10000
 
-        # Intersections, Controller
         self.controller = controller(self.map)
-        self.intersections: Dict[tuple, Intersection] = {
-            f'x{inter_data[0]}y{inter_data[1]}': Intersection(inter_data, self.controller)
-            for inter_data in self.intersection_data
-        }
+        
+        self.intersections: Dict[str, Intersection] = {}
+        for iid, inter_info in processed_intersections.items():
+            self.intersections[iid] = Intersection(
+                inter_info['data'], 
+                self.controller, 
+                inter_info['neighbors']
+            )
+
         self.deadlock_queue = []
 
         # TrafficGenerator
-        arms12 = discover_border_arms_NxM(self.intersections)
-        self.traffic_generator = TrafficGenerator12(arms12=arms12)
-        self.traffic_generator.set_arm_gate(lambda iid, d: self.is_arm_outgoing_clear(iid, d))
-        self.max_inside = 6
+        arms = discover_border_arms_NxM(self.intersections)
+
+        self.task_set_generator = TaskSetGenerator(arms)
+
+        # self.traffic_generator = TrafficGenerator12(arms12=arms)
+        # self.traffic_generator.set_arm_gate(lambda iid, d: self.is_arm_outgoing_clear(iid, d))
+        # self.max_inside = 6
 
         # Color mapping
         self.color_map = Funct.Color_dict(6).dic
+
         self.prev_deadlock_map: dict[str, bool] = {}
 
         self.use_rl = False
@@ -236,34 +242,32 @@ class ENV():
         # 2) 교차로 최신화 (여기서만 최신화! step에서는 하지 않음)
         self._update_intersections_state()
 
-        # 3) 데드락 큐를 먼저 업데이트
+        # 4) 데드락/상태/마스크
+        obs = {}
+        info = {}
+
+        # [수정] _update_deadlock_queue를 먼저 호출하도록 순서 변경
         temp_info_for_queue = {
             iid: {"is_deadlock": I.is_deadlock} for iid, I in self.intersections.items()
         }
         self._update_deadlock_queue(temp_info_for_queue)
 
-        # 4) 데드락/상태/마스크
-        obs = {}
-        info = {}
-
         for iid, I in self.intersections.items():
             state = np.asarray(I.get_state(), dtype=np.float32)
-            edge_index = np.array([[0], [0]], dtype=np.int64)
             
-            # [수정] deadlock_queue와 all_intersections를 인자로 전달
-            action_mask = I.calculate_action_mask(self.deadlock_queue, self.intersections)
+            # [수정] deadlock_queue만 인자로 전달
+            action_mask = I.calculate_action_mask(self.deadlock_queue)
             action_mask = np.asarray(action_mask, dtype=np.bool_)
 
             obs[iid] = {
                 "state": state,
-                "edge_index": edge_index,
             }
             info[iid] = {
                 "deadlock_active": I.center_deadlock,
                 "is_deadlock": I.is_deadlock,
                 "action_mask": action_mask,
             }
-        
+
         return obs, info
     
     def _update_deadlock_queue(self, info):
@@ -466,17 +470,15 @@ class ENV():
     
     def _find_intersections_and_build_graph(self):
         """
-        교차로 데이터 튜플을 ID로 사용하여 그래프를 생성하는 통합 함수.
+        [수정] 교차로 데이터를 찾고, 각 교차로의 방향별 이웃 정보까지 계산하여
+        처리된 딕셔너리를 한 번에 반환.
         """
-        intersections_data = []
-        adj = defaultdict(list)
-        
         # 1. 모든 교차로 중심 좌표를 찾음
         centers_rc = self._find_intersection_center()
         centers_xy = [(c, r) for r, c in centers_rc]
         
-        # 2. 각 중심에 대해 intersection_data 튜플을 생성하고, 좌표-튜플ID 맵을 만듦
-        center_xy_to_id = {}
+        # 2. 각 중심에 대해 intersection_data 튜플을 생성하고, 좌표-데이터 맵을 만듦
+        center_xy_to_data = {}
         for c, r in centers_xy:
             len_N = self._ray_len(r, c, -1, 0)
             len_E = self._ray_len(r, c, 0, 1)
@@ -484,14 +486,14 @@ class ENV():
             len_W = self._ray_len(r, c, 0, -1)
 
             if min(len_N, len_E, len_S, len_W) > 0:
-                # intersection_data 튜플을 생성하여 ID로 사용
-                current_id = (c, r, len_N, len_E, len_S, len_W)
-                intersections_data.append(current_id)
-                center_xy_to_id[(c, r)] = current_id
+                current_data = (c, r, len_N, len_E, len_S, len_W)
+                center_xy_to_data[(c, r)] = current_data
 
-        # 3. 각 교차로에 대해 도로를 뻗어 연결성 검사
-        for current_id in intersections_data:
-            c, r, len_N, len_E, len_S, len_W = current_id
+        # 3. 각 교차로에 대해 이웃 정보를 계산하고 최종 데이터 구조 생성
+        processed_intersections = {}
+        for center_coord, current_data in center_xy_to_data.items():
+            c, r, len_N, len_E, len_S, len_W = current_data
+            current_iid = f'x{c}y{r}'
             
             # 각 방향의 도로 끝에서 한 칸 더 나아간 '연결 예상 좌표' 계산
             target_coords = {
@@ -499,18 +501,20 @@ class ENV():
                 'S': (c, r + len_S + 1), 'W': (c - len_W - 1, r)
             }
 
+            neighbors_map = {}
             # 4. 연결 예상 좌표가 다른 교차로의 중심과 일치하는지 확인
             for direction, target_coord in target_coords.items():
-                if target_coord in center_xy_to_id:
-                    neighbor_id = center_xy_to_id[target_coord]
-                    # 양방향으로 연결 정보 추가
-                    adj[current_id].append(neighbor_id)
-                    adj[neighbor_id].append(current_id)
+                if target_coord in center_xy_to_data:
+                    neighbor_data = center_xy_to_data[target_coord]
+                    neighbor_iid = f'x{neighbor_data[0]}y{neighbor_data[1]}'
+                    neighbors_map[direction] = neighbor_iid
+            
+            processed_intersections[current_iid] = {
+                'data': current_data,
+                'neighbors': neighbors_map
+            }
         
-        # defaultdict를 일반 dict로 변환하고, 중복 제거 및 정렬
-        final_adj = {k: sorted(list(set(v))) for k, v in adj.items()}
-
-        return intersections_data, final_adj
+        return processed_intersections
     
     def is_arm_outgoing_clear(self, iid: str, d: str) -> bool:
         I = self.intersections[iid]

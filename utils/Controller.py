@@ -148,15 +148,14 @@ class controller():
                 a = agents[i]
                 for j in range(i+1, len(agents)):
                     b = agents[j]
-                    # 정점 충돌 (같은 칸으로 이동)
-                    if nxt_dict[a] == nxt_dict[b]:
+                    va, vb = nxt_dict[a], nxt_dict[b]
+                    ua, ub = pos_dict[a], pos_dict[b]
+                    # 1) 정점 충돌
+                    if va == vb:
                         bad.update([a, b]); continue
-                    # 에지(스왑) 충돌
-                    if nxt_dict[a] == pos_dict[b] and nxt_dict[b] == pos_dict[a]:
+                    # 2) 에지(스왑) 충돌
+                    if va == ub and vb == ua:
                         bad.update([a, b]); continue
-                    # 정지-진입 충돌
-                    if nxt_dict[b] == pos_dict[b] and nxt_dict[a] == pos_dict[b] and nxt_dict[a] != nxt_dict[b]:
-                        bad.update([a, b])
             return bad
 
         if on_conflict:

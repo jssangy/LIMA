@@ -201,6 +201,8 @@ class PIBT:
             reverse=True
         )
 
+        reserved: Set[Pos] = set(fixed_vertices)  # 그룹 내 이미 결정된 칸
+
         # 도우미들 -------------------------------------------------------------
         def in_map(x: int, y: int) -> bool:
             return 0 <= x < self.W and 0 <= y < self.H
@@ -233,33 +235,35 @@ class PIBT:
             return set(fixed_vertices) | {proposals[a] for a in decided if a in proposals}
 
         def candidate_cells(a: int, parent: Optional[int], decided: Set[int], proposals: Dict[int, Pos]):
-            # 1) 힌트 우선
             cands = []
             hint = dstar_hint.get(a)
             if hint is not None:
                 cands.append(hint)
-            # 2) 인접칸 (목표까지 가까운 순)
+
             neigh = neighbors(pos[a])
             neigh.sort(key=lambda c: manhattan(c, goals[a]))
             for c in neigh:
                 if c not in cands:
                     cands.append(c)
-            # 3) 부모 위치(우선순위 상속으로 swap 허용)
-            if parent is not None:
-                ppos = pos[parent]
-                if ppos in cands:
-                    cands.remove(ppos)
-                cands.insert(0, ppos)
-            # 4) stay 마지막
+
+            # ❌ 부모 위치를 우선으로 넣는건 스왑 유도 → 제거 권장
+            # if parent is not None:
+            #     ppos = pos[parent]
+            #     if ppos in cands:
+            #         cands.remove(ppos)
+            #     cands.insert(0, ppos)
+
+            # stay 마지막
             if pos[a] in cands:
                 cands.remove(pos[a])
             cands.append(pos[a])
 
-            # 고정 점유/엣지와 충돌 후보 제거
+            # 고정 점유/엣지 필터
             filtered = []
             fcells = fixed_cells(decided, proposals)
             for v in cands:
-                if v in fcells and not (parent is not None and v == pos[parent]):
+                # 부모 위치 예외도 제거
+                if v in fcells:
                     continue
                 if edge_conflict_with_fixed(a, v):
                     continue
@@ -270,19 +274,34 @@ class PIBT:
         proposals: Dict[int, Pos] = {}
         decided: Set[int] = set()
 
+        def has_edge_swap_with_any(me: int, cand: Pos, proposals: Dict[int, Pos]) -> bool:
+            # 이미 제안된 어떤 b에 대해서도 (b -> pos[me]) && (me -> pos[b]) 금지
+            for b, vb in proposals.items():
+                if vb == pos[me] and pos[b] == cand:
+                    return True
+            return False
+
         def assign(a: int, stack: Set[int], parent: Optional[int] = None) -> bool:
             for v in candidate_cells(a, parent, decided, proposals):
-                # 그룹 내 이미 결정된 자가 확보한 칸은 금지(단, 부모와의 스왑은 허용)
-                if v in fixed_cells(decided, proposals) and not (parent is not None and v == pos[parent]):
+                # 예약/스왑/부모스왑 금지
+                if v in reserved:
+                    continue
+                if parent is not None and v == pos[parent]:   # 부모 위치 진입 금지
+                    continue
+                if has_edge_swap_with_any(a, v, proposals):
                     continue
                 if has_edge_conflict_in_group(a, v, decided, proposals):
                     continue
 
                 occ = agent_at.get(v)
-                # 점유자가 없거나, 이미 결정되어 그 칸을 비울 예정이면 통과
-                can_take = (occ is None) or (occ in decided and proposals.get(occ) != v) or (parent is not None and occ == parent)
+
+                can_take = (
+                    occ is None or
+                    (occ in decided and proposals.get(occ) != v)
+                )
                 if can_take:
                     proposals[a] = v
+                    reserved.add(v)           # ★ 예약 확정
                     return True
 
                 # 그룹 내부 미결정 점유자면 우선순위 상속
@@ -290,15 +309,21 @@ class PIBT:
                     continue
                 stack.add(occ)
                 if assign(occ, stack, parent=a):
+                    # 자식이 성공적으로 다른 칸을 잡았으니 이제 v를 차지
+                    if v in reserved:
+                        continue              # 혹시 중간에 다른 루트가 잡았으면 다음 후보
                     proposals[a] = v
+                    reserved.add(v)           # ★ 예약 확정
                     return True
 
-            # 모든 후보 실패 → 제자리 시도
+            # 모든 후보 실패 → stay 시도
             stay = pos[a]
-            if (stay not in fixed_cells(decided, proposals)
-                and not has_edge_conflict_in_group(a, stay, decided, proposals)
+            if (stay not in reserved
+                and stay not in fixed_cells(decided, proposals)
+                and not has_edge_swap_with_any(a, stay, proposals)
                 and not edge_conflict_with_fixed(a, stay)):
                 proposals[a] = stay
+                reserved.add(stay)            # ★ 예약 확정
                 return True
             return False
 
@@ -306,8 +331,11 @@ class PIBT:
         for a in order:
             if a in decided:
                 continue
+            before = set(proposals.keys())
             _ = assign(a, stack=set([a]), parent=None)
-            decided.add(a)
+            after = set(proposals.keys())
+            # 이번 루트에서 새로 확정된 모든 에이전트 보호
+            decided.update(after - before)
 
         # 결과 만들기 + age 업데이트
         result = {a: proposals.get(a, pos[a]) for a in group}

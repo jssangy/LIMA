@@ -211,7 +211,8 @@ class GUI():
                     # [수정] 좌표 변환 함수 사용
                     start_sx, start_sy = self.map_to_screen(agv.pos[0] + 0.5, agv.pos[1] + 0.5)
                     end_sx, end_sy = self.map_to_screen(goal_pos[0] + 0.5, goal_pos[1] + 0.5)
-                    pygame.draw.line(self.win, (start_sx, start_sy), (end_sx, end_sy), 2)
+                    # [수정] color 인자를 agv.color로, start/end pos를 올바르게 수정
+                    pygame.draw.line(self.win, agv.color, (start_sx, start_sy), (end_sx, end_sy), 2)
 
         # [수정] 데드락 교차로에 우선순위별 색상 박스 및 우선순위 표시
         if hasattr(self.env, 'deadlock_queue'):

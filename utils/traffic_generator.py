@@ -220,7 +220,7 @@ class TrafficGenerator12:
         lambda_per_arm: Optional[Dict[Tuple[str, str], float]] = None,
         arm_gate: Optional[Callable[[str, str], bool]] = None,
         debug: bool = False,
-        max_agvs: int = 32,
+        max_agvs: int = 500,
     ):
         self.rng = np.random.default_rng()
         self.arms = [(str(iid), d) for (iid, d) in arms12]
@@ -344,3 +344,91 @@ class TrafficGenerator12:
 
         goal_idx = self.rng.integers(len(candidate_goals))
         return candidate_goals[goal_idx]
+    
+
+class TaskSetGenerator:
+    """
+    [새로 추가된 클래스]
+    에피소드 시작 시, 모든 외곽 팔에 AGV를 하나씩 배치하고,
+    서로 겹치지 않는 반대편 목적지를 할당하는 고정된 Task Set을 생성.
+    """
+    def __init__(self, all_arms: List[Tuple[str, str]], seed: Optional[int] = 7):
+        self.rng = np.random.default_rng(seed)
+        self.all_arms = all_arms
+        self.agv_id_counter = 0
+        self.task_set = []
+        self.tasks_dispatched = True # 에피소드 시작 시 False로 설정됨
+
+        # 방향별로 팔 분류
+        self.arms_by_direction = {"N": [], "S": [], "E": [], "W": []}
+        for iid, d in self.all_arms:
+            if d in self.arms_by_direction:
+                self.arms_by_direction[d].append((iid, d))
+        
+        self.opposite_direction = {"N": "S", "S": "N", "E": "W", "W": "E"}
+
+    def start_new_episode(self, reset_ids: bool = True):
+        """에피소드 시작 시 고정된 Task Set을 생성."""
+        if reset_ids:
+            self.agv_id_counter = 0
+        
+        self.task_set = []
+        
+        # N <-> S, E <-> W 그룹에 대해 1:1 매칭 수행
+        self._create_one_to_one_tasks("N", "S")
+        self._create_one_to_one_tasks("S", "N")
+        self._create_one_to_one_tasks("E", "W")
+        self._create_one_to_one_tasks("W", "E")
+
+        self.tasks_dispatched = False
+        print(f"Generated a fixed task set with {len(self.task_set)} AGVs.")
+
+    def _create_one_to_one_tasks(self, start_dir: str, goal_dir: str):
+        """두 방향 그룹 간에 겹치지 않는 Task를 생성."""
+        start_arms = self.arms_by_direction[start_dir][:]
+        goal_arms = self.arms_by_direction[goal_dir][:]
+
+        # 겹치지 않는 매칭을 위해 양쪽 리스트를 섞음
+        random.shuffle(start_arms)
+        random.shuffle(goal_arms)
+
+        # 두 그룹 중 더 작은 쪽의 크기만큼 Task 생성
+        num_tasks = min(len(start_arms), len(goal_arms))
+
+        for i in range(num_tasks):
+            start_iid, start_d = start_arms[i]
+            goal_iid, goal_d = goal_arms[i]
+            
+            self.task_set.append({
+                "id": self.agv_id_counter,
+                "intersection_id": start_iid,
+                "start_direction": start_d,
+                "goal_intersection_id": goal_iid,
+                "goal_direction": goal_d,
+            })
+            self.agv_id_counter += 1
+
+    def get_next_task_pair(self) -> List[Dict]:
+        """처음 호출 시 준비된 Task Set 전체를 반환하고, 이후에는 빈 리스트 반환."""
+        if not self.tasks_dispatched:
+            self.tasks_dispatched = True
+            return self.task_set
+        return []
+
+    # --- 호환성을 위한 나머지 함수들 ---
+    def set_arm_gate(self, fn: Callable[[str, str], bool]):
+        pass # 이 생성기에서는 사용하지 않음
+
+    def complete_task(self, agv_id: int):
+        pass # 필요 시 완료 카운트 로직 추가 가능
+
+    def is_episode_done(self) -> bool:
+        return False
+
+    def get_progress(self) -> Dict:
+        return {
+            "spawned_total": len(self.task_set),
+            "completed_total": 0, # 필요 시 구현
+            "active_agvs": len(self.task_set),
+            "max_agvs": len(self.task_set),
+        }
