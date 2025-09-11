@@ -5,5 +5,3 @@ pyyaml
 wandb
 tqdm
 torch
-gymnasium==0.29
-torch_geometric
