@@ -37,16 +37,7 @@ def run_simulation(env: ENV) -> Dict:
     env.reset()
     
     while True:
-        obs, info = env.generate_observation()
-
-        actions = {}
-        if env.use_rl:
-            for iid, agent_obs in obs.items():
-                if info[iid]['deadlock_active']:
-                    action_mask = info[iid]['action_mask']
-                    actions[iid] = env.rl_policy(agent_obs, action_mask)
-
-        run_signal = env.step(actions, train=False)
+        run_signal = env.step(actions={}, train=False)
         
         if run_signal is False:
             break
@@ -93,7 +84,7 @@ def main():
     parser.add_argument('--runs', type=int, default=30, help="Number of simulation runs.")
     parser.add_argument('--algo', type=int, default=0, choices=[0, 1, 2], 
                         help="Planning algorithm: 0=D*, 1=PIBT, 2=D*+PIBT_on_conflict")
-    parser.add_argument('--use_rl', action='store_true', default=True, help="Enable intersection RL for deadlock resolution.")
+    parser.add_argument('--use_rl', action='store_true', default=False, help="Enable intersection RL for deadlock resolution.")
     args = parser.parse_args()
 
     # --- 설정 ---

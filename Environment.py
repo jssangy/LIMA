@@ -77,11 +77,15 @@ class ENV():
         self.deadlock_queue = []
 
         if self.traffic_mode == 'task':
-            self._spawn_amrs_if_needed()
+            self._spawn_amrs_from_task_gen()
+        elif self.traffic_mode == 'traffic':
+            self._spawn_amrs_from_stream_gen()
 
         # 리셋 시에는 초기 관찰 상태만 반환
         obs, info = self.generate_observation()
         self.prev_deadlock_map: dict[str, bool] = {}
+
+        self.completed_agv_steps.clear()
 
         return obs, info
 
@@ -186,8 +190,10 @@ class ENV():
         # 4) 환경 변화 처리
         self._check_amr_completion()
 
-        if self.traffic_mode == 'traffic':
-            self._spawn_amrs_if_needed()
+        if self.traffic_mode == 'task':
+            self._spawn_amrs_from_task_gen()
+        elif self.traffic_mode == 'traffic':
+            self._spawn_amrs_from_stream_gen()
 
         # GUI/테스트 모드: 기존 요약 반환 유지
         if not train:
@@ -279,19 +285,45 @@ class ENV():
         return obs, info
     
     def _update_deadlock_queue(self, info):
+        """
+        [수정] 데드락 큐를 새로운 우선순위 규칙에 따라 관리하고 정렬합니다.
+        1순위: 교차로 내 AGV 수 (내림차순)
+        2순위: 데드락 발생 시점 (오름차순)
+        """
+        queue_changed = False
+        current_iids_in_queue = {item[0] for item in self.deadlock_queue}
+
         for iid, meta in info.items():
             if not isinstance(meta, dict):
                 continue
-            if bool(meta.get("is_deadlock", False)):
-                if iid not in self.deadlock_queue:
-                    self.deadlock_queue.append(iid)
+            
+            is_deadlocked = bool(meta.get("is_deadlock", False))
+
+            if is_deadlocked:
+                if iid not in current_iids_in_queue:
+                    # 새로운 데드락 발생: (iid, 발생 시간) 추가
+                    self.deadlock_queue.append((iid, self.time))
+                    queue_changed = True
             else:
-                if iid in self.deadlock_queue:
-                    self.deadlock_queue.remove(iid)
+                if iid in current_iids_in_queue:
+                    # 데드락 해소: 해당 iid 제거
+                    self.deadlock_queue = [item for item in self.deadlock_queue if item[0] != iid]
+                    queue_changed = True
+        
+        # 큐에 변화가 있을 때만 정렬 수행
+        if queue_changed:
+            # 정렬 키: (-AGV 수, 발생 시간)
+            # AGV 수는 많을수록, 발생 시간은 이를수록 우선순위가 높다.
+            self.deadlock_queue.sort(key=lambda item: (-len(self.intersections[item[0]].agvs_in_intersection), item[1]))
 
     def _inter_rank(self, iid):
+        """
+        [수정] 데드락 큐의 구조 변경에 맞춰 iid의 순위를 반환합니다.
+        """
         try:
-            return self.deadlock_queue.index(iid)
+            # 큐는 (iid, timestamp) 튜플의 리스트이므로, iid만 추출하여 인덱스를 찾음
+            iids_only = [item[0] for item in self.deadlock_queue]
+            return iids_only.index(iid)
         except ValueError:
             return math.inf
 
@@ -367,30 +399,65 @@ class ENV():
         for I in self.intersections.values():
             I.check_deadlock()
 
-    def _spawn_amrs_if_needed(self):
-        # 새 TrafficGenerator12 규격 준수: 제너레이터가 지정한 arm에서만 스폰
-        gen = getattr(self, "traffic_generator", None)
+    def _spawn_amrs_from_task_gen(self):
+        """
+        [이름 변경 및 Task 모드 전용]
+        TaskSetGenerator로부터 새로운 AMR을 받아 환경에 추가.
+        """
+        gen = self.traffic_generator
         if not gen or not gen.should_spawn_next():
             return
 
-        tasks = gen.get_next_task_pair()
-        if not tasks:
+        new_tasks = gen.get_next_task_pair(current_time=self.time)
+        
+        for task in new_tasks:
+            agv_id = task['id']
+            start_iid = task['intersection_id']
+            start_dir = task['start_direction']
+            goal_iid = task['goal_intersection_id']
+            goal_dir = task['goal_direction']
+            
+            start_pos = self._direction_to_coords(start_dir, start_iid) 
+            goal_pos = self._direction_to_coords(goal_dir, goal_iid)
+
+            if start_pos is None or goal_pos is None:
+                print(f"Warning: Could not get start/goal position for AGV {agv_id}. Skipping.")
+                continue
+
+            # AGV 생성 및 등록 (agv 생성자 인자 순서 수정)
+            new_agv = agv(start_pos, agv_id, self.color_map[agv_id % 6])
+            self.agv_list[agv_id] = new_agv
+            self.controller.add_agv(agv_id, start_pos, goal_pos)
+
+    def _spawn_amrs_from_stream_gen(self):
+        """
+        [새로 추가된 함수 - Traffic 모드 전용]
+        TrafficGenerator12로부터 새로운 AMR을 받아 환경에 추가.
+        """
+        gen = self.traffic_generator
+        if not gen or not gen.should_spawn_next():
             return
+        
+        # TrafficGenerator12는 current_time 인자가 없음
+        new_tasks = gen.get_next_task_pair()
 
-        for t in tasks:
-            agv_id = t["id"]
-            start_iid = t["intersection_id"]           # 예: "x10y5"
-            start_dir = t["start_direction"]           # "N"|"E"|"S"|"W"
-            goal_iid  = t.get("goal_intersection_id", start_iid)
-            goal_dir  = t.get("goal_direction", start_dir)
+        for task in new_tasks:
+            agv_id = task['id']
+            start_iid = task['intersection_id']
+            start_dir = task['start_direction']
+            goal_iid = task['goal_intersection_id']
+            goal_dir = task['goal_direction']
 
-            start_pos = self._direction_to_coords(start_dir, start_iid)   # ← iid 사용
-            goal_pos  = self._direction_to_coords(goal_dir, goal_iid)
+            start_pos = self._direction_to_coords(start_dir, start_iid)
+            goal_pos = self._direction_to_coords(goal_dir, goal_iid)
 
-            color = self.color_map.get(agv_id, (255, 0, 0))
-            self.agv_list[agv_id] = agv(start_pos, agv_id, color)
-
-            # 컨트롤러에 시작/목표 등록
+            if start_pos is None or goal_pos is None:
+                print(f"Warning: Could not get start/goal position for AGV {agv_id}. Skipping.")
+                continue
+            
+            # AGV 생성 및 등록 (agv 생성자 인자 순서 수정)
+            new_agv = agv(start_pos, agv_id, self.color_map[agv_id % 6])
+            self.agv_list[agv_id] = new_agv
             self.controller.add_agv(agv_id, start_pos, goal_pos)
 
     def set_traffic_mode(self, mode: str):

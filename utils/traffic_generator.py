@@ -346,19 +346,25 @@ class TrafficGenerator12:
         return candidate_goals[goal_idx]
     
 
+
 class TaskSetGenerator:
     """
-    [수정된 버전]
-    에피소드 시작 시, 모든 외곽 팔에서 각각 5개의 AGV를 배치하고,
-    서로 겹치지 않는 반대편 목적지를 할당하는 고정된 Task Set을 생성.
+    [최적화된 버전]
+    사용자 제안에 따라, 매 배치마다 팔 목록을 새로 셔플하여 Task를 생성.
+    10초(스텝) 간격으로 각 배치를 단계적으로 제공.
     """
-    def __init__(self, all_arms: List[Tuple[str, str]], seed: Optional[int] = 7, agvs_per_arm: int = 5):
+    def __init__(self, all_arms: List[Tuple[str, str]], seed: Optional[int] = 7, agvs_per_arm: int = 5, interval_steps: int = 20):
         self.rng = np.random.default_rng(seed)
         self.agv_id_counter = 0
-        self.task_set: List[Dict] = []
+        self.task_set: List[Dict] = [] # 모든 Task의 전체 목록
         self.completed_total = 0
-        self.tasks_dispatched = True
-        self.agvs_per_arm = agvs_per_arm # [추가] 팔 당 생성할 AGV 수
+        
+        self.agvs_per_arm = agvs_per_arm
+        self.interval_steps = interval_steps
+
+        # 단계적 생성을 위한 변수
+        self.task_batches: List[List[Dict]] = []
+        self.next_batch_index = 0
 
         # 방향별로 팔 분류
         self.arms_by_direction = {"N": [], "S": [], "E": [], "W": []}
@@ -369,55 +375,64 @@ class TaskSetGenerator:
         self.opposite_direction = {"N": "S", "S": "N", "E": "W", "W": "E"}
 
     def start_new_episode(self, reset_ids: bool = True):
-        """에피소드 시작 시 고정된 Task Set을 생성."""
+        """에피소드 시작 시 모든 Task를 배치 단위로 미리 생성."""
         if reset_ids:
             self.agv_id_counter = 0
         
         self.task_set = []
         self.completed_total = 0
+        self.task_batches = []
+        self.next_batch_index = 0
         
-        self._create_tasks_for_pair("N", "S")
-        self._create_tasks_for_pair("E", "W")
+        # 1. agvs_per_arm 만큼 반복하여 각 배치를 생성
+        for _ in range(self.agvs_per_arm):
+            current_batch = []
+            # N-S, E-W 쌍에 대해 Task를 생성하여 현재 배치에 추가
+            self._create_batch_for_pair("N", "S", current_batch)
+            self._create_batch_for_pair("E", "W", current_batch)
+            self.task_batches.append(current_batch)
 
-        self.tasks_dispatched = False
-        print(f"Generated a fixed task set with {len(self.task_set)} AGVs ({self.agvs_per_arm} per arm).")
+        # 2. 모든 배치를 하나의 리스트로 통합 (전체 진행 상황 추적용)
+        self.task_set = [task for batch in self.task_batches for task in batch]
 
-    def _create_tasks_for_pair(self, dir1: str, dir2: str):
-        """두 방향 그룹(예: N-S) 간의 모든 Task를 효율적으로 생성."""
-        # [수정] 각 팔을 agvs_per_arm 만큼 복제하여 확장된 목록 생성
-        expanded_starts_d1 = [arm for arm in self.arms_by_direction[dir1] for _ in range(self.agvs_per_arm)]
-        expanded_goals_d2 = [arm for arm in self.arms_by_direction[dir2] for _ in range(self.agvs_per_arm)]
-        
-        expanded_starts_d2 = [arm for arm in self.arms_by_direction[dir2] for _ in range(self.agvs_per_arm)]
-        expanded_goals_d1 = [arm for arm in self.arms_by_direction[dir1] for _ in range(self.agvs_per_arm)]
+        total_agvs = len(self.task_set)
+        num_batches = len(self.task_batches)
+        print(f"Generated {total_agvs} AGVs in {num_batches} batches ({self.interval_steps} steps interval).")
 
-        # dir1에서 출발하여 dir2로 가는 Task 생성
-        self._match_and_create(expanded_starts_d1, expanded_goals_d2)
-        # dir2에서 출발하여 dir1로 가는 Task 생성
-        self._match_and_create(expanded_starts_d2, expanded_goals_d1)
+    def _create_batch_for_pair(self, dir1: str, dir2: str, batch: List[Dict]):
+        """
+        두 방향 그룹(예: N-S) 간의 Task를 생성하여 주어진 배치 리스트에 추가.
+        이 함수가 호출될 때마다 목록을 새로 셔플.
+        """
+        starts1 = self.arms_by_direction[dir1][:]
+        goals2 = self.arms_by_direction[dir2][:]
+        starts2 = self.arms_by_direction[dir2][:]
+        goals1 = self.arms_by_direction[dir1][:]
 
-    def _match_and_create(self, start_arms: List[Tuple[str, str]], goal_arms: List[Tuple[str, str]]):
-        """한 방향 그룹(start_arms)에서 출발하는 모든 Task를 생성."""
-        if not start_arms:
+        random.shuffle(starts1)
+        random.shuffle(goals2)
+        random.shuffle(starts2)
+        random.shuffle(goals1)
+
+        # dir1 -> dir2 Task 생성
+        self._match_and_add_to_batch(starts1, goals2, batch)
+        # dir2 -> dir1 Task 생성
+        self._match_and_add_to_batch(starts2, goals1, batch)
+
+    def _match_and_add_to_batch(self, start_arms: List[Tuple[str, str]], goal_arms: List[Tuple[str, str]], batch: List[Dict]):
+        """셔플된 목록을 기반으로 Task를 생성하고 배치에 추가."""
+        if not start_arms or not goal_arms:
             return
-        if not goal_arms:
-            # [수정] 경고 메시지 명확화
-            print(f"Warning: No goal arms found. Cannot create tasks.")
-            return
-
-        # 목적지 목록을 한 번만 섞음
-        shuffled_goals = goal_arms[:]
-        random.shuffle(shuffled_goals)
 
         for i, (start_iid, start_d) in enumerate(start_arms):
-            # 1:1 매칭이 가능하면 순서대로 할당
-            if i < len(shuffled_goals):
-                goal_iid, goal_d = shuffled_goals[i]
-            # 출발지가 더 많으면, 남은 목적지 중 무작위 선택
+            # 1:1 매칭이 가능하면 인덱스 순으로 할당
+            if i < len(goal_arms):
+                goal_iid, goal_d = goal_arms[i]
+            # 출발지가 더 많으면, 목적지 중 무작위 선택
             else:
                 goal_iid, goal_d = random.choice(goal_arms)
             
-            self.task_set.append({
+            batch.append({
                 "id": self.agv_id_counter,
                 "intersection_id": start_iid,
                 "start_direction": start_d,
@@ -426,11 +441,16 @@ class TaskSetGenerator:
             })
             self.agv_id_counter += 1
 
-    def get_next_task_pair(self) -> List[Dict]:
-        """처음 호출 시 준비된 Task Set 전체를 반환하고, 이후에는 빈 리스트 반환."""
-        if not self.tasks_dispatched:
-            self.tasks_dispatched = True
-            return self.task_set
+    def get_next_task_pair(self, current_time: int) -> List[Dict]:
+        """현재 시간에 맞춰 다음 Task 배치를 반환."""
+        spawn_time = self.next_batch_index * self.interval_steps
+        
+        if current_time >= spawn_time and self.next_batch_index < len(self.task_batches):
+            batch_to_spawn = self.task_batches[self.next_batch_index]
+            self.next_batch_index += 1
+            print(f"[Time: {current_time}] Spawning batch {self.next_batch_index}/{len(self.task_batches)} ({len(batch_to_spawn)} AGVs)")
+            return batch_to_spawn
+            
         return []
 
     def should_spawn_next(self) -> bool:
@@ -446,14 +466,17 @@ class TaskSetGenerator:
     def is_episode_done(self) -> bool:
         if not self.task_set:
             return False
-        return self.completed_total >= len(self.task_set)
+        all_spawned = self.next_batch_index >= len(self.task_batches)
+        all_completed = self.completed_total >= len(self.task_set)
+        return all_spawned and all_completed
 
     def get_progress(self) -> Dict:
-        spawned = len(self.task_set)
-        active = spawned - self.completed_total
+        # 생성된 AGV 수는 이제까지 제공된 배치의 총합
+        spawned_count = sum(len(b) for b in self.task_batches[:self.next_batch_index])
+        active = spawned_count - self.completed_total
         return {
-            "spawned_total": spawned,
+            "spawned_total": spawned_count,
             "completed_total": self.completed_total,
             "active_agvs": active,
-            "max_agvs": spawned,
+            "max_agvs": len(self.task_set),
         }
