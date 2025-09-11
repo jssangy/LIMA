@@ -64,9 +64,7 @@ class controller():
         elif self.running_opt == 1:            # PIBT 전체
             self.pibt_rout(use_dstar_hint=True, on_conflict=False)
         elif self.running_opt == 2:            # D* 기본 + 충돌 시만 PIBT
-            self.pibt_rout(use_dstar_hint=True, on_conflict=True)
-        else:
-            self.dstar_rout()
+            pass
     
     def dstar_rout(self):
         """D* 알고리즘을 사용하여 각 AGV의 경로를 계산하고 제어 신호 생성"""

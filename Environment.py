@@ -29,7 +29,7 @@ class ENV():
         self.time = 0
         self.agv_list = {}
         self.l_hop = 1
-        self.max_steps = 10000
+        self.max_steps = 1000
 
         self.controller = controller(self.map)
         
@@ -46,11 +46,13 @@ class ENV():
         # TrafficGenerator
         arms = discover_border_arms_NxM(self.intersections)
 
-        self.task_set_generator = TaskSetGenerator(arms)
+        # [수정] 두 종류의 트래픽 생성기를 모두 인스턴스화
+        self.traffic_gen_stream = TrafficGenerator12(arms12=arms)
+        self.traffic_gen_task_set = TaskSetGenerator(all_arms=arms)
 
-        # self.traffic_generator = TrafficGenerator12(arms12=arms)
-        # self.traffic_generator.set_arm_gate(lambda iid, d: self.is_arm_outgoing_clear(iid, d))
-        # self.max_inside = 6
+        self.traffic_mode = 'traffic'
+        self.traffic_generator = self.traffic_gen_stream
+        self.traffic_generator.set_arm_gate(lambda iid, d: self.is_arm_outgoing_clear(iid, d))
 
         # Color mapping
         self.color_map = Funct.Color_dict(6).dic
@@ -59,6 +61,8 @@ class ENV():
 
         self.use_rl = False
         self.rl_policy = None
+
+        self.completed_agv_steps = []
 
     def reset(self):        
         self.time = 0
@@ -71,7 +75,9 @@ class ENV():
         for I in self.intersections.values():
             I.reset()
         self.deadlock_queue = []
-        self._spawn_amrs_if_needed()
+
+        if self.traffic_mode == 'task':
+            self._spawn_amrs_if_needed()
 
         # 리셋 시에는 초기 관찰 상태만 반환
         obs, info = self.generate_observation()
@@ -179,7 +185,9 @@ class ENV():
 
         # 4) 환경 변화 처리
         self._check_amr_completion()
-        self._spawn_amrs_if_needed()
+
+        if self.traffic_mode == 'traffic':
+            self._spawn_amrs_if_needed()
 
         # GUI/테스트 모드: 기존 요약 반환 유지
         if not train:
@@ -385,6 +393,23 @@ class ENV():
             # 컨트롤러에 시작/목표 등록
             self.controller.add_agv(agv_id, start_pos, goal_pos)
 
+    def set_traffic_mode(self, mode: str):
+        """
+        [새로 추가된 함수]
+        트래픽 생성 모드를 설정합니다 ('traffic' 또는 'task').
+        """
+        if mode == 'task':
+            self.traffic_mode = 'task'
+            self.traffic_generator = self.traffic_gen_task_set
+            print("Traffic mode set to: 'task' (Fixed Task Set at reset)")
+        elif mode == 'traffic':
+            self.traffic_mode = 'traffic'
+            self.traffic_generator = self.traffic_gen_stream
+            self.traffic_generator.set_arm_gate(lambda iid, d: self.is_arm_outgoing_clear(iid, d))
+            print("Traffic mode set to: 'traffic' (Streaming Poisson Traffic)")
+        else:
+            raise ValueError(f"Unknown traffic mode: '{mode}'. Choose 'traffic' or 'task'.")
+
     def _check_amr_completion(self):
         completed_agvs = []
         for agv_id, agv_obj in list(self.agv_list.items()):
@@ -392,6 +417,8 @@ class ENV():
                 completed_agvs.append(agv_id)
 
         for agv_id in completed_agvs:
+            if agv_id in self.agv_list:
+                self.completed_agv_steps.append(self.agv_list[agv_id].steps)
             self.traffic_generator.complete_task(agv_id)
             del self.agv_list[agv_id]
             self.controller.remove_agv(agv_id)
@@ -571,21 +598,27 @@ class ENV():
         return self.controller.agv_goal
 
     def make_info(self):
-        # 스트리밍 모드: 타임리밋으로만 종료 신호
-        if self.time >= self.max_steps:
-            return False  # GUI에게 에피소드 종료 신호
+        # [수정] 에피소드 종료 조건 확인
+        terminated = False
+        # 'task' 모드일 경우, 모든 AGV가 작업을 완료했는지 확인
+        if self.traffic_mode == 'task':
+            if self.traffic_generator.is_episode_done():
+                terminated = True
+        
+        # 타임아웃 또는 정상 종료 시 False를 반환하여 루프 중단 신호
+        if self.time >= self.max_steps or terminated:
+            return False
 
         progress = self.traffic_generator.get_progress()
-        # 바뀐 키들:
-        # 'completed_pairs_in_cycle', 'total_pairs_per_cycle', 'completed_total', 'active_agvs', 'cycle'
         total_pairs_done = progress['completed_total']
 
-        # 단순 스루풋(쌍/스텝). 필요하면 시간 스케일 맞춰 곱해 쓰세요.
-        throughput = (total_pairs_done / self.time) if self.time > 0 else 0.0
+        # 스루풋 계산 (분 단위)
+        throughput = (total_pairs_done / self.time * 60) if self.time > 0 else 0.0
 
         agv_states = {}
         for agv_id, agv_obj in self.agv_list.items():
+            # AGV 상태를 더미 값으로 채움 (평가 스크립트에서는 사용하지 않음)
             agv_states[agv_id] = [f"Goal_{agv_id}", 0]
 
-        # GUI가 쓰던 포맷 유지: [완료수, 스루풋, AGV상태]
+        # GUI가 사용하던 포맷 유지: [완료수, 스루풋, AGV상태]
         return [total_pairs_done, throughput, agv_states]

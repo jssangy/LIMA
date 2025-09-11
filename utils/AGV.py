@@ -16,6 +16,9 @@ class agv():
         # goal position
         self.goal = (0, 0)
 
+        self.steps = 0
+
     def move(self, control_signal):
         self.prev_pos = self.pos
         self.pos = (self.pos[0] + control_signal[0], self.pos[1] + control_signal[1])
+        self.steps += 1

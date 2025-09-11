@@ -1,83 +1,65 @@
-from Environment import ENV
-from GUI import GUI
+import os
+import sys
 import argparse
-import torch
-from module.model import CommonNet, PolicyHead, ValueHead
-from torchrl.modules import ActorValueOperator, ProbabilisticActor
-from torchrl.modules.distributions import OneHotCategorical
-from tensordict.nn import TensorDictModule
+from GUI import GUI
+from Environment import ENV
 
-def load_ppo_policy(state_dim, policy_path='ppo_policy.pth'):
-    """훈련된 PPO 정책 모델을 불러옵니다."""
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    
-    # train.py와 동일하게 모델 구조를 정의합니다.
-    common_net = CommonNet(state_dim).to(DEVICE)
-    common_operator = TensorDictModule(module=common_net, in_keys=["observation"], out_keys=["hidden"])
-    
-    policy_net = PolicyHead().to(DEVICE)
-    policy_logits = TensorDictModule(module=policy_net, in_keys=["hidden"], out_keys=["logits"])
-    
-    # 정책 연산자 정의 (train.py와 동일)
-    policy_operator = ProbabilisticActor(
-        module=policy_logits,
-        spec=None,  # 실행 시에는 spec이 필요 없습니다
-        in_keys=["logits"],
-        out_keys=["action"],
-        distribution_class=OneHotCategorical,
-        return_log_prob=False,
-    )
-    
-    # ValueHead는 정책 실행에는 필요 없지만, ActorValueOperator 구조를 맞추기 위해 생성
-    value_net = ValueHead().to(DEVICE)
-    value_operator = TensorDictModule(module=value_net, in_keys=["hidden"], out_keys=["state_value"])
-    
-    # train.py와 동일한 ActorValueOperator 구조 생성
-    actor_value_module = ActorValueOperator(
-        common_operator=common_operator,
-        policy_operator=policy_operator,
-        value_operator=value_operator,
-    )
-    
-    # 정책 부분만 추출
-    policy_module = actor_value_module.get_policy_operator()
-    
-    try:
-        # 훈련된 가중치 불러오기
-        policy_state_dict = torch.load(policy_path, map_location=DEVICE)
-        policy_module.load_state_dict(policy_state_dict)
-        print(f"PPO policy loaded from {policy_path}")
-        return policy_module
-    except FileNotFoundError:
-        print(f"Policy file {policy_path} not found. Running without PPO model.")
-        return None
+import torch, numpy as np
+from module.model import ActorCritic
+
+class RLPolicy:
+    def __init__(self, model: ActorCritic, device="cpu", greedy=False):
+        self.model = model.to(device).eval()
+        self.device = device
+        self.greedy = greedy
+
+    @torch.no_grad()
+    def __call__(self, obs: dict, action_mask: np.ndarray | None):
+        # dict obs 그대로 사용 ({"state","edge_index"})
+        if self.greedy:
+            logits, _ = self.model.forward(obs)
+            if action_mask is not None:
+                am = torch.as_tensor(action_mask, dtype=torch.bool, device=logits.device).unsqueeze(0)
+                logits = logits.masked_fill(~am, -1e9)
+            a = torch.argmax(logits, dim=-1)
+            return int(a.item())
+        else:
+            am = None
+            if action_mask is not None:
+                am = torch.as_tensor(action_mask, dtype=torch.bool, device=self.device).unsqueeze(0)
+            a, _, _ = self.model.act(obs, action_mask=am)
+            return int(a.item())
+
+def load_policy(model_path: str, state_dim: int, device="cpu", greedy=False):
+    model = ActorCritic(state_dim=state_dim, action_dim=4)
+    sd = torch.load(model_path, map_location=device)
+    model.load_state_dict(sd, strict=True)
+    return RLPolicy(model, device=device, greedy=greedy)
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '--problem', '-p',
-        type=str,
-        default='problems/cross/cross_1.json',
-        help='Problem json file path (e.g. problems/cross/cross_1.json)'
-    )
-    parser.add_argument(
-        '--policy_path',
-        type=str,
-        default='checkpoint/policy_last.pth',
-        help='Path to the trained PPO policy model file'
-    )
+    parser = argparse.ArgumentParser(description="Run DAA-CPS Simulation.")
+    parser.add_argument('--mode', type=str, default='task', choices=['traffic', 'task'],
+                        help="Set the traffic generation mode: 'traffic' for streaming, 'task' for a fixed set.")
+    parser.add_argument('--prob', type=str, default='problems/cross/cross_3030.json',
+                        help="Path to the problem file.")
     args = parser.parse_args()
 
-    # 환경 생성
-    env = ENV(args.problem)
-    
-    # PPO 모델 로딩 (28차원은 상태 벡터 크기)
-    policy = load_ppo_policy(state_dim=28, policy_path=args.policy_path)
-    if policy:
-        env.set_rl_policy(policy)
-    
-    # GUI 실행
-    gui = GUI(env)
+    prob_path = args.prob
+    model_path = os.path.join('checkpoint', 'final_mlp_policy.pt')
 
-if __name__ == "__main__":
+    # 1. ENV 환경 인스턴스 생성
+    env = ENV(prob_path)
+    env.set_traffic_mode(args.mode)
+
+    # RL 정책 로드 & 연결
+    state_dim = int(np.asarray(next(iter(env.intersections.values())).get_state()).shape[-1])
+    env.rl_policy = load_policy(model_path, state_dim, device=("cuda" if torch.cuda.is_available() else "cpu"), greedy=False)
+    
+    env.use_rl = True  # GUI 체크박스도 자동으로 켜지게 하려면 True로
+    env.reset()
+    
+    # 2. 생성된 환경을 GUI 클래스에 전달하여 실행
+    app = GUI(env)
+
+if __name__ == '__main__':
     main()

@@ -348,20 +348,21 @@ class TrafficGenerator12:
 
 class TaskSetGenerator:
     """
-    [새로 추가된 클래스]
-    에피소드 시작 시, 모든 외곽 팔에 AGV를 하나씩 배치하고,
+    [수정된 버전]
+    에피소드 시작 시, 모든 외곽 팔에서 각각 5개의 AGV를 배치하고,
     서로 겹치지 않는 반대편 목적지를 할당하는 고정된 Task Set을 생성.
     """
-    def __init__(self, all_arms: List[Tuple[str, str]], seed: Optional[int] = 7):
+    def __init__(self, all_arms: List[Tuple[str, str]], seed: Optional[int] = 7, agvs_per_arm: int = 5):
         self.rng = np.random.default_rng(seed)
-        self.all_arms = all_arms
         self.agv_id_counter = 0
-        self.task_set = []
-        self.tasks_dispatched = True # 에피소드 시작 시 False로 설정됨
+        self.task_set: List[Dict] = []
+        self.completed_total = 0
+        self.tasks_dispatched = True
+        self.agvs_per_arm = agvs_per_arm # [추가] 팔 당 생성할 AGV 수
 
         # 방향별로 팔 분류
         self.arms_by_direction = {"N": [], "S": [], "E": [], "W": []}
-        for iid, d in self.all_arms:
+        for iid, d in all_arms:
             if d in self.arms_by_direction:
                 self.arms_by_direction[d].append((iid, d))
         
@@ -373,31 +374,48 @@ class TaskSetGenerator:
             self.agv_id_counter = 0
         
         self.task_set = []
+        self.completed_total = 0
         
-        # N <-> S, E <-> W 그룹에 대해 1:1 매칭 수행
-        self._create_one_to_one_tasks("N", "S")
-        self._create_one_to_one_tasks("S", "N")
-        self._create_one_to_one_tasks("E", "W")
-        self._create_one_to_one_tasks("W", "E")
+        self._create_tasks_for_pair("N", "S")
+        self._create_tasks_for_pair("E", "W")
 
         self.tasks_dispatched = False
-        print(f"Generated a fixed task set with {len(self.task_set)} AGVs.")
+        print(f"Generated a fixed task set with {len(self.task_set)} AGVs ({self.agvs_per_arm} per arm).")
 
-    def _create_one_to_one_tasks(self, start_dir: str, goal_dir: str):
-        """두 방향 그룹 간에 겹치지 않는 Task를 생성."""
-        start_arms = self.arms_by_direction[start_dir][:]
-        goal_arms = self.arms_by_direction[goal_dir][:]
+    def _create_tasks_for_pair(self, dir1: str, dir2: str):
+        """두 방향 그룹(예: N-S) 간의 모든 Task를 효율적으로 생성."""
+        # [수정] 각 팔을 agvs_per_arm 만큼 복제하여 확장된 목록 생성
+        expanded_starts_d1 = [arm for arm in self.arms_by_direction[dir1] for _ in range(self.agvs_per_arm)]
+        expanded_goals_d2 = [arm for arm in self.arms_by_direction[dir2] for _ in range(self.agvs_per_arm)]
+        
+        expanded_starts_d2 = [arm for arm in self.arms_by_direction[dir2] for _ in range(self.agvs_per_arm)]
+        expanded_goals_d1 = [arm for arm in self.arms_by_direction[dir1] for _ in range(self.agvs_per_arm)]
 
-        # 겹치지 않는 매칭을 위해 양쪽 리스트를 섞음
-        random.shuffle(start_arms)
-        random.shuffle(goal_arms)
+        # dir1에서 출발하여 dir2로 가는 Task 생성
+        self._match_and_create(expanded_starts_d1, expanded_goals_d2)
+        # dir2에서 출발하여 dir1로 가는 Task 생성
+        self._match_and_create(expanded_starts_d2, expanded_goals_d1)
 
-        # 두 그룹 중 더 작은 쪽의 크기만큼 Task 생성
-        num_tasks = min(len(start_arms), len(goal_arms))
+    def _match_and_create(self, start_arms: List[Tuple[str, str]], goal_arms: List[Tuple[str, str]]):
+        """한 방향 그룹(start_arms)에서 출발하는 모든 Task를 생성."""
+        if not start_arms:
+            return
+        if not goal_arms:
+            # [수정] 경고 메시지 명확화
+            print(f"Warning: No goal arms found. Cannot create tasks.")
+            return
 
-        for i in range(num_tasks):
-            start_iid, start_d = start_arms[i]
-            goal_iid, goal_d = goal_arms[i]
+        # 목적지 목록을 한 번만 섞음
+        shuffled_goals = goal_arms[:]
+        random.shuffle(shuffled_goals)
+
+        for i, (start_iid, start_d) in enumerate(start_arms):
+            # 1:1 매칭이 가능하면 순서대로 할당
+            if i < len(shuffled_goals):
+                goal_iid, goal_d = shuffled_goals[i]
+            # 출발지가 더 많으면, 남은 목적지 중 무작위 선택
+            else:
+                goal_iid, goal_d = random.choice(goal_arms)
             
             self.task_set.append({
                 "id": self.agv_id_counter,
@@ -415,20 +433,27 @@ class TaskSetGenerator:
             return self.task_set
         return []
 
+    def should_spawn_next(self) -> bool:
+        return True
+
     # --- 호환성을 위한 나머지 함수들 ---
     def set_arm_gate(self, fn: Callable[[str, str], bool]):
-        pass # 이 생성기에서는 사용하지 않음
+        pass
 
     def complete_task(self, agv_id: int):
-        pass # 필요 시 완료 카운트 로직 추가 가능
+        self.completed_total += 1
 
     def is_episode_done(self) -> bool:
-        return False
+        if not self.task_set:
+            return False
+        return self.completed_total >= len(self.task_set)
 
     def get_progress(self) -> Dict:
+        spawned = len(self.task_set)
+        active = spawned - self.completed_total
         return {
-            "spawned_total": len(self.task_set),
-            "completed_total": 0, # 필요 시 구현
-            "active_agvs": len(self.task_set),
-            "max_agvs": len(self.task_set),
+            "spawned_total": spawned,
+            "completed_total": self.completed_total,
+            "active_agvs": active,
+            "max_agvs": spawned,
         }
