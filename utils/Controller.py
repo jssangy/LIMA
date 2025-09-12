@@ -67,9 +67,9 @@ class controller():
             self.astar_rout()
         elif self.running_opt == 1:            # PIBT 전체
             self.pibt_rout(use_dstar_hint=True, on_conflict=False)
-        elif self.running_opt == 2:            # MAPF-LNS2
-            self.vanilla_pibt_rout()
-    
+        elif self.running_opt == 2:            # CBS
+            pass
+        
     def astar_rout(self):
         """A* 알고리즘을 사용하여 각 AGV의 경로를 계산하고 제어 신호 생성"""
         for num in self.agv_nums:
