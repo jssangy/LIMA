@@ -1,6 +1,7 @@
 import numpy as np
+from collections import defaultdict
 
-from utils.global_planning import DStar, PIBT
+from utils.global_planning import AStar, PIBT, PIBTVanilla
 
 class controller():    
     def __init__(self, map_data):
@@ -20,6 +21,7 @@ class controller():
 
         self.running_opt = 0
         self.pibt = PIBT(self.map)
+        self.pibt_vanilla = PIBTVanilla(self.map)
 
     def reset(self):
         self.agv_pos.clear()
@@ -30,7 +32,9 @@ class controller():
         self.planners.clear()
         self.agv_path.clear()
         self.push_sequence.clear()
-    
+        self.pibt.reset()
+        self.pibt_vanilla.reset()
+
     def add_agv(self, agv_num, start_pos, goal_pos):
         """AGV를 컨트롤러에 동적으로 추가"""
         self.agv_nums.append(agv_num)
@@ -38,7 +42,7 @@ class controller():
         self.agv_goal[agv_num] = goal_pos
         self.next_buffer[agv_num] = (0, 0)
         self.control_buffer[agv_num] = (0, 0)
-        self.planners[agv_num] = DStar(self.map, start_pos, goal_pos)
+        self.planners[agv_num] = AStar(self.map, start_pos, goal_pos)
         self.agv_path[agv_num] = []
 
     def remove_agv(self, agv_num):
@@ -59,15 +63,15 @@ class controller():
 
     def make_control(self):
         """모든 활성 AGV에 대한 제어 신호 생성"""
-        if self.running_opt == 0:              # D*
-            self.dstar_rout()
+        if self.running_opt == 0:              # A*
+            self.astar_rout()
         elif self.running_opt == 1:            # PIBT 전체
             self.pibt_rout(use_dstar_hint=True, on_conflict=False)
-        elif self.running_opt == 2:            # D* 기본 + 충돌 시만 PIBT
-            pass
+        elif self.running_opt == 2:            # MAPF-LNS2
+            self.vanilla_pibt_rout()
     
-    def dstar_rout(self):
-        """D* 알고리즘을 사용하여 각 AGV의 경로를 계산하고 제어 신호 생성"""
+    def astar_rout(self):
+        """A* 알고리즘을 사용하여 각 AGV의 경로를 계산하고 제어 신호 생성"""
         for num in self.agv_nums:
             pos = self.agv_pos.get(num)
             goal = self.agv_goal.get(num)
@@ -82,7 +86,7 @@ class controller():
                 self.control_buffer[num] = (0, 0)
                 continue
 
-            # D* 플래너의 시작점을 현재 위치로 업데이트하고 경로 재계산
+            # A* 플래너의 시작점을 현재 위치로 업데이트하고 경로 재계산
             planner.start = pos
             planner.compute_shortest_path()
             path = planner.extract_path()
@@ -189,5 +193,34 @@ class controller():
         for a in self.agv_nums:
             nx = final_next.get(a, pos[a])
             dx, dy = nx[0] - pos[a][0], nx[1] - pos[a][1]
+            self.next_buffer[a] = (dx, dy)
+            self.control_buffer[a] = (dx, dy)
+
+    def vanilla_pibt_rout(self):
+        """
+        [새로 추가된 함수]
+        가장 기본적인 PIBT 알고리즘(PIBTVanilla)을 사용하여 제어 신호를 생성합니다.
+        """
+        if not self.agv_nums:
+            return
+
+        # 1. PIBT에 필요한 현재 위치와 목표 위치 스냅샷 생성
+        pos = {a: self.agv_pos[a] for a in self.agv_nums}
+        goals = {a: self.agv_goal[a] for a in self.agv_nums}
+
+        # 2. 순수 PIBT(PIBTVanilla) 호출
+        final_next = self.pibt_vanilla.plan_one_step(
+            pos=pos, goals=goals
+        )
+
+        # 3. 결과를 제어 버퍼에 제어 벡터(dx, dy)로 변환하여 저장
+        for a in self.agv_nums:
+            current_pos = pos[a]
+            # PIBT가 어떤 이유로든 다음 위치를 반환하지 못하면 현재 위치 유지
+            next_pos = final_next.get(a, current_pos) 
+            
+            dx = next_pos[0] - current_pos[0]
+            dy = next_pos[1] - current_pos[1]
+            
             self.next_buffer[a] = (dx, dy)
             self.control_buffer[a] = (dx, dy)

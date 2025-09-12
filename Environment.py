@@ -328,6 +328,10 @@ class ENV():
             return math.inf
 
     def _is_valid_move(self, current_agv, control_signal):
+
+        if self.controller.running_opt in [0, 1, 2]:
+            return True
+
         nx = current_agv.pos[0] + control_signal[0]
         ny = current_agv.pos[1] + control_signal[1]
         next_pos = (nx, ny)
