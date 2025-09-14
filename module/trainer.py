@@ -13,7 +13,7 @@ import wandb
 
 from module.model import ActorCritic
 from module.buffer import EventBuffer, EventTransition
-from module.smdp_gae import compute_smdp_gae
+from module.gae import compute_gae
 
 
 # -------------------- utils --------------------
@@ -48,7 +48,7 @@ class TrainConfig:
     steps_per_update: int = 4096
 
     # logging
-    project: str = "smdp_mappo"
+    project: str = "MAPF"
 
 
 # -------------------- trainer --------------------
@@ -67,20 +67,25 @@ class Trainer:
 
         # 1) Env
         self.env = env
-        obs, info = self.env.reset()
+        self.obs_state, self.info_state = self.env.reset()
+
+        self.iid = next(iter(self.obs_state.keys()))
 
         # 2) Model 초기화 (초기 state_dim 확보)
         # deadlock이 없어서 obs=None일 수 있으므로 몇 스텝 굴려서 obs를 확보
-        if obs is None:
+        obs_i = self.obs_state.get(self.iid)
+        if obs_i is None:
             for _ in range(1000):
                 obs, _, info = self.env.step(None)
-                done = bool(info.get("terminated", False) or info.get("truncated", False))
-                if done:
+                summary = info.get("_summary", {})
+                if bool(summary.get("terminated", False) or summary.get("truncated", False)):
                     obs, info = self.env.reset()
-                if obs is not None:
+                obs_i = obs.get(self.iid)
+                if obs_i is not None:
                     break
-        assert isinstance(obs, dict) and "state" in obs, "ENV must return dict obs when deadlock active."
-        state_dim = int(np.asarray(obs["state"]).shape[-1])
+
+        assert isinstance(obs_i, dict) and "state" in obs_i, "ENV must return dict obs when deadlock active."
+        state_dim = int(np.asarray(obs_i["state"]).shape[-1])
 
         self.model = ActorCritic(state_dim).to(self.device)
         self.opt = optim.Adam(self.model.parameters(), lr=cfg.lr)
@@ -96,64 +101,77 @@ class Trainer:
             wandb.run.name = run_base
         self._save_name = f"{run_base}.pt"
 
+        self.event_on = False
+        self.tau_event = 0
+
     # --------- 수집기: 고정 스텝 단위로 버퍼 채우기 ---------
     @torch.no_grad()
     def collect_steps(self, min_steps: int) -> Tuple[EventBuffer, int]:
         """
-        최소 min_steps 만큼 env.step을 돌고,
-        obs != None (의사결정 스텝)인 전이만 EventBuffer에 저장한다. (tau=1)
+        MDP 모드:
+        - 모든 스텝에서 전이를 저장(tau=1)
+        - 액션은 항상 샘플하되, center_deadlock=True일 때만 env에 적용
+        - 보상은 env의 reward_map을 그대로 사용 (일반 스텝은 0으로 설계)
         """
         buf = EventBuffer(self.device)
         steps_used = 0
 
-        obs, info = self.env.reset()
-        while steps_used < min_steps:
-            # 액션 (데드락 구간인 경우에만)
-            if obs is not None:
-                amask_np = info.get("action_mask", None)
-                amask = None if amask_np is None else torch.as_tensor(
-                    amask_np, dtype=torch.bool, device=self.device
-                ).unsqueeze(0)
-                action, logprob, value = self.model.act(obs, action_mask=amask)
-                act_to_env = int(action.item())
-            else:
-                act_to_env = None
+        # [수정] 멤버 변수에서 현재 상태를 가져옴
+        obs, info = self.obs_state, self.info_state
 
-            # 전진
-            obs_next, r, info_next = self.env.step(act_to_env)
+        while steps_used < min_steps:
+            obs_i = obs.get(self.iid)
+            info_i = info.get(self.iid)
+
+            amask_np = info_i['action_mask']
+            amask = torch.as_tensor(amask_np, dtype=torch.bool, device=self.device).unsqueeze(0)
+
+            action, logprob, value = self.model.act(obs_i, action_mask=amask)
+            act_to_env = {self.iid: int(action.item())}
+
+            obs_next, reward_map, info_next = self.env.step(act_to_env)
             steps_used += 1
 
-            # 전이 저장(데드락 구간에서만)
-            if obs is not None:
-                done = bool(info_next.get("terminated", False) or info_next.get("truncated", False))
-                # 스텝 학습이므로 tau=1
-                e = EventTransition(
-                    state=torch.as_tensor(obs["state"], dtype=torch.float32, device=self.device),
-                    action=action.squeeze(0),
-                    logprob=logprob.squeeze(0),
-                    value=value.squeeze(0),
-                    reward=float(r),
-                    tau=1,
-                    done=done,
-                    terminated=bool(info_next.get("terminated", False)),
-                    truncated=bool(info_next.get("truncated", False)),
-                    action_mask=(amask.squeeze(0) if amask is not None else None),
-                )
-                idx = buf.add(e)
+            reward_i = float(reward_map.get(self.iid, 0.0))
+            amask_saved = (amask.squeeze(0) if amask is not None else None)
 
-                # 부트스트랩 값 설정
-                if (obs_next is not None) and (not done):
-                    _, v_next = self.model.forward(obs_next)
+            summary = info_next.get("_summary", {})
+            done = bool(summary.get("terminated", False) or summary.get("truncated", False))
+
+            e = EventTransition(
+                state=torch.as_tensor(obs_i["state"], dtype=torch.float32, device=self.device),
+                action=action.squeeze(0),
+                logprob=logprob.squeeze(0),
+                value=value.squeeze(0),
+                reward=reward_i,
+                tau=1,
+                done=done,
+                terminated=bool(summary.get("terminated", False)),
+                truncated=bool(summary.get("truncated", False)),
+                action_mask=amask_saved,
+            )
+            idx = buf.add(e)
+
+            # [수정] obs_next 상태 업데이트 로직 추가
+            obs_next_i = obs_next.get(self.iid)
+            if not done:
+                # obs_next_i가 None인 경우(데드락이 아닌 상태)를 대비
+                if obs_next_i is not None:
+                    _, v_next = self.model.forward(obs_next_i)
                     buf.set_next(idx, next_state=None, next_value=v_next.squeeze(0))
-                else:
-                    # 데드락 해제/에피소드 끝 → V_next=0으로 컷
+                else: # obs가 없는 경우, value 예측 불가하므로 0으로 처리
                     buf.set_next(idx, next_state=None, next_value=torch.zeros_like(value.squeeze(0)))
+            else:
+                buf.set_next(idx, next_state=None, next_value=torch.zeros_like(value.squeeze(0)))
 
-            # 경계 처리
-            if bool(info_next.get("terminated", False) or info_next.get("truncated", False)):
+            # [수정] 상태 업데이트 로직 변경
+            if done:
                 obs, info = self.env.reset()
             else:
                 obs, info = obs_next, info_next
+        
+        # [추가] 다음 collect_steps를 위해 최종 상태를 멤버 변수에 저장
+        self.obs_state, self.info_state = obs, info
 
         return buf, steps_used
 
@@ -223,6 +241,10 @@ class Trainer:
         total_steps = total_steps or self.cfg.total_steps
         steps_per_update = steps_per_update or self.cfg.steps_per_update
 
+        os.makedirs("checkpoint", exist_ok=True)
+        best = {"avgR": -float("inf"), "step": -1, "upd": -1}
+        best_path = os.path.join("checkpoint", "best_policy.pt")
+
         used = 0
         upd  = 0
         pbar = tqdm(total=total_steps, desc="steps", unit="step", ncols=0)
@@ -234,21 +256,30 @@ class Trainer:
             pbar.update(steps_used)
 
             batch = buf.as_tensors()
-            batch = compute_smdp_gae(batch, self.cfg.gamma, self.cfg.lam)
+            batch = compute_gae(batch, self.cfg.gamma, self.cfg.lam)
             logs  = self.update(batch)
 
+            # 베스트(최소 loss) 저장
+            cur_loss = float(logs.get("loss", float("inf")))
             avgR   = float(batch["rewards"].mean().cpu()) if len(buf) else 0.0
-            avgTau = float(batch["taus"].mean().cpu())    if len(buf) else 0.0
+
+            # [수정] 베스트(최대 avgR) 저장
+            if avgR > best["avgR"] + 1e-8:
+                best.update(avgR=avgR, step=used, upd=upd)
+                torch.save(self.model.state_dict(), best_path)
+                if wandb.run:
+                    wandb.summary["best/avgR"] = avgR
+                    wandb.summary["best/step"] = used
+                    wandb.summary["best/update"] = upd
 
             # 상태바 우측에 최신 지표 표시
             pbar.set_postfix(
-                upd=upd, avgR=f"{avgR:+.3f}", tau=f"{avgTau:.2f}",
+                upd=upd, loss=f"{cur_loss:.4f}", avgR=f"{avgR:+.3f}"
             )
 
             # wandb 로깅 (누적 스텝을 step으로 사용)
             wandb.log({
                 "train/avgR_event": avgR,
-                "train/avgTau": avgTau,
                 "train/loss": logs["loss"],
                 "train/actor_loss": logs["actor_loss"],
                 "train/value_loss": logs["value_loss"],
@@ -257,8 +288,9 @@ class Trainer:
         pbar.close()
 
         # 저장
-        os.makedirs("checkpoints", exist_ok=True)
-        out_path = os.path.join("checkpoints", self._save_name)
+        os.makedirs("checkpoint", exist_ok=True)
+        out_path = os.path.join("checkpoint", 'final_policy.pt')
         torch.save(self.model.state_dict(), out_path)
-        print(f"[model] saved → {out_path}")
+        print(f"[Final model] saved → {out_path}")
+        print(f"[Best model] saved → {best_path} (avgR={best['avgR']:.6f}, step={best['step']}, upd={best['upd']})")
         wandb.finish()

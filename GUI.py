@@ -191,7 +191,7 @@ class GUI():
         # Draw active tasks as rectangles (with AGV color)
         active_tasks = self.env.get_active_tasks()  # {agv_id: (row, col)}
         for num, (row, col) in active_tasks.items():
-            color = self.env.color_map[num]
+            color = self.env.color_map[num % 100]
             # [수정] 좌표 변환 함수 및 zoom_level 사용
             sx, sy = self.map_to_screen(row, col)
             pygame.draw.rect(self.win, color, (sx, sy, self.zoom_level, self.zoom_level))

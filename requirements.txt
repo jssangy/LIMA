@@ -4,4 +4,3 @@ pyglet
 pyyaml
 wandb
 tqdm
-torch
