@@ -284,15 +284,9 @@ class TrafficGenerator12:
             if self._arm_gate is not None and not self._arm_gate(iid, d):
                 continue
 
-            k = int(self.rng.poisson(self.lambda_arm.get((iid, d), self.lam)))
-            if k <= 0:
-                continue
-            
-            for _ in range(k):
-                if (active_agvs + len(tasks)) >= self.max_agvs:
-                    break
-
-                # [수정] 새로운 목적지 샘플링 함수 호출
+            arrivals = int(self.rng.poisson(self.lambda_arm.get((iid, d), self.lam)))
+            # [수정] k(arrivals)가 0보다 크면, 딱 한 번만 Task를 생성하고 루프를 제거합니다.
+            if arrivals > 0:
                 try:
                     gid, gd = self._sample_goal_opposite((iid, d))
                     tasks.append({
@@ -307,10 +301,10 @@ class TrafficGenerator12:
                 except ValueError as e:
                     if self.debug:
                         print(f"[TG12:{self.step_count}] Goal sampling error: {e}")
-                    continue # 목적지를 찾을 수 없으면 해당 AGV는 생성하지 않음
+                    continue # 목적지를 찾을 수 없으면 생성하지 않음
 
         return tasks
-
+    
     def complete_task(self, agv_id: int):
         self.completed_total += 1
 

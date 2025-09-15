@@ -172,7 +172,7 @@ class GUI():
         self.font_renderer = lambda size: pygame.font.Font('utils/D2Coding.ttf', max(1, int(size)))
 
         self.win = pygame.display.set_mode((self.width, self.height))
-        self.redrawWindow(self.env.Get_AGV())
+        self.redrawWindow(self.env.Get_AMR())
         self.root.after(100, self.run_env())
         self.root.mainloop()
 
@@ -206,7 +206,8 @@ class GUI():
         # Draw goal lines if enabled
         if self.show_goal_var.get():
             for agv_id, agv in agv_list.items():
-                goal_pos = self.env.controller.agv_goal.get(agv_id)
+                # [수정] 더 이상 사용하지 않는 controller 대신, agv 객체에서 직접 goal 위치를 가져옵니다.
+                goal_pos = agv.goal
                 if goal_pos:
                     # [수정] 좌표 변환 함수 사용
                     start_sx, start_sy = self.map_to_screen(agv.pos[0] + 0.5, agv.pos[1] + 0.5)
@@ -312,7 +313,7 @@ class GUI():
                 self.pan_start_pos = event.pos
 
         # 화면 다시 그리기
-        self.redrawWindow(self.env.Get_AGV())
+        self.redrawWindow(self.env.Get_AMR())
         self.root.after(self.speed_var.get(), self.run_env)
     
     # If start button is clicked
@@ -329,7 +330,7 @@ class GUI():
     def reset_env(self, event = None):
         self.running_check = False
         self.env.reset()
-        self.redrawWindow(self.env.Get_AGV())
+        self.redrawWindow(self.env.Get_AMR())
         self.make_state_info(self.env.make_info())
         self.append_log('Reset Simulation') 
     

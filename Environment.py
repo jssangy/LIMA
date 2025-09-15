@@ -9,7 +9,7 @@ from utils.AMR import AMR
 from utils.Intersection import Intersection
 from utils import Funct
 from utils.traffic_generator import discover_border_arms_NxM, TrafficGenerator, TrafficGenerator12, TaskSetGenerator
-from utils.Planner import Planner
+from utils.Controller import Planner
 
 
 class ENV():
@@ -79,7 +79,7 @@ class ENV():
         if actions is None: actions = {}
 
         # 1. 관측 생성 및 AMR 기본 계획 수립
-        #    - generate_observation 내부에서 각 AMR의 update_control_buffer가 호출됨
+        #    - generate_observation 내부에서 각 AMR의 update_next_buffer가 호출됨
         obs_now, info_now = self.generate_observation()
 
         # 2. 교차로 개입 및 AMR 우선순위 설정
@@ -89,12 +89,14 @@ class ENV():
         reverse_sorted_iids = sorted(self.intersections.keys(), key=self._inter_rank, reverse=True)
         for i, iid in enumerate(reverse_sorted_iids):
             I = self.intersections[iid]
+            for amr in I.amrs_in_intersection:
+                amr.priority = max(amr.priority, i / 10)
             I.resolve_arm_swaps_all(priority=i)
             if iid in act_to_apply:
                 I.action_control(act_to_apply[iid], priority=i)
 
         # 3. 최종 이동 계획 생성 및 실행 (점유 테이블 기반 충돌 해결)
-        self._resolve_conflicts_and_execute_moves(reverse_sorted_iids[::-1])
+        self.execute_moves(reverse_sorted_iids[::-1])
 
         # 4. 환경 변화 처리 (AMR 완료 체크 및 제거, 새로운 AMR 스폰)
         self._check_amr_completion()
@@ -117,6 +119,10 @@ class ENV():
         - 교차로 최신화(_update_intersections_state)
         - 상태/마스크/푸시아웃 플래그 계산만 수행
         """
+        for amr in self.amr_list.values():
+            amr.update_next_buffer()
+            amr.control_buffer = amr.next_buffer
+
         # 1. 교차로 상태 최신화
         self._update_intersections_state()
 
@@ -137,62 +143,55 @@ class ENV():
         act_to_apply = dict(actions)
         if (not train) and self.use_rl and self.rl_policy:
             for iid, meta in info_now.items():
-                if isinstance(meta, dict) and meta.get("is_deadlock", False) and self.intersections[iid].center_agv and iid not in act_to_apply:
+                if isinstance(meta, dict) and meta.get("is_deadlock", False) and self.intersections[iid].center_amr and iid not in act_to_apply:
                     action_mask = meta.get("action_mask")
                     # obs_now[iid]는 state, action_mask 등을 포함한 딕셔너리이므로 state만 전달
-                    rl_action = int(self.rl_policy(obs_now[iid]['state'], action_mask))
+                    rl_action = int(self.rl_policy(obs_now[iid], action_mask))
                     act_to_apply[iid] = rl_action
         return act_to_apply
     
-    def _resolve_conflicts_and_execute_moves(self, sorted_iids):
-        """
-        [새로 추가된 함수]
-        점유 테이블을 생성하여 충돌을 해결하고, 확정된 계획에 따라 모든 AGV를 이동시킵니다.
-        """
-        # 1) 점유 테이블(이동 계획) 생성
-        occupancy_plan = {}  # 최종 이동 계획 {agv_id: next_pos}
-        occupied_next_pos = set() # 선점된 목표 위치
+    def execute_moves(self, sorted_iids=None):
+        sorted_amrs = sorted(self.amr_list.values(), key=lambda amr: amr.priority, reverse=True)
 
-        # 1-1. 교차로 내 AGV들의 계획 확정 (우선순위 순)
-        for iid in sorted_iids:
-            I = self.intersections[iid]
-            for agv_obj in I.agvs_in_intersection:
-                if agv_obj.id in occupancy_plan:
-                    continue # 이미 더 높은 우선순위의 교차로에서 처리됨
+        final_signals = {}
+        occupied_pos = set()
+        
+        # 스왑 감지를 위해 현재 모든 AMR의 위치를 미리 저장
+        pos_to_amr_id = {amr.pos: amr.id for amr in self.amr_list.values()}
 
-                sig = self.controller.control_buffer.get(agv_obj.id, (0, 0))
-                next_pos = (agv_obj.pos[0] + sig[0], agv_obj.pos[1] + sig[1])
+        for amr_obj in sorted_amrs:
+            signal = amr_obj.control_buffer
+            next_pos = (amr_obj.pos[0] + signal[0], amr_obj.pos[1] + signal[1])
 
-                # 목표 위치가 이미 선점되었으면, 제자리에 머무름
-                if next_pos in occupied_next_pos:
-                    final_next_pos = agv_obj.pos
-                else:
-                    final_next_pos = next_pos
+            # 1. 목표 위치에 다른 AMR이 이미 이동하기로 확정한 경우 (Head-on Collision)
+            if next_pos in occupied_pos:
+                final_signals[amr_obj.id] = (0, 0)
+                occupied_pos.add(amr_obj.pos)
+                continue
+
+            # 2. 목표 위치에 다른 AMR이 '현재' 있고, 그 AMR도 내 위치로 오려는지 확인 (Swap Collision)
+            if next_pos in pos_to_amr_id:
+                other_amr_id = pos_to_amr_id[next_pos]
+                other_amr = self.amr_list[other_amr_id]
                 
-                occupancy_plan[agv_obj.id] = final_next_pos
-                occupied_next_pos.add(final_next_pos)
-
-        # 1-2. 교차로에 속하지 않은 나머지 AGV들의 계획 추가
-        for agv_id, agv_obj in self.amr_list.items():
-            if agv_id not in occupancy_plan:
-                sig = self.controller.control_buffer.get(agv_id, (0, 0))
-                next_pos = (agv_obj.pos[0] + sig[0], agv_obj.pos[1] + sig[1])
-
-                if next_pos in occupied_next_pos:
-                    final_next_pos = agv_obj.pos
-                else:
-                    final_next_pos = next_pos
+                # 다른 AMR의 목표 위치가 현재 내 위치와 같은지 확인
+                other_amr_next_pos = (other_amr.pos[0] + other_amr.control_buffer[0], other_amr.pos[1] + other_amr.control_buffer[1])
                 
-                occupancy_plan[agv_id] = final_next_pos
-                occupied_next_pos.add(final_next_pos)
+                if other_amr_next_pos == amr_obj.pos:
+                    # 스왑 충돌 발생! 현재 AMR이 이동을 포기.
+                    final_signals[amr_obj.id] = (0, 0)
+                    occupied_pos.add(amr_obj.pos)
+                    continue
 
-        # 2) AGV 이동 실행
-        for agv_id, agv_obj in self.amr_list.items():
-            next_pos = occupancy_plan.get(agv_id, agv_obj.pos)
-            # 맵 경계 및 장애물 유효성만 최종 확인
-            if self._is_valid_pos(next_pos):
-                agv_obj.move(next_pos)
-    
+            # 3. 충돌이 없는 경우, 이동 확정
+            final_signals[amr_obj.id] = signal
+            occupied_pos.add(next_pos)
+
+        # 최종 이동 실행 (벽 검사 없음)
+        for amr_id, amr_obj in self.amr_list.items():
+            signal_to_move = final_signals.get(amr_id, (0, 0))
+            amr_obj.move(signal_to_move)
+
     def _calculate_rewards_and_update_info(self, info_next):
         """
         [수정]
@@ -235,7 +234,7 @@ class ENV():
     def _update_deadlock_queue(self, info):
         """
         [수정] 데드락 큐를 새로운 우선순위 규칙에 따라 관리하고 정렬합니다.
-        1순위: 교차로 내 AGV 수 (내림차순)
+        1순위: 교차로 내 AMR 수 (내림차순)
         2순위: 데드락 발생 시점 (오름차순)
         """
         queue_changed = False
@@ -260,9 +259,9 @@ class ENV():
         
         # 큐에 변화가 있을 때만 정렬 수행
         if queue_changed:
-            # 정렬 키: (-AGV 수, 발생 시간)
-            # AGV 수는 많을수록, 발생 시간은 이를수록 우선순위가 높다.
-            self.deadlock_queue.sort(key=lambda item: (-len(self.intersections[item[0]].agvs_in_intersection), item[1]))
+            # 정렬 키: (-AMR 수, 발생 시간)
+            # AMR 수는 많을수록, 발생 시간은 이를수록 우선순위가 높다.
+            self.deadlock_queue.sort(key=lambda item: (-len(self.intersections[item[0]].amrs_in_intersection), item[1]))
 
     def _inter_rank(self, iid):
         """
@@ -279,11 +278,11 @@ class ENV():
         for I in self.intersections.values():
             I.reset()
 
-        for agv_id, agv_obj in self.amr_list.items():
-            pos = agv_obj.pos
+        for amr_id, amr_obj in self.amr_list.items():
+            pos = amr_obj.pos
             for I in self.intersections.values():
                 if pos in I.all_lane_coords:
-                    I.add_agv(agv_obj)
+                    I.add_amr(amr_obj)
 
         for I in self.intersections.values():
             I.check_deadlock()
@@ -336,7 +335,7 @@ class ENV():
             new_tasks = gen.get_next_task_pair()
         
         for task in new_tasks:
-            agv_id = task['id']
+            amr_id = task['id']
             start_iid = task['intersection_id']
             start_dir = task['start_direction']
             goal_iid = task['goal_intersection_id']
@@ -346,12 +345,12 @@ class ENV():
             goal_pos = self._direction_to_coords(goal_dir, goal_iid)
 
             if start_pos is None or goal_pos is None:
-                print(f"Warning: Could not get start/goal position for AMR {agv_id}. Skipping.")
+                print(f"Warning: Could not get start/goal position for AMR {amr_id}. Skipping.")
                 continue
 
             # 2. AMR 객체 생성 (goal 인자 추가)
-            new_amr = AMR(start_pos, goal_pos, agv_id, self.color_map[agv_id % 100])
-            
+            new_amr = AMR(start_pos, goal_pos, amr_id, self.color_map[amr_id % 100])
+
             # 3. Planner를 통해 경로 계산
             path = self.planner.plan_path(start_pos, goal_pos)
             
@@ -359,7 +358,7 @@ class ENV():
             new_amr.set_path(path)
             
             # 5. 환경에 AMR 등록
-            self.amr_list[agv_id] = new_amr
+            self.amr_list[amr_id] = new_amr
 
     def _direction_to_coords(self, direction, intersection_ref):
         """
@@ -483,8 +482,8 @@ class ENV():
     
     def is_arm_outgoing_clear(self, iid: str, d: str) -> bool:
         I = self.intersections[iid]
-        
-        # 1. 해당 팔에 나가는 AGV가 있으면 생성 금지
+
+        # 1. 해당 팔에 나가는 AMR가 있으면 생성 금지
         has_outgoing = bool(getattr(I, "outgoing", {}).get(d, False))
         if has_outgoing:
             return False
@@ -498,12 +497,12 @@ class ENV():
         return True
 
     # --- [GUI 연동을 위한 어댑터 함수들] ---
-    def Get_AGV(self):
-        """GUI가 AGV 목록을 가져갈 수 있도록 하는 함수"""
+    def Get_AMR(self):
+        """GUI가 AMR 목록을 가져갈 수 있도록 하는 함수"""
         return self.amr_list
 
     def get_active_tasks(self):
-        """GUI가 AGV의 목표 지점을 가져갈 수 있도록 하는 함수"""
+        """GUI가 AMR의 목표 지점을 가져갈 수 있도록 하는 함수"""
         active_goals = {}
         for amr_id, amr_obj in self.amr_list.items():
             active_goals[amr_id] = amr_obj.goal
@@ -512,7 +511,7 @@ class ENV():
     def make_info(self):
         # [수정] 에피소드 종료 조건 확인
         terminated = False
-        # 'task' 모드일 경우, 모든 AGV가 작업을 완료했는지 확인
+        # 'task' 모드일 경우, 모든 AMR이 작업을 완료했는지 확인
         if self.traffic_mode == 'task':
             if self.traffic_generator.is_episode_done():
                 terminated = True
@@ -527,10 +526,10 @@ class ENV():
         # 스루풋 계산 (분 단위)
         throughput = (total_pairs_done / self.time * 60) if self.time > 0 else 0.0
 
-        agv_states = {}
-        for agv_id, agv_obj in self.amr_list.items():
-            # AGV 상태를 더미 값으로 채움 (평가 스크립트에서는 사용하지 않음)
-            agv_states[agv_id] = [f"Goal_{agv_id}", 0]
+        amr_states = {}
+        for amr_id, amr_obj in self.amr_list.items():
+            # AMR 상태를 더미 값으로 채움 (평가 스크립트에서는 사용하지 않음)
+            amr_states[amr_id] = [f"Goal_{amr_id}", 0]
 
-        # GUI가 사용하던 포맷 유지: [완료수, 스루풋, AGV상태]
-        return [total_pairs_done, throughput, agv_states]
+        # GUI가 사용하던 포맷 유지: [완료수, 스루풋, AMR상태]
+        return [total_pairs_done, throughput, amr_states]

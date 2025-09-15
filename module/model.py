@@ -48,7 +48,7 @@ class ActorCritic(nn.Module):
                 x = x.unsqueeze(0)  # [1,F]
             return x
         else:
-            raise ValueError("Unsupported input type. Use dict with 'state' (edge_index is ignored).")
+            raise ValueError("Unsupported input type. Use dict with 'state'.")
 
     # ---- 공통 forward ----
     def forward(self, inputs: Dict[str, Any]):
