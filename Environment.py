@@ -159,6 +159,9 @@ class ENV():
         # 스왑 감지를 위해 현재 모든 AMR의 위치를 미리 저장
         pos_to_amr_id = {amr.pos: amr.id for amr in self.amr_list.values()}
 
+        """
+        Debugging code for duplicate positions
+        
         if len(pos_to_amr_id) != len(self.amr_list):
             position_map = defaultdict(list)
             for amr in self.amr_list.values():
@@ -179,6 +182,7 @@ class ENV():
                 for info in amr_infos:
                     error_msg += f"    - {info}\n"
             raise ValueError(error_msg)
+        """
 
         for amr_obj in sorted_amrs:
             signal = amr_obj.control_buffer
