@@ -350,15 +350,12 @@ class ENV():
 
             # 2. AMR 객체 생성 (goal 인자 추가)
             new_amr = AMR(start_pos, goal_pos, amr_id, self.color_map[amr_id % 100])
-
-            # 3. Planner를 통해 경로 계산
-            path = self.planner.plan_path(start_pos, goal_pos)
             
-            # 4. AMR에 경로 주입
-            new_amr.set_path(path)
-            
-            # 5. 환경에 AMR 등록
+            # 3. 환경에 AMR 등록
             self.amr_list[amr_id] = new_amr
+
+        # 4. Planner를 통해 경로 계산 및 경로 주입
+        self.planner.plan_path(self.amr_list)
 
     def _direction_to_coords(self, direction, intersection_ref):
         """

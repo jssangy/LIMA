@@ -7,23 +7,32 @@ class AStarPlanner:
         """
         self.map = map_data
 
-    def plan_path(self, start_pos, goal_pos):
+    def plan_path(self, amr_list):
         """
-        A* 알고리즘을 사용하여 시작점에서 목표점까지의 경로를 계산하고 반환합니다.
+        [수정] AMR 객체들의 딕셔너리를 받아, 각각의 경로를 계산하고 주입합니다.
+        향후 이 함수 내부가 CBS와 같은 전역 플래너로 대체될 수 있습니다.
         
-        :param start_pos: 시작 좌표 (x, y)
-        :param goal_pos: 목표 좌표 (x, y)
-        :return: 좌표 리스트로 구성된 경로. 경로를 찾지 못하면 빈 리스트를 반환합니다.
+        :param amr_list: AMR 객체들을 담고 있는 딕셔너리 {amr_id: AMR_Object}
         """
-        if start_pos == goal_pos:
-            return [start_pos]
+        # TODO: 향후 이 부분을 CBS 플래너 호출로 대체
+        for amr in amr_list.values():
+            # 이미 경로가 있는 AMR은 건너뜁니다 (예: 기존에 있던 AMR).
+            if amr.path:
+                continue
 
-        planner = AStar(self.map, start_pos, goal_pos)
-        try:
-            planner.compute_shortest_path()
-            path = planner.extract_path()
-            return path
-        except Exception as e:
-            print(f"Error during path planning from {start_pos} to {goal_pos}: {e}")
-            # 경로 계획 실패 시, 제자리에 머무는 경로 반환
-            return [start_pos]
+            start_pos = amr.pos
+            goal_pos = amr.goal
+
+            if start_pos == goal_pos:
+                path = [start_pos]
+            else:
+                planner = AStar(self.map, start_pos, goal_pos)
+                try:
+                    planner.compute_shortest_path()
+                    path = planner.extract_path()
+                except Exception as e:
+                    print(f"Error during path planning for AMR {amr.id} from {start_pos} to {goal_pos}: {e}")
+                    path = [start_pos] # 실패 시 제자리 경로
+            
+            # 계산된 경로를 AMR 객체에 직접 주입
+            amr.set_path(path)
