@@ -21,6 +21,20 @@ class AMR():
         self.next_buffer = (0, 0)
         self.control_buffer = (0, 0)
 
+    def reset(self):
+        """
+        AMR의 상태를 초기화합니다.
+        """
+        self.steps = 0
+        self.priority = 0
+
+        self.path = []
+        self.path_cursor = 0
+        self.off_path = False
+
+        self.next_buffer = (0, 0)
+        self.control_buffer = (0, 0)
+
     def set_path(self, new_path: list):
         """
         규칙 1: 플래너로부터 새로운 전체 경로를 주입받고 상태를 초기화합니다.

@@ -161,7 +161,7 @@ class ENV():
 
         """
         Debugging code for duplicate positions
-        
+
         if len(pos_to_amr_id) != len(self.amr_list):
             position_map = defaultdict(list)
             for amr in self.amr_list.values():
@@ -380,7 +380,7 @@ class ENV():
             self.amr_list[amr_id] = new_amr
 
         # 4. Planner를 통해 경로 계산 및 경로 주입
-        self.planner.plan_path(self.amr_list)
+        self.planner.plan_for_new_amrs(self.amr_list)
 
     def _direction_to_coords(self, direction, intersection_ref):
         """
@@ -570,11 +570,11 @@ class ENV():
 
     def replan_all_paths(self):
         """
-        [신규] 현재 플래너를 사용하여 모든 활성 AMR의 경로를 다시 계획합니다.
+        [수정] 컨트롤러의 'replan_all' 메서드를 호출하도록 변경
         """
         if not self.amr_list:
             return
         
         print(f"Replanning all paths for {len(self.amr_list)} AMRs...")
-        self.planner.plan_path(self.amr_list)
+        self.planner.replan_all(self.amr_list) # 수정된 함수 호출
         print("Replanning complete.")
