@@ -159,6 +159,27 @@ class ENV():
         # 스왑 감지를 위해 현재 모든 AMR의 위치를 미리 저장
         pos_to_amr_id = {amr.pos: amr.id for amr in self.amr_list.values()}
 
+        if len(pos_to_amr_id) != len(self.amr_list):
+            position_map = defaultdict(list)
+            for amr in self.amr_list.values():
+                amr_info = (
+                    f"id={amr.id}, "
+                    f"priority={amr.priority:.3f}, "
+                    f"prev_pos={amr.prev_pos}, "
+                    f"next_buf={amr.next_buffer}, "
+                    f"ctrl_buf={amr.control_buffer}"
+                )
+                position_map[amr.pos].append(amr_info)
+            
+            duplicates = {pos: ids for pos, ids in position_map.items() if len(ids) > 1}
+            error_msg = "CRITICAL: Duplicate AMR positions detected at the start of execute_moves. This should not happen.\n"
+            # [수정] 출력이 보기 편하도록 각 AMR 정보를 새로운 줄에 출력
+            for pos, amr_infos in duplicates.items():
+                error_msg += f"  - At position {pos}:\n"
+                for info in amr_infos:
+                    error_msg += f"    - {info}\n"
+            raise ValueError(error_msg)
+
         for amr_obj in sorted_amrs:
             signal = amr_obj.control_buffer
             next_pos = (amr_obj.pos[0] + signal[0], amr_obj.pos[1] + signal[1])
