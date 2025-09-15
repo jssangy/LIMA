@@ -355,13 +355,14 @@ class GUI():
 
     # When trajectory algorithm is changed
     def algorithm_changed(self, event):
-        self.append_log("Changed Avoidance algorithm to {}".format(event.widget.get()))
-        if event.widget.get() == "D*":
-            self.env.controller.running_opt = 0
-        if event.widget.get() == "PIBT":
-            self.env.controller.running_opt = 1
-        if event.widget.get() == "CBS":
-            self.env.controller.running_opt = 2
+        selected_algorithm = event.widget.get()
+        self.append_log(f"Changing planner to {selected_algorithm}...")
+        
+        # 1. Environment에 플래너 교체를 요청
+        self.env.set_planner(selected_algorithm)
+        
+        # 2. Environment에 모든 AMR의 경로 재계획을 요청
+        self.env.replan_all_paths()
 
     def make_state_info(self, info_list):
         if info_list == False:

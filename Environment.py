@@ -9,7 +9,7 @@ from utils.AMR import AMR
 from utils.Intersection import Intersection
 from utils import Funct
 from utils.traffic_generator import discover_border_arms_NxM, TrafficGenerator, TrafficGenerator12, TaskSetGenerator
-from utils.Controller import AStarPlanner
+from utils.Controller import AStarPlanner, PIBTPlanner, CBSPlanner
 
 
 class ENV():
@@ -90,7 +90,7 @@ class ENV():
         for i, iid in enumerate(reverse_sorted_iids):
             I = self.intersections[iid]
             for amr in I.amrs_in_intersection:
-                amr.priority = max(amr.priority, i / 10)
+                amr.priority = max(amr.priority, i)
             I.resolve_arm_swaps_all(priority=i)
             if iid in act_to_apply:
                 I.action_control(act_to_apply[iid], priority=i)
@@ -551,3 +551,26 @@ class ENV():
 
         # GUI가 사용하던 포맷 유지: [완료수, 스루풋, AMR상태]
         return [total_pairs_done, throughput, amr_states]
+
+
+    def set_planner(self, algorithm_name: str):
+        """
+        [신규] 알고리즘 이름에 따라 self.planner 객체를 교체합니다.
+        """
+        if algorithm_name == "A*":
+            self.planner = AStarPlanner(self.map)
+        elif algorithm_name == "PIBT":
+            self.planner = PIBTPlanner(self.map)
+        elif algorithm_name == "CBS":
+            self.planner = CBSPlanner(self.map)
+
+    def replan_all_paths(self):
+        """
+        [신규] 현재 플래너를 사용하여 모든 활성 AMR의 경로를 다시 계획합니다.
+        """
+        if not self.amr_list:
+            return
+        
+        print(f"Replanning all paths for {len(self.amr_list)} AMRs...")
+        self.planner.plan_path(self.amr_list)
+        print("Replanning complete.")
