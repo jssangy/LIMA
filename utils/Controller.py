@@ -1,6 +1,6 @@
 from utils.global_planning import AStar
 
-class Planner:
+class AStarPlanner:
     def __init__(self, map_data):
         """
         맵 데이터를 기반으로 경로 계획기(Planner)를 초기화합니다.

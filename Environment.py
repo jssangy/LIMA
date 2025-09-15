@@ -9,7 +9,7 @@ from utils.AMR import AMR
 from utils.Intersection import Intersection
 from utils import Funct
 from utils.traffic_generator import discover_border_arms_NxM, TrafficGenerator, TrafficGenerator12, TaskSetGenerator
-from utils.Controller import Planner
+from utils.Controller import AStarPlanner
 
 
 class ENV():
@@ -30,7 +30,7 @@ class ENV():
         self.amr_list: Dict[int, AMR] = {}
         self.max_steps = 1000
 
-        self.planner = Planner(self.map)
+        self.planner = AStarPlanner(self.map)
         
         self.intersections: Dict[str, Intersection] = {}
         for iid, inter_info in processed_intersections.items():
