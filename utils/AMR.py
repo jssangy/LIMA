@@ -49,32 +49,28 @@ class AMR():
 
         self.update_next_buffer()
 
-    def update_next_buffer(self):
+    def update_next_buffer(self, env_map=None):
         """
-        자신의 이상적인 계획을 next_buffer에만 기록합니다.
-        [수정] 경로 이탈 시, 남은 경로 중 가장 가까운 직선(수평/수직) 도달 가능 지점으로 복귀합니다.
+        [수정] env_map을 인자로 받아 경로 복귀 시 벽을 검사합니다.
         """
-        # 경로 이탈 상태일 경우
-        if self.off_path:
+        # 경로 이탈 상태이고, map 정보가 주어졌을 경우
+        if self.off_path and env_map is not None:
             closest_reachable_point = None
             min_dist = float('inf')
             current_pos = self.pos
 
-            # 남은 경로(path[path_cursor:])를 순회하며 가장 가까운 직선 도달 가능 지점을 찾음
             for path_point in self.path[self.path_cursor:]:
-                # 수평 또는 수직으로 일치하는지 확인 (직선 도달 가능 조건)
                 if path_point[0] == current_pos[0] or path_point[1] == current_pos[1]:
-                    dist = abs(path_point[0] - current_pos[0]) + abs(path_point[1] - current_pos[1])
-                    if dist < min_dist:
-                        min_dist = dist
-                        closest_reachable_point = path_point
+                    # [추가] 두 지점 사이에 벽이 없는지 확인하는 함수 호출
+                    if self._is_path_clear(current_pos, path_point, env_map):
+                        dist = abs(path_point[0] - current_pos[0]) + abs(path_point[1] - current_pos[1])
+                        if dist < min_dist:
+                            min_dist = dist
+                            closest_reachable_point = path_point
             
-            # 가장 가까운 직선 도달 가능 지점을 찾았다면, 그 방향으로 이동
             if closest_reachable_point:
                 dx = closest_reachable_point[0] - current_pos[0]
                 dy = closest_reachable_point[1] - current_pos[1]
-                
-                # np.sign을 사용하여 한 칸 이동 방향 결정
                 self.next_buffer = (np.sign(dx), np.sign(dy))
             return
 
@@ -87,6 +83,25 @@ class AMR():
         else:
             # 경로의 끝에 도달했으면 정지
             self.next_buffer = (0, 0)
+
+    def _is_path_clear(self, start_pos, end_pos, env_map):
+        """
+        [신규] 두 지점 사이의 직선 경로에 벽이 있는지 확인합니다.
+        """
+        x1, y1 = start_pos
+        x2, y2 = end_pos
+        
+        # 수평 이동
+        if y1 == y2:
+            for x in range(min(x1, x2), max(x1, x2) + 1):
+                if env_map[y1][x] == 1:
+                    return False
+        # 수직 이동
+        elif x1 == x2:
+            for y in range(min(y1, y2), max(y1, y2) + 1):
+                if env_map[y][x1] == 1:
+                    return False
+        return True
 
     def move(self, final_control_signal):
         """

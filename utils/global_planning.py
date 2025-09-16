@@ -355,160 +355,107 @@ class PIBT:
         if a not in self._age:
             self._age[a] = 0
 
-class PIBTVanilla:
+
+class BFS:
     """
-    Priority Inheritance with Backtracking (PIBT) - Algorithm 1 (vanilla)
-
-    - 4방향 격자 G(V,E)에서 작동 (0=free, 1=obstacle)
-    - 한 타임스텝의 다음 칸 π_i[t+1]만 결정
-    - 어떤 힌트/부분재계획/고정엣지 같은 변형 없음 (논문 그대로)
-
-    References: Algorithm 1 (PIBT), Sec. 4.2; Distance table via BFS (Sec. 4.4.1).
+    [신규 클래스]
+    목표 지점(goal) 기반의 거리장(Distance Field)을 미리 계산하여 경로를 매우 빠르게 추출하는 플래너.
+    - 특정 goal에 대한 거리장은 BFS를 통해 단 한 번만 계산되고 캐시됩니다.
+    - 경로 계획은 캐시된 거리장을 따라 가장 가파른 경사(steepest descent)를 찾는 방식으로 즉시 수행됩니다.
+    - 재계획 기능은 없으며, 초기 경로 생성에 특화되어 있습니다.
     """
+    def __init__(self, map_data: np.ndarray):
+        self.map = map_data
+        self.H, self.W = map_data.shape
+        self._distance_fields: Dict[Pos, np.ndarray] = {}  # goal -> distance_field 맵 캐시
 
-    def __init__(self, grid: np.ndarray, seed: int = 1234):
-        assert isinstance(grid, np.ndarray) and grid.ndim == 2
-        self.grid = grid
-        self.H, self.W = grid.shape
-        self._rng = random.Random(seed)
-        self._eps: Dict[int, float] = {}   # unique ε_i in [0,1)
-        self._prio: Dict[int, float] = {}  # p_i
-        self._dist_cache: Dict[Pos, np.ndarray] = {}  # goal -> 2D distance table
-
-    # ---------- public ----------
-
-    def reset(self):
-        """모든 내부 우선순위/난수 초기화."""
-        self._eps.clear()
-        self._prio.clear()
-        self._dist_cache.clear()
-
-    def plan_one_step(self, pos: Dict[int, Pos], goals: Dict[int, Pos]) -> Dict[int, Pos]:
+    def plan_path(self, start: Pos, goal: Pos) -> List[Pos]:
         """
-        입력:
-          pos   : {agent_id: (x,y)} at time t
-          goals : {agent_id: (x,y)}
-        출력:
-          {agent_id: next_pos}   # π_i[t+1]
+        주어진 시작점과 목표점에 대한 경로를 추출합니다.
+        필요 시 목표점에 대한 거리장을 생성하고 캐시합니다.
         """
-        agents = list(pos.keys())
-        agent_at_t: Dict[Pos, int] = {p: a for a, p in pos.items()}
+        if start == goal:
+            return [start]
 
-        # --- distance tables (goal-based, BFS) ---
-        for g in set(goals.values()):
-            if g not in self._dist_cache:
-                self._dist_cache[g] = self._bfs_from_goal(g)
+        # 1. 목표점에 대한 거리장을 얻거나 생성합니다.
+        if goal not in self._distance_fields:
+            self._distance_fields[goal] = self._create_field_from_goal(goal)
+        
+        distance_field = self._distance_fields[goal]
 
-        def dist_to_goal(cell: Pos, goal: Pos) -> int:
-            dt = self._dist_cache[goal]
-            x, y = cell
-            d = dt[y, x]
-            # unreachable -> treat as large
-            return int(d) if d >= 0 else 10**9
+        # 2. 생성된 거리장을 따라 경로를 추출합니다.
+        path = [start]
+        current = start
+        
+        # 시작점에서 도달 불가능한 경우 체크
+        if distance_field[current[1], current[0]] < 0:
+            print(f"Warning: Start position {start} is unreachable from goal {goal}.")
+            return [start] # 도달 불가능 시 제자리 경로 반환
 
-        # --- update priorities (Alg.1 Line 3) ---
-        for a in agents:
-            if a not in self._eps:
-                self._eps[a] = self._fresh_eps()
-                self._prio[a] = self._eps[a]
-            if pos[a] == goals[a]:
-                self._prio[a] = self._eps[a]    # reset to ε_i
-            else:
-                self._prio[a] = self._prio.get(a, self._eps[a]) + 1
+        while current != goal:
+            neighbors = self._get_neighbors(current)
+            if not neighbors:
+                return path # 막다른 길
 
-        # --- sort agents by decreasing priority (Alg.1 Line 4) ---
-        order = sorted(agents, key=lambda i: self._prio[i], reverse=True)
+            # [수정 시작] 비용이 같은 최적 경로가 여러 개일 때 무작위 선택
+            
+            # 1. 모든 이웃의 거리장 값을 계산
+            distances = {n: distance_field[n[1], n[0]] for n in neighbors}
+            
+            # 2. 최소 거리 값 찾기
+            min_dist = min(distances.values())
 
-        # next positions π_i[t+1], None means "undecided yet"
-        next_pos: Dict[int, Optional[Pos]] = {a: None for a in agents}
+            # 도달 불가능한 곳(-1)만 남은 경우
+            if min_dist < 0:
+                print(f"Warning: Path extraction stuck at {current} (surrounded by unreachable cells).")
+                return path
 
-        # Helpers -----------------------------------------------------------
-        def in_map(x: int, y: int) -> bool:
-            return 0 <= x < self.W and 0 <= y < self.H
+            # 3. 최소 거리를 가진 모든 이웃 노드를 후보로 수집
+            best_neighbors = [n for n, dist in distances.items() if dist == min_dist]
+            
+            # 4. 후보 중에서 하나를 무작위로 선택
+            next_node = random.choice(best_neighbors)
+            # [수정 끝]
+            
+            # 더 이상 진행할 수 없는 경우 (주변이 모두 현재보다 멀어지는 경우)
+            if distance_field[next_node[1], next_node[0]] >= distance_field[current[1], current[0]]:
+                 print(f"Warning: Path extraction stuck at {current} for goal {goal}.")
+                 return path
 
-        def free_cell(c: Pos) -> bool:
-            x, y = c
-            return in_map(x, y) and self.grid[y, x] == 0
+            current = next_node
+            path.append(current)
+            
+        return path
 
-        def neighbors(c: Pos) -> List[Pos]:
-            x, y = c
-            cand = [(x+1,y), (x-1,y), (x,y+1), (x,y-1)]
-            return [q for q in cand if free_cell(q)]
-
-        # Candidate set C (Alg.1 Lines 9–10), then checks (Lines 12–13)
-        def candidates(i: int, parent: Optional[int]) -> List[Pos]:
-            here = pos[i]
-            C = neighbors(here) + [here]  # Neigh(π_i[t]) ∪ {π_i[t]}
-            g = goals[i]
-
-            # sort by dist(u, g) asc; tie-break by absence/presence of agent (prefer empty)
-            def key(u: Pos):
-                occupied_flag = 1 if u in agent_at_t else 0  # 0(비점유) 먼저
-                return (dist_to_goal(u, g), occupied_flag)
-
-            C.sort(key=key)
-            # 필터링은 루프 안(Alg.1 Lines 12–13)에서 수행
-            return C
-
-        # Recursive PIBT(i, j) per Alg.1 Lines 8–22 ------------------------
-        def pibt(i: int, parent: Optional[int]) -> bool:
-            for v in candidates(i, parent):
-                # Line 12: avoid vertex conflict with already-requested nodes
-                if any((npv == v) for npv in next_pos.values() if npv is not None):
-                    continue
-                # Line 13: avoid swap with parent only
-                if parent is not None and pos[parent] == v:
-                    continue
-
-                # Line 14: reserve v for i
-                next_pos[i] = v
-
-                # Line 15: priority inheritance to current occupant at time t (if undecided)
-                occ = agent_at_t.get(v)
-                if occ is not None and next_pos[occ] is None:
-                    if not pibt(occ, i):          # Line 16: replanning on INVALID
-                        next_pos[i] = None
-                        continue
-
-                # Line 18: VALID
-                return True
-
-            # Lines 20–21: stay & INVALID
-            next_pos[i] = pos[i]
-            return False
-
-        # Top-level loop (Alg.1 Lines 5–7)
-        for i in order:
-            if next_pos[i] is None:
-                pibt(i, None)
-
-        # finalize
-        return {a: (next_pos[a] if next_pos[a] is not None else pos[a]) for a in agents}
-
-    # ---------- internals ----------
-
-    def _fresh_eps(self) -> float:
-        """[0,1) 난수로 ε_i 생성 (고유 보장)."""
-        used = set(self._eps.values())
-        x = self._rng.random()
-        while x in used:
-            x = self._rng.random()
-        return x
-
-    def _bfs_from_goal(self, goal: Pos) -> np.ndarray:
-        """목표에서 역방향 BFS로 거리테이블 생성. 장애물은 -1."""
-        dt = np.full((self.H, self.W), -1, dtype=int)
+    def _create_field_from_goal(self, goal: Pos) -> np.ndarray:
+        """
+        목표 지점에서부터 역방향 BFS를 실행하여 거리장을 생성합니다.
+        장애물이나 도달 불가능한 지역은 -1로 표시됩니다.
+        """
+        field = np.full((self.H, self.W), -1, dtype=int)
         gx, gy = goal
-        if not (0 <= gx < self.W and 0 <= gy < self.H) or self.grid[gy, gx] == 1:
-            return dt
-        q = deque()
-        dt[gy, gx] = 0
-        q.append((gx, gy))
+        
+        if not (0 <= gx < self.W and 0 <= gy < self.H) or self.map[gy, gx] == 1:
+            return field # 목표가 맵 밖이거나 벽인 경우
+
+        q = deque([goal])
+        field[gy, gx] = 0
+        
         while q:
             x, y = q.popleft()
-            for nx, ny in ((x+1,y),(x-1,y),(x,y+1),(x,y-1)):
-                if 0 <= nx < self.W and 0 <= ny < self.H and self.grid[ny, nx] == 0:
-                    if dt[ny, nx] == -1:
-                        dt[ny, nx] = dt[y, x] + 1
-                        q.append((nx, ny))
-        return dt
+            current_dist = field[y, x]
+            
+            for nx, ny in self._get_neighbors((x, y)):
+                if field[ny, nx] == -1: # 아직 방문하지 않은 곳
+                    field[ny, nx] = current_dist + 1
+                    q.append((nx, ny))
+        return field
+
+    def _get_neighbors(self, pos: Pos) -> List[Pos]:
+        x, y = pos
+        neighbors = []
+        for dx, dy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < self.W and 0 <= ny < self.H and self.map[ny, nx] == 0:
+                neighbors.append((nx, ny))
+        return neighbors

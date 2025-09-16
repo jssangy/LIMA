@@ -81,7 +81,7 @@ class GUI():
         # AGV Algorithm Setting
         self.algorithm_label = tk.Label(self.setting, text = 'Algorithms', font = self.font_style2)
         self.algorithm_box = ttk.Combobox(self.setting, 
-                                    values=["A*", "PIBT", "CBS"], state = 'readonly',
+                                    values=["BFS", "A*", "CBS", "PIBT"], state = 'readonly',
                                     font=self.font_style2)
         self.algorithm_box.current(0)
         self.algorithm_box.bind("<<ComboboxSelected>>", self.algorithm_changed)
@@ -221,7 +221,7 @@ class GUI():
             default_color = (0, 0, 255)
 
             # [수정] deadlock_queue가 (iid, timestamp) 튜플을 포함하므로, iid만 추출하여 사용합니다.
-            for priority, (iid, timestamp) in enumerate(self.env.deadlock_queue):
+            for priority, (iid, amr_count, timestamp) in enumerate(self.env.deadlock_queue):
                 intersection = self.env.intersections.get(iid)
                 if not intersection: continue
 

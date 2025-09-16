@@ -1,4 +1,4 @@
-from utils.global_planning import AStar, PIBT
+from utils.global_planning import AStar, PIBT, BFS
 
 class AStarPlanner:
     def __init__(self, map_data):
@@ -79,3 +79,33 @@ class CBSPlanner:
 
     def caculate_and_set_path(self, amr):
         pass
+
+class BFSPlanner:
+    def __init__(self, map_data):
+        """
+        맵 데이터를 기반으로 BFS 기반 거리장 플래너를 초기화합니다.
+        """
+        self.planner = BFS(map_data)
+
+    def plan_for_new_amrs(self, amr_list):
+        """
+        경로가 없는 새로운 AMR에 대해서만 경로를 계산합니다.
+        BFS 플래너는 매우 빠르므로, 모든 경로를 다시 계산해도 성능 저하가 거의 없습니다.
+        """
+        for amr in amr_list.values():
+            if not amr.path:
+                self.calculate_and_set_path(amr)
+
+    def replan_all(self, amr_list):
+        """
+        모든 AMR의 경로를 강제로 다시 계산합니다.
+        """
+        for amr in amr_list.values():
+            self.calculate_and_set_path(amr)
+
+    def calculate_and_set_path(self, amr):
+        """
+        BFS(거리장) 플래너를 사용하여 경로를 계산하고 주입합니다.
+        """
+        path = self.planner.plan_path(amr.pos, amr.goal)
+        amr.set_path(path)

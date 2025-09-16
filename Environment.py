@@ -9,7 +9,7 @@ from utils.AMR import AMR
 from utils.Intersection import Intersection
 from utils import Funct
 from utils.traffic_generator import discover_border_arms_NxM, TrafficGenerator, TrafficGenerator12, TaskSetGenerator
-from utils.Controller import AStarPlanner, PIBTPlanner, CBSPlanner
+from utils.Controller import AStarPlanner, PIBTPlanner, CBSPlanner, BFSPlanner
 
 
 class ENV():
@@ -30,7 +30,7 @@ class ENV():
         self.amr_list: Dict[int, AMR] = {}
         self.max_steps = 1000
 
-        self.planner = AStarPlanner(self.map)
+        self.planner = BFSPlanner(self.map)
         
         self.intersections: Dict[str, Intersection] = {}
         for iid, inter_info in processed_intersections.items():
@@ -89,9 +89,7 @@ class ENV():
         reverse_sorted_iids = sorted(self.intersections.keys(), key=self._inter_rank, reverse=True)
         for i, iid in enumerate(reverse_sorted_iids):
             I = self.intersections[iid]
-            for amr in I.amrs_in_intersection:
-                amr.priority = max(amr.priority, i)
-            I.resolve_arm_swaps_all(priority=i)
+            I.resolve_all_conflicts(priority=i)
             if iid in act_to_apply:
                 I.action_control(act_to_apply[iid], priority=i)
 
@@ -120,7 +118,7 @@ class ENV():
         - 상태/마스크/푸시아웃 플래그 계산만 수행
         """
         for amr in self.amr_list.values():
-            amr.update_next_buffer()
+            amr.update_next_buffer(self.map)
             amr.control_buffer = amr.next_buffer
 
         # 1. 교차로 상태 최신화
@@ -128,14 +126,14 @@ class ENV():
 
         # 2. 데드락 큐 및 최종 관측 정보 생성
         obs, info = {}, {}
-        temp_info_for_queue = {iid: {"is_deadlock": I.center_deadlock} for iid, I in self.intersections.items()}
+        temp_info_for_queue = {iid: {"is_deadlock": I.is_deadlock} for iid, I in self.intersections.items()}
         self._update_deadlock_queue(temp_info_for_queue)
 
         for iid, I in self.intersections.items():
             state = np.asarray(I.get_state(), dtype=np.float32)
             action_mask = np.asarray(I.calculate_action_mask(self.deadlock_queue), dtype=np.bool_)
             obs[iid] = {"state": state}
-            info[iid] = {"is_deadlock": I.center_deadlock, "action_mask": action_mask}
+            info[iid] = {"is_deadlock": I.is_deadlock, "action_mask": action_mask}
             
         return obs, info
     
@@ -150,69 +148,70 @@ class ENV():
                     act_to_apply[iid] = rl_action
         return act_to_apply
     
-    def execute_moves(self, sorted_iids=None):
-        sorted_amrs = sorted(self.amr_list.values(), key=lambda amr: amr.priority, reverse=True)
-
+    def execute_moves(self, sorted_iids):
+        """
+        [수정] AMR을 '교차로 제어 그룹(priority > 0)'과 '자율 주행 그룹(priority == 0)'으로 나누어 처리합니다.
+        """
         final_signals = {}
         occupied_pos = set()
         
-        # 스왑 감지를 위해 현재 모든 AMR의 위치를 미리 저장
+        # --- 사전 준비 ---
+        # 모든 AMR의 현재 위치를 집합으로 저장 (자율 주행 그룹용)
+        initial_amr_positions = {amr.pos for amr in self.amr_list.values()}
+
+        # AMR 그룹 분리: 제어 그룹(priority > 0) vs 자율 그룹(priority == 0)
+        controlled_amrs = []
+        free_amrs = []
+        for amr in self.amr_list.values():
+            if amr.priority > 0:
+                controlled_amrs.append(amr)
+            else:
+                free_amrs.append(amr)
+
+        # --- 1. 교차로 제어 그룹 처리 (우선순위 기반) ---
+        # 이 그룹은 기존의 복잡한 충돌 해결 로직을 사용합니다.
+        sorted_controlled_amrs = sorted(controlled_amrs, key=lambda amr: amr.priority, reverse=True)
         pos_to_amr_id = {amr.pos: amr.id for amr in self.amr_list.values()}
 
-        """
-        Debugging code for duplicate positions
-
-        if len(pos_to_amr_id) != len(self.amr_list):
-            position_map = defaultdict(list)
-            for amr in self.amr_list.values():
-                amr_info = (
-                    f"id={amr.id}, "
-                    f"priority={amr.priority:.3f}, "
-                    f"prev_pos={amr.prev_pos}, "
-                    f"next_buf={amr.next_buffer}, "
-                    f"ctrl_buf={amr.control_buffer}"
-                )
-                position_map[amr.pos].append(amr_info)
-            
-            duplicates = {pos: ids for pos, ids in position_map.items() if len(ids) > 1}
-            error_msg = "CRITICAL: Duplicate AMR positions detected at the start of execute_moves. This should not happen.\n"
-            # [수정] 출력이 보기 편하도록 각 AMR 정보를 새로운 줄에 출력
-            for pos, amr_infos in duplicates.items():
-                error_msg += f"  - At position {pos}:\n"
-                for info in amr_infos:
-                    error_msg += f"    - {info}\n"
-            raise ValueError(error_msg)
-        """
-
-        for amr_obj in sorted_amrs:
+        for amr_obj in sorted_controlled_amrs:
             signal = amr_obj.control_buffer
             next_pos = (amr_obj.pos[0] + signal[0], amr_obj.pos[1] + signal[1])
 
-            # 1. 목표 위치에 다른 AMR이 이미 이동하기로 확정한 경우 (Head-on Collision)
+            # 스왑 충돌 감지
+            if next_pos in pos_to_amr_id:
+                other_amr = self.amr_list[pos_to_amr_id[next_pos]]
+                other_next_pos = (other_amr.pos[0] + other_amr.control_buffer[0], other_amr.pos[1] + other_amr.control_buffer[1])
+                if other_next_pos == amr_obj.pos:
+                    final_signals[amr_obj.id] = (0, 0)
+                    occupied_pos.add(amr_obj.pos)
+                    continue
+            
+            # 정면충돌 감지
             if next_pos in occupied_pos:
                 final_signals[amr_obj.id] = (0, 0)
                 occupied_pos.add(amr_obj.pos)
                 continue
 
-            # 2. 목표 위치에 다른 AMR이 '현재' 있고, 그 AMR도 내 위치로 오려는지 확인 (Swap Collision)
-            if next_pos in pos_to_amr_id:
-                other_amr_id = pos_to_amr_id[next_pos]
-                other_amr = self.amr_list[other_amr_id]
-                
-                # 다른 AMR의 목표 위치가 현재 내 위치와 같은지 확인
-                other_amr_next_pos = (other_amr.pos[0] + other_amr.control_buffer[0], other_amr.pos[1] + other_amr.control_buffer[1])
-                
-                if other_amr_next_pos == amr_obj.pos:
-                    # 스왑 충돌 발생! 현재 AMR이 이동을 포기.
-                    final_signals[amr_obj.id] = (0, 0)
-                    occupied_pos.add(amr_obj.pos)
-                    continue
-
-            # 3. 충돌이 없는 경우, 이동 확정
+            # 이동 확정
             final_signals[amr_obj.id] = signal
             occupied_pos.add(next_pos)
 
-        # 최종 이동 실행 (벽 검사 없음)
+        # --- 2. 자율 주행 그룹 처리 (단순 규칙 기반) ---
+        # 이 그룹은 다른 AMR의 '예상 경로'가 아닌 '현재 위치'만 봅니다.
+        for amr_obj in free_amrs:
+            signal = amr_obj.control_buffer # == amr_obj.next_buffer
+            next_pos = (amr_obj.pos[0] + signal[0], amr_obj.pos[1] + signal[1])
+
+            # 규칙 1: 내 목표 위치에 '현재' 다른 AMR이 있는가?
+            # 규칙 2: 내 목표 위치가 다른 '제어 그룹' AMR의 목표 위치와 겹치는가?
+            if next_pos in initial_amr_positions or next_pos in occupied_pos:
+                final_signals[amr_obj.id] = (0, 0) # 겹치면 정지
+                occupied_pos.add(amr_obj.pos)
+            else:
+                final_signals[amr_obj.id] = signal # 안 겹치면 이동
+                occupied_pos.add(next_pos)
+
+        # --- 3. 최종 이동 일괄 적용 ---
         for amr_id, amr_obj in self.amr_list.items():
             signal_to_move = final_signals.get(amr_id, (0, 0))
             amr_obj.move(signal_to_move)
@@ -258,42 +257,53 @@ class ENV():
     
     def _update_deadlock_queue(self, info):
         """
-        [수정] 데드락 큐를 새로운 우선순위 규칙에 따라 관리하고 정렬합니다.
+        [수정] 데드락 큐를 (iid, amr_count, timestamp) 튜플로 관리합니다.
         1순위: 교차로 내 AMR 수 (내림차순)
         2순위: 데드락 발생 시점 (오름차순)
         """
         queue_changed = False
-        current_iids_in_queue = {item[0] for item in self.deadlock_queue}
+        
+        # 현재 큐에 있는 iid와 정보를 맵으로 변환
+        queue_map = {item[0]: item for item in self.deadlock_queue}
+        
+        # 새로운 큐를 생성
+        next_deadlock_queue = []
 
         for iid, meta in info.items():
             if not isinstance(meta, dict):
                 continue
             
             is_deadlocked = bool(meta.get("is_deadlock", False))
-
+            
             if is_deadlocked:
-                if iid not in current_iids_in_queue:
-                    # 새로운 데드락 발생: (iid, 발생 시간) 추가
-                    self.deadlock_queue.append((iid, self.time))
-                    queue_changed = True
-            else:
-                if iid in current_iids_in_queue:
-                    # 데드락 해소: 해당 iid 제거
-                    self.deadlock_queue = [item for item in self.deadlock_queue if item[0] != iid]
-                    queue_changed = True
-        
-        # 큐에 변화가 있을 때만 정렬 수행
-        if queue_changed:
+                num_amrs = len(self.intersections[iid].amrs_in_intersection)
+                if iid in queue_map:
+                    # 기존 데드락: AMR 수만 업데이트하고, 발생 시간은 유지
+                    _, _, timestamp = queue_map[iid]
+                    next_deadlock_queue.append((iid, num_amrs, timestamp))
+                else:
+                    # 새로운 데드락: (iid, amr_count, timestamp) 추가
+                    next_deadlock_queue.append((iid, num_amrs, self.time))
+                queue_changed = True # 데드락이 하나라도 있으면 정렬 필요
+            elif iid in queue_map:
+                # 데드락 해소: 큐에서 제거되었으므로 변경 발생
+                queue_changed = True
+
+        # 큐에 변화가 있거나, 데드락이 하나라도 존재하면 정렬 수행
+        if queue_changed or next_deadlock_queue:
             # 정렬 키: (-AMR 수, 발생 시간)
-            # AMR 수는 많을수록, 발생 시간은 이를수록 우선순위가 높다.
-            self.deadlock_queue.sort(key=lambda item: (-len(self.intersections[item[0]].amrs_in_intersection), item[1]))
+            # item[1]은 AMR 수, item[2]는 발생 시간
+            next_deadlock_queue.sort(key=lambda item: (-item[1], item[2]))
+            
+            # 최종적으로 큐를 교체
+            self.deadlock_queue = next_deadlock_queue
 
     def _inter_rank(self, iid):
         """
         [수정] 데드락 큐의 구조 변경에 맞춰 iid의 순위를 반환합니다.
         """
         try:
-            # 큐는 (iid, timestamp) 튜플의 리스트이므로, iid만 추출하여 인덱스를 찾음
+            # 큐는 (iid, amr_count, timestamp) 튜플의 리스트이므로, iid만 추출하여 인덱스를 찾음
             iids_only = [item[0] for item in self.deadlock_queue]
             return iids_only.index(iid)
         except ValueError:
@@ -352,6 +362,8 @@ class ENV():
         gen = self.traffic_generator
         if not gen or not gen.should_spawn_next():
             return
+        
+        current_occupied_pos = {amr.pos for amr in self.amr_list.values()}
 
         # 1. 현재 모드에 맞는 task 생성
         if self.traffic_mode == 'task':
@@ -371,6 +383,9 @@ class ENV():
 
             if start_pos is None or goal_pos is None:
                 print(f"Warning: Could not get start/goal position for AMR {amr_id}. Skipping.")
+                continue
+
+            if start_pos in current_occupied_pos:
                 continue
 
             # 2. AMR 객체 생성 (goal 인자 추가)
@@ -563,10 +578,12 @@ class ENV():
         """
         if algorithm_name == "A*":
             self.planner = AStarPlanner(self.map)
-        elif algorithm_name == "PIBT":
-            self.planner = PIBTPlanner(self.map)
+        elif algorithm_name == "BFS":
+            self.planner = BFSPlanner(self.map)
         elif algorithm_name == "CBS":
             self.planner = CBSPlanner(self.map)
+        elif algorithm_name == "PIBT":
+            self.planner = PIBTPlanner(self.map)
 
     def replan_all_paths(self):
         """

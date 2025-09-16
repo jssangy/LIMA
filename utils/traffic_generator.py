@@ -220,7 +220,7 @@ class TrafficGenerator12:
         lambda_per_arm: Optional[Dict[Tuple[str, str], float]] = None,
         arm_gate: Optional[Callable[[str, str], bool]] = None,
         debug: bool = False,
-        max_agvs: int = 10,
+        max_agvs: int = 20,
     ):
         self.rng = np.random.default_rng()
         self.arms = [(str(iid), d) for (iid, d) in arms12]
@@ -347,7 +347,7 @@ class TaskSetGenerator:
     사용자 제안에 따라, 매 배치마다 팔 목록을 새로 셔플하여 Task를 생성.
     10초(스텝) 간격으로 각 배치를 단계적으로 제공.
     """
-    def __init__(self, all_arms: List[Tuple[str, str]], seed: Optional[int] = 7, agvs_per_arm: int = 1, interval_steps: int = 20):
+    def __init__(self, all_arms: List[Tuple[str, str]], seed: Optional[int] = 7, agvs_per_arm: int = 5, interval_steps: int = 20):
         self.rng = np.random.default_rng(seed)
         self.agv_id_counter = 0
         self.task_set: List[Dict] = [] # 모든 Task의 전체 목록
