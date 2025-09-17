@@ -96,7 +96,9 @@ class Intersection:
             amr.next_buffer = (dx, dy)
 
     def get_state(self):
-        """관측 상태 생성: 오직 amr_intent_map의 정보만을 사용합니다."""
+        """
+        [수정] is_ingoing 로직을 '팔에 진입하려는 AMR이 하나라도 있으면 1'로 변경합니다.
+        """
         state_vector = []
         center_pos = (self.center_x, self.center_y)
 
@@ -110,12 +112,18 @@ class Intersection:
             goal_onehot, distance, is_ingoing = [0, 0, 0, 0], 0.0, 0.0
 
             if arm_data:
+                # 가장 가까운 AMR의 정보는 goal_onehot과 distance 계산에 사용
                 closest_data = min(arm_data, key=lambda data: self._mdist(data['amr_obj'].pos, center_pos))
                 exit_dir = closest_data['exit_arm']
                 idx = DIR2IDX.get(exit_dir)
                 if idx is not None: goal_onehot[idx] = 1
                 distance = self._mdist(closest_data['amr_obj'].pos, center_pos)
-                if exit_dir != d: is_ingoing = 1.0
+                
+                # [수정] 해당 팔에 진입(ingoing)하려는 AMR이 하나라도 있는지 확인
+                for data in arm_data:
+                    if data['exit_arm'] != d:
+                        is_ingoing = 1.0
+                        break # 하나라도 있으면 더 볼 필요 없음
 
             state_vector.extend(goal_onehot)
             state_vector.append(distance)
@@ -130,6 +138,7 @@ class Intersection:
         
         state_vector.extend(center_goal_onehot)
         return np.array(state_vector, dtype=np.float32)
+
 
     def action_control(self, action, priority):
         """RL 에이전트의 행동을 수행합니다."""
@@ -189,7 +198,6 @@ class Intersection:
             target_exit_arm = center_data['exit_arm']
             if amrs_by_arm.get(target_exit_arm, {}).get('ingoing'):
                 deadlock_found_this_step = True
-                self.swap_conflict_arms[target_exit_arm] = True
 
         # 유형 B: 팔 내부에서 진출 차량이 진입 차량에 의해 갇힌 경우 (요청하신 로직)
         center_pos = (self.center_x, self.center_y)
@@ -217,8 +225,6 @@ class Intersection:
 
                 if (entry1 == exit2 and entry2 == exit1) or (entry1 == entry2 and exit1 == exit2):
                     deadlock_found_this_step = True
-                    self.swap_conflict_arms[entry1] = True
-                    self.swap_conflict_arms[entry2] = True
 
         # 4. 최종 결과 설정
         self.is_deadlock = deadlock_found_this_step

@@ -54,7 +54,6 @@ class ENV():
         self.use_rl = False
         self.rl_policy = None
         self.completed_amr_steps = []
-        self.amr_prev_intersection_map = {}
 
     def reset(self):        
         self.time = 0
@@ -69,7 +68,6 @@ class ENV():
         obs, info = self.generate_observation()
         self.prev_deadlock_map: dict[str, bool] = {}
         self.completed_amr_steps.clear()
-        self.amr_prev_intersection_map.clear()
 
         return obs, info
 
@@ -338,46 +336,25 @@ class ENV():
     
     def _update_intersections_state(self):
         """
-        [전면 수정] AMR의 이동에 따른 교차로 진입/갱신/탈출 이벤트를 감지하고 처리합니다.
+        [전면 수정] 매 스텝 교차로를 초기화하고, 현재 AMR 위치를 기반으로 상태를 재구성합니다.
         """
-        amr_current_intersection_map = {}
-        # 1. 모든 AMR의 현재 소속 교차로를 파악하고, AMR 객체의 상태도 업데이트
+        # --- 1. 모든 교차로의 내부 상태를 초기화합니다. ---
+        for I in self.intersections.values():
+            I.reset()
+
+        # --- 2. 모든 AMR의 현재 위치를 기반으로 교차로에 다시 등록합니다. ---
         for amr in self.amr_list.values():
-            amr.current_intersection_id.clear() # 매 스텝 새로 계산
+            # AMR 객체의 소속 교차로 정보도 매번 새로 계산
+            amr.current_intersection_id.clear()
             for iid, I in self.intersections.items():
                 if amr.pos in I.all_lane_coords:
-                    amr_current_intersection_map.setdefault(amr.id, set()).add(iid)
+                    I.register_amr(amr)
                     amr.current_intersection_id.add(iid)
 
-        # 2. 이전 상태와 비교하여 이벤트 감지 및 처리
-        all_involved_amr_ids = set(self.amr_prev_intersection_map.keys()) | set(amr_current_intersection_map.keys())
-
-        for amr_id in all_involved_amr_ids:
-            amr = self.amr_list.get(amr_id)
-            if not amr: continue
-
-            prev_iids = self.amr_prev_intersection_map.get(amr_id, set())
-            current_iids = amr_current_intersection_map.get(amr_id, set())
-
-            # 진입 이벤트: 이전에 없던 교차로에 새로 나타남
-            for iid in current_iids - prev_iids:
-                self.intersections[iid].register_amr(amr)
-
-            # 탈출 이벤트: 이전에 있던 교차로에서 사라짐
-            for iid in prev_iids - current_iids:
-                self.intersections[iid].unregister_amr(amr)
-            
-            # 갱신 이벤트: 계속 교차로 내에 있음
-            for iid in prev_iids & current_iids:
-                self.intersections[iid].update_amr_state(amr)
-
-        # 3. 모든 교차로에 대해 데드락 재검사
+        # --- 3. 모든 교차로에 대해 데드락을 검사합니다. ---
         for I in self.intersections.values():
             I.check_deadlock()
-
-        # 4. 다음 스텝을 위해 현재 상태를 이전 상태로 저장
-        self.amr_prev_intersection_map = amr_current_intersection_map
-
+        
     def set_traffic_mode(self, mode: str):
         """
         [새로 추가된 함수]
