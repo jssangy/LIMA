@@ -219,7 +219,7 @@ class GUI():
             priority_colors = [(255, 0, 0), (255, 165, 0), (255, 255, 0)]
             default_color = (0, 0, 255)
 
-            for priority, iid in reversed(list(enumerate(self.env.deadlock_queue))):
+            for priority, (iid, timestamp) in reversed(list(enumerate(self.env.deadlock_queue))):
                 intersection = self.env.intersections.get(iid)
                 if not intersection: continue
 
