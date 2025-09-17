@@ -3,12 +3,6 @@ __pycache__/
 
 wandb/
 
-checkpoint/
-*.pth
-
-checkpoints/
-
-
 .vscode/
 
 .DS_Store

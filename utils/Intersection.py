@@ -1,7 +1,5 @@
 import numpy as np
-from itertools import chain, combinations
-from typing import Dict
-from collections import defaultdict
+from itertools import chain
 
 DIR2IDX = {"N": 0, "E": 1, "S": 2, "W": 3}
 
@@ -37,6 +35,7 @@ class Intersection:
         self.ingoing = {"N": False, "E": False, "S": False, "W": False}
         self.outgoing = {"N": False, "E": False, "S": False, "W": False}
         self.is_deadlock = False
+        self.swap_conflict_arms = {'N': False, 'E': False, 'S': False, 'W': False}
 
     def add_amr(self, amr_object):
         nxt = amr_object.next_buffer
@@ -122,7 +121,6 @@ class Intersection:
 
         # 체인은 안쪽->바깥쪽 순서이므로, 인덱스가 클수록 바깥쪽 AMR.
         # 바깥쪽 AMR이 더 높은 우선순위를 갖도록 인덱스를 활용.
-        num_in_chain = len(chain)
         for i, amr_obj in enumerate(chain):
             amr_obj.control_buffer = move_vec
             amr_obj.priority = max(amr_obj.priority, chain_base_priority + i * 0.001)    # 우선순위 1순위
@@ -132,70 +130,97 @@ class Intersection:
         self.center_amr.priority = max(self.center_amr.priority, center_priority)   # 우선순위 2순위
 
     def check_deadlock(self):
-        """
-        [수정] 데드락 상태를 판정하고 self.is_deadlock을 설정합니다.
-        1. 중앙 AMR의 진출로가 막힌 경우 (기존 로직)
-        2. 특정 팔(arm)에서 스왑 충돌이 발생한 경우 (신규 로직)
-        """
-        # 1. 중앙 AMR 데드락 검사
-        if self.center_amr:
-            move = self.center_amr.next_buffer      
-            vec_to_dir = {(0, -1): 'N', (1, 0): 'E', (0, 1): 'S', (-1, 0): 'W'}
-            target_dir = vec_to_dir.get(move)
+        amrs_in_intersection = list(self.amrs_in_intersection)
+        if len(amrs_in_intersection) < 2:
+            return False
 
-            if target_dir and self.ingoing.get(target_dir, False):
-                self.is_deadlock = True
-                return True # 데드락 확정
+        # 모든 AMR 쌍에 대해 데드락 검사 (O(N^2))
+        for i in range(len(amrs_in_intersection)):
+            for j in range(i + 1, len(amrs_in_intersection)):
+                amr1 = amrs_in_intersection[i]
+                amr2 = amrs_in_intersection[j]
 
-        # 2. 스왑 충돌 데드락 검사
-        center = (self.center_x, self.center_y)
-        def mdist(p):
-            return abs(p[0] - center[0]) + abs(p[1] - center[1])
+                # 1. 즉각적인 스왑 충돌 검사
+                is_immediate_swap = self._check_immediate_swap(amr1, amr2)
+                
+                # 2. 경로 기반 스왑 충돌 검사
+                is_path_conflict = self._check_swapping_path(amr1, amr2) or self._check_swapping_path(amr2, amr1)
 
-        for d in ['N', 'E', 'S', 'W']:
-            # 해당 팔에 진입/진출 차량이 모두 있어야 스왑 가능성 존재
-            if not (self.ingoing.get(d, False) and self.outgoing.get(d, False)):
-                continue
+                if is_immediate_swap or is_path_conflict:
+                    self.is_deadlock = True
+                    
+                    # 이 스왑이 어떤 팔(arm)과 관련 있는지 식별하여 기록
+                    for d in ['N', 'E', 'S', 'W']:
+                        if amr1.pos in self.lane_coords[d] or amr2.pos in self.lane_coords[d]:
+                            self.swap_conflict_arms[d] = True
+                    
+                    # 데드락이 하나라도 발견되면 즉시 종료
+                    return True
 
-            arm_amrs = self.amrs_in_lanes.get(d, [])
-            v_in = self._dir_vec(d, inward=True)
-            v_out = (-v_in[0], -v_in[1])
-
-            ing_list = [a for a in arm_amrs if a.next_buffer == v_in]
-            out_list = [a for a in arm_amrs if a.next_buffer == v_out]
-
-            if not ing_list or not out_list:
-                continue
-
-            # 가장 중심에 가까운 진출 차량 vs 가장 중심에서 먼 진입 차량
-            closest_out_dist = min(mdist(a.pos) for a in out_list)
-            farthest_in_dist = max(mdist(a.pos) for a in ing_list)
-
-            # 진출 차량이 진입 차량보다 안쪽에 갇혀있으면 스왑 충돌
-            if closest_out_dist < farthest_in_dist:
-                self.is_deadlock = True
-                return True # 데드락 확정
-
-        # 위 조건에 해당하지 않으면 데드락 아님
-        self.is_deadlock = False
+        # 루프를 모두 통과했다면 데드락이 없는 것
         return False
+
+    def _check_immediate_swap(self, amr1, amr2):
+        """
+        [신규] A의 다음 위치가 B의 현재 위치이고, B의 다음 위치가 A의 현재 위치인지 확인합니다.
+        """
+        move1 = amr1.next_buffer
+        move2 = amr2.next_buffer
+
+        pos1 = amr1.pos
+        pos2 = amr2.pos
+
+        next_pos1 = (pos1[0] + move1[0], pos1[1] + move1[1])
+        next_pos2 = (pos2[0] + move2[0], pos2[1] + move2[1])
+
+        # 스와핑 조건 확인
+        return next_pos1 == pos2 and next_pos2 == pos1
+
+    def _check_swapping_path(self, amr1, amr2):
+        """
+        [신규] A(amr1)의 경로에 B(amr2)의 위치가 있고, 그 경로의 일부를 뒤집은 것이 B의 경로에 포함되는지 확인합니다.
+        """
+        path1 = amr1.path
+        path2 = amr2.path
+        if not path1 or not path2:
+            return False
+
+        pos2 = amr2.pos
+
+        # A의 경로에서 B의 현재 위치 인덱스 찾기
+        try:
+            index2_in_1 = path1.index(pos2)
+        except ValueError:
+            return False
+
+        # A의 현재 위치 인덱스
+        current_index1 = amr1.path_cursor
+
+        # A의 현재 위치가 B의 위치보다 앞에 있어야 경로 스왑 가능
+        if current_index1 >= index2_in_1:
+            return False
+
+        # A의 경로에서 스왑을 검사할 구간 추출: (A의 다음 위치)부터 (B의 이전 위치)까지
+        sub_path1 = path1[current_index1 + 1 : index2_in_1]
+        if not sub_path1:
+            return False
+        
+        reversed_sub_path1 = sub_path1[::-1]
+        L = len(reversed_sub_path1)
+
+        # B의 경로에서 스왑 구간이 포함되는지 확인
+        if len(path2) < L:
+            return False
+        
+        for i in range(len(path2) - L + 1):
+            if path2[i:i + L] == reversed_sub_path1:
+                return True
+        
+        return False
+
     
     def resolve_all_conflicts(self, priority):
-        """
-        통합 로직:
-        Case1) ingoing만 True:   가까운→먼 순으로 우선순위 부여
-        Case2) outgoing만 True:  먼→가까운 순으로 우선순위 부여
-        Case3) 둘 다 True:
-            - if (closest_out_dist < farthest_in_dist):
-                해당 팔의 모든 AMR을 중심 방향(inward)으로 몰고,
-                가까울수록 높은 priority
-            else:
-                ingoing(가까운→먼) > outgoing(먼→가까운) tier로 부여
-        """
         eps = 1e-3
-        base_single = priority   # Case1/2 tier
-        base_in     = priority + 0.20   # Case3: ingoing tier
-        base_out    = priority + 0.10   # Case3: outgoing tier
         base_force  = priority + 0.40   # Case3: 강제 inward tier
 
         center = (self.center_x, self.center_y)
@@ -206,72 +231,19 @@ class Intersection:
         def sort_close_first(amrs):
             return sorted(amrs, key=lambda a: (mdist(a.pos), a.id))
 
-        def sort_far_first(amrs):
-            return sorted(amrs, key=lambda a: (-mdist(a.pos), -a.id))
-
         for d in ['N', 'E', 'S', 'W']:
             arm_amrs = list(self.amrs_in_lanes.get(d, []))
             if len(arm_amrs) < 2:
                 continue
 
-            v_in  = self._dir_vec(d, inward=True)
-            v_out = (-v_in[0], -v_in[1])
-
-            ing_flag = bool(self.ingoing.get(d, False))
-            out_flag = bool(self.outgoing.get(d, False))
-
-            # next_buffer 기준 그룹 분리
-            ing_list = [a for a in arm_amrs if a.next_buffer == v_in]
-            out_list = [a for a in arm_amrs if a.next_buffer == v_out]
-
-            # -------- Case 1: ingoing만 True --------
-            if ing_flag and not out_flag:
-                targets = ing_list if ing_list else arm_amrs
-                ordered = sort_close_first(targets)          # 가까운→먼
-                n = len(ordered)
-                for i, amr in enumerate(ordered):
-                    amr.priority = max(amr.priority, base_single + (n - 1 - i) * eps)
+            if self.swap_conflict_arms[d]:
+                v_in = self._dir_vec(d, inward=True)
+                ordered_all = sort_close_first(arm_amrs)
+                n = len(ordered_all)
+                for i, amr in enumerate(ordered_all):
+                    amr.control_buffer = v_in
+                    amr.priority = max(amr.priority, base_force + (n - 1 - i) * eps)
                 continue
-
-            # -------- Case 2: outgoing만 True --------
-            if out_flag and not ing_flag:
-                targets = out_list if out_list else arm_amrs
-                ordered = sort_far_first(targets)            # 먼→가까운
-                n = len(ordered)
-                for i, amr in enumerate(ordered):
-                    amr.priority = max(amr.priority, base_single + (n - 1 - i) * eps)
-                continue
-
-            # -------- Case 3: 둘 다 True --------
-            if ing_flag and out_flag:
-                # 가까운 outgoing vs 먼 ingoing 비교
-                closest_out_dist = min([mdist(a.pos) for a in out_list], default=None)
-                farthest_in_dist = max([mdist(a.pos) for a in ing_list], default=None)
-
-                # 3-A) 강제 inward 조건 충족: 모든 AMR을 중심으로 몰기
-                if (closest_out_dist is not None and farthest_in_dist is not None
-                        and closest_out_dist < farthest_in_dist):
-                    ordered_all = sort_close_first(arm_amrs)  # 가까운→먼
-                    n = len(ordered_all)
-                    for i, amr in enumerate(ordered_all):
-                        amr.control_buffer = v_in
-                        amr.priority = max(amr.priority, base_force + (n - 1 - i) * eps)
-                    continue
-
-                # 3-B) 일반 case3: ingoing > outgoing tier
-                if ing_list:
-                    ordered_in = sort_close_first(ing_list)   # 가까운→먼
-                    n_in = len(ordered_in)
-                    for i, amr in enumerate(ordered_in):
-                        amr.priority = max(amr.priority, base_in + (n_in - 1 - i) * eps)
-
-                if out_list:
-                    ordered_out = sort_far_first(out_list)    # 먼→가까운
-                    n_out = len(ordered_out)
-                    for i, amr in enumerate(ordered_out):
-                        amr.priority = max(amr.priority, base_out + (n_out - 1 - i) * eps)
-
-            # ing_flag==False and out_flag==False 이면 아무 것도 하지 않음
 
 
     def _collect_chain_near_to_far(self, d: str):

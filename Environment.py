@@ -3,7 +3,8 @@ import json
 import math
 import numpy as np
 from typing import Dict
-from collections import defaultdict
+from collections import defaultdict, deque
+import heapq
 
 from utils.AMR import AMR
 from utils.Intersection import Intersection
@@ -148,18 +149,11 @@ class ENV():
                     act_to_apply[iid] = rl_action
         return act_to_apply
     
-    def execute_moves(self, sorted_iids):
+    def execute_moves(self, sorted_iids=None):
         """
-        [수정] AMR을 '교차로 제어 그룹(priority > 0)'과 '자율 주행 그룹(priority == 0)'으로 나누어 처리합니다.
+        [전면 수정] 제어 그룹을 먼저 이동시킨 후, 자율 그룹을 이동시키는 순차적 방식 적용
         """
-        final_signals = {}
-        occupied_pos = set()
-        
-        # --- 사전 준비 ---
-        # 모든 AMR의 현재 위치를 집합으로 저장 (자율 주행 그룹용)
-        initial_amr_positions = {amr.pos for amr in self.amr_list.values()}
-
-        # AMR 그룹 분리: 제어 그룹(priority > 0) vs 자율 그룹(priority == 0)
+        # --- 1. AMR 그룹 분리 ---
         controlled_amrs = []
         free_amrs = []
         for amr in self.amr_list.values():
@@ -168,8 +162,10 @@ class ENV():
             else:
                 free_amrs.append(amr)
 
-        # --- 1. 교차로 제어 그룹 처리 (우선순위 기반) ---
-        # 이 그룹은 기존의 복잡한 충돌 해결 로직을 사용합니다.
+        # --- 2. 교차로 제어 그룹 이동 결정 및 실행 ---
+        controlled_signals = {}
+        occupied_pos = set()
+        
         sorted_controlled_amrs = sorted(controlled_amrs, key=lambda amr: amr.priority, reverse=True)
         pos_to_amr_id = {amr.pos: amr.id for amr in self.amr_list.values()}
 
@@ -177,44 +173,70 @@ class ENV():
             signal = amr_obj.control_buffer
             next_pos = (amr_obj.pos[0] + signal[0], amr_obj.pos[1] + signal[1])
 
-            # 스왑 충돌 감지
             if next_pos in pos_to_amr_id:
                 other_amr = self.amr_list[pos_to_amr_id[next_pos]]
-                other_next_pos = (other_amr.pos[0] + other_amr.control_buffer[0], other_amr.pos[1] + other_amr.control_buffer[1])
-                if other_next_pos == amr_obj.pos:
-                    final_signals[amr_obj.id] = (0, 0)
-                    occupied_pos.add(amr_obj.pos)
-                    continue
+                if other_amr in sorted_controlled_amrs:
+                    other_next_pos = (other_amr.pos[0] + other_amr.control_buffer[0], other_amr.pos[1] + other_amr.control_buffer[1])
+                    if other_next_pos == amr_obj.pos:
+                        controlled_signals[amr_obj.id] = (0, 0)
+                        occupied_pos.add(amr_obj.pos)
+                        continue
             
-            # 정면충돌 감지
             if next_pos in occupied_pos:
-                final_signals[amr_obj.id] = (0, 0)
+                controlled_signals[amr_obj.id] = (0, 0)
                 occupied_pos.add(amr_obj.pos)
                 continue
 
-            # 이동 확정
-            final_signals[amr_obj.id] = signal
+            controlled_signals[amr_obj.id] = signal
             occupied_pos.add(next_pos)
 
-        # --- 2. 자율 주행 그룹 처리 (단순 규칙 기반) ---
-        # 이 그룹은 다른 AMR의 '예상 경로'가 아닌 '현재 위치'만 봅니다.
+        for amr_obj in controlled_amrs:
+            signal_to_move = controlled_signals.get(amr_obj.id, (0, 0))
+            amr_obj.move(signal_to_move)
+
+        # --- 3. 자율 주행 그룹 이동 결정 및 실행 ---
+        # [수정] 데드락 교차로 진입 방지 로직 (set 처리)
         for amr_obj in free_amrs:
-            signal = amr_obj.control_buffer # == amr_obj.next_buffer
+            signal = amr_obj.control_buffer
             next_pos = (amr_obj.pos[0] + signal[0], amr_obj.pos[1] + signal[1])
 
-            # 규칙 1: 내 목표 위치에 '현재' 다른 AMR이 있는가?
-            # 규칙 2: 내 목표 위치가 다른 '제어 그룹' AMR의 목표 위치와 겹치는가?
-            if next_pos in initial_amr_positions or next_pos in occupied_pos:
-                final_signals[amr_obj.id] = (0, 0) # 겹치면 정지
-                occupied_pos.add(amr_obj.pos)
-            else:
-                final_signals[amr_obj.id] = signal # 안 겹치면 이동
-                occupied_pos.add(next_pos)
+            # 규칙 1: 다른 AMR의 현재 위치와 충돌하는가?
+            is_collision = False
+            for other_amr in self.amr_list.values():
+                if other_amr is not amr_obj and next_pos == other_amr.pos:
+                    is_collision = True
+                    break
+            if is_collision:
+                amr_obj.move((0, 0))
+                continue
 
-        # --- 3. 최종 이동 일괄 적용 ---
-        for amr_id, amr_obj in self.amr_list.items():
-            signal_to_move = final_signals.get(amr_id, (0, 0))
-            amr_obj.move(signal_to_move)
+            # 규칙 2: 데드락 교차로 진입을 방지하는가?
+            should_stop = False
+            target_intersection_id = None
+            for iid, I in self.intersections.items():
+                if next_pos in I.all_lane_coords:
+                    target_intersection_id = iid
+                    break
+            
+            if target_intersection_id:
+                # [수정] 현재 AMR이 속한 교차로들의 랭크 중 가장 높은 랭크(가장 낮은 숫자)를 선택
+                current_iids = amr_obj.current_intersection_id
+                if not current_iids:
+                    current_rank = math.inf
+                else:
+                    current_rank = min(self._inter_rank(iid) for iid in current_iids)
+
+                # 목표 교차로의 랭크
+                target_rank = self._inter_rank(target_intersection_id)
+
+                # 목표 교차로의 우선순위가 더 높으면(랭크 숫자가 더 작으면) 정지
+                if target_rank < current_rank:
+                    should_stop = True
+
+            if should_stop:
+                amr_obj.move((0, 0))
+            else:
+                amr_obj.move(signal)
 
     def _calculate_rewards_and_update_info(self, info_next):
         """
@@ -318,6 +340,7 @@ class ENV():
             for I in self.intersections.values():
                 if pos in I.all_lane_coords:
                     I.add_amr(amr_obj)
+                    amr_obj.current_intersection_id.add(I.id)  # [추가] 현재 속한 교차로 ID 갱신
 
         for I in self.intersections.values():
             I.check_deadlock()

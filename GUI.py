@@ -221,7 +221,8 @@ class GUI():
             default_color = (0, 0, 255)
 
             # [수정] deadlock_queue가 (iid, timestamp) 튜플을 포함하므로, iid만 추출하여 사용합니다.
-            for priority, (iid, amr_count, timestamp) in enumerate(self.env.deadlock_queue):
+            reversed_queue = reversed(list(enumerate(self.env.deadlock_queue)))
+            for priority, (iid, amr_count, timestamp) in reversed_queue:
                 intersection = self.env.intersections.get(iid)
                 if not intersection: continue
 

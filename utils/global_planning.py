@@ -5,6 +5,7 @@ import numpy as np
 
 import heapq, random
 from collections import defaultdict, deque
+from dataclasses import dataclass, field
 
 # A* Algorithm
 class AStar:
@@ -459,3 +460,375 @@ class BFS:
             if 0 <= nx < self.W and 0 <= ny < self.H and self.map[ny, nx] == 0:
                 neighbors.append((nx, ny))
         return neighbors
+    
+
+class AStar_for_CBS:
+    """ Low-level: Space-Time A* for CBS """
+    def __init__(self, map_data, start, goal, solution_for_cat):
+        self.map = map_data
+        self.start = start
+        self.goal = goal
+        self.height, self.width = map_data.shape
+        self.conflict_avoidance_table = self._build_cat(solution_for_cat)  # CAT: Conflict Avoidance Table
+
+    def _build_cat(self, solution):
+        """Tie-Breaking을 위한 충돌 회피 테이블(CAT)을 생성"""
+        cat = defaultdict(int)  # Key: (position, time) / Value: count of agents at that position and time
+        if not solution:
+            return cat
+
+        max_len = max(len(path) for path in solution.values()) if solution else 0
+        for t in range(max_len):
+            for path in solution.values():
+                pos = path[t] if t < len(path) else path[-1]
+                cat[(pos, t)] += 1
+        return cat
+
+    def _get_neighbors(self, pos):
+        x, y = pos
+        neighbors = []
+        # [수정] 5-way movement: wait (0,0) and 4 directions
+        for dx, dy in [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < self.width and 0 <= ny < self.height and self.map[ny][nx] == 0:
+                neighbors.append((nx, ny))
+        return neighbors
+
+    def _manhattan_distance(self, pos1, pos2):
+        return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
+
+    def find_path(self, constraints: Set):
+        # (f-value, tie-breaker, g-value, position, time, path)
+        open_list = [(self._manhattan_distance(self.start, self.goal), 0, 0, self.start, 0, [self.start])]
+        visited = set() # (position, time)
+
+        while open_list:
+            # [수정] f-value는 g(time) + h(heuristic) 입니다.
+            f, tie_breaker, g, current_pos, time, path = heapq.heappop(open_list)
+
+            if (current_pos, time) in visited: # Duplicate Detection
+                continue
+            visited.add((current_pos, time))
+
+            # [수정] A*는 GOAL을 pop했을 때가 최단 경로임을 보장합니다.
+            # "wait at goal" 제약 조건을 처리하기 위한 로직을 추가합니다.
+            if current_pos == self.goal:
+                max_time = time
+                for c_item, c_time in constraints:
+                    # c_item이 (x,y) 형태의 vertex이고, goal과 일치하는지 확인
+                    if c_item == self.goal:
+                        max_time = max(max_time, c_time)
+                # 제약시간까지 목표 지점에서 대기하는 경로를 만듭니다.
+                if time < max_time:
+                    path.extend([self.goal] * (max_time - time))
+                # 경로를 찾았으므로 반환합니다.
+                return path
+
+            for neighbor_pos in self._get_neighbors(current_pos):
+                next_time = time + 1
+
+                # [수정] 제약조건을 명시적으로 확인합니다.
+                # 1. Vertex constraint
+                vertex_constraint = (neighbor_pos, next_time)
+                if vertex_constraint in constraints:
+                    continue
+                
+                # 2. Edge constraint (swap)
+                edge_constraint = ((current_pos, neighbor_pos), time)
+                if edge_constraint in constraints:
+                    continue
+                
+                # [수정] A* f-value 계산
+                if (neighbor_pos, next_time) not in visited:
+                    new_path = path + [neighbor_pos]
+                    new_g = g + 1 # g-value는 시간(time)과 동일
+                    h = self._manhattan_distance(neighbor_pos, self.goal)
+                    new_f = new_g + h
+
+                    # Tie-Breaking Policy
+                    new_tie_breaker = self.conflict_avoidance_table.get((neighbor_pos, next_time), 0)
+                    heapq.heappush(open_list, (new_f, new_tie_breaker, new_g, neighbor_pos, next_time, new_path))
+        
+        # 경로를 찾지 못함
+        return None
+
+
+@dataclass(order=True)
+class CTNode:
+    """충돌 트리(CT)의 노드. 부모를 따라 제약조건을 수집하는 방식."""
+    cost: int
+    # Tie-Breaking을 위해 충돌 수를 두 번째 정렬 기준으로 추가
+    num_conflicts: int = field(compare=True)
+
+    node_id: int = field(compare=True)
+
+    solution: Dict[int, List[Tuple[int, int]]] = field(compare=False)
+    constraint: Optional[Tuple[int, Tuple, int]] = field(compare=False, default=None)
+    parent: Optional['CTNode'] = field(compare=False, default=None)
+
+class CBS:
+    """Conflict-Based Search (CBS) 알고리즘 구현 (메모리 효율적 방식)"""
+    def __init__(self, map_data: np.ndarray, agents: Dict[int, Dict[str, Tuple[int, int]]]):
+        self.map = map_data
+        self.agents = agents
+        self.agent_ids = list(agents.keys())
+
+    def _get_constraints_for_agent(self, node: CTNode, agent_id: int) -> Set:
+        """
+        [수정] CTNode의 부모를 재귀적으로 탐색하며 'loc'와 'time'만 추출합니다.
+        """
+        constraints = set()
+        curr = node
+        while curr is not None:
+            if curr.constraint and curr.constraint[0] == agent_id:
+                # constraint = (agent_id, loc, time)
+                # constraints set에는 (loc, time)을 추가
+                constraints.add((curr.constraint[1], curr.constraint[2]))
+            curr = curr.parent
+        return constraints
+
+    def solve(self, time_limit: float = 10.0) -> Optional[Dict[int, List[Tuple[int, int]]]]:
+        start_time = time.time()
+        open_list = []
+        initial_solution = {}
+
+        node_counter = 0
+
+        for agent_id in self.agent_ids:
+            start, goal = self.agents[agent_id]['start'], self.agents[agent_id]['goal']
+            planner = AStar_for_CBS(self.map, start, goal, {})
+            path = planner.find_path(set())
+            if path is None: 
+                print(f"Agent {agent_id} cannot find initial path.")
+                return None
+            initial_solution[agent_id] = path
+        
+        root = CTNode(
+            cost=self.calculate_sic(initial_solution),
+            num_conflicts=self.find_all_conflicts(initial_solution),
+            solution=initial_solution,
+            node_id=node_counter
+        )
+        node_counter += 1
+
+        heapq.heappush(open_list, root)
+        best_node_so_far = root
+
+        while open_list:
+            elapsed_time = time.time() - start_time
+            if elapsed_time > time_limit:
+                print(f"\n!!! CBS Timeout after {elapsed_time:.2f} seconds. !!!")
+                # 제한 시간을 초과하면, 현재까지 찾은 가장 좋은 해를 반환
+                print(f"    > Returning best found solution with {best_node_so_far.num_conflicts} conflicts.\n")
+                return self.pad_paths(best_node_so_far.solution)
+
+            P = heapq.heappop(open_list)
+
+            # [디버깅]
+            # print(f"Popped node {P.node_id}: cost={P.cost}, conflicts={P.num_conflicts}")
+
+            if P.num_conflicts < best_node_so_far.num_conflicts:
+                best_node_so_far = P
+
+            conflict = self.find_first_conflict(P.solution)
+
+            if conflict is None:
+                print(f"\n[CBS Solve] Optimal solution found in {time.time() - start_time:.2f} seconds.")
+                return self.pad_paths(P.solution)
+
+            agent1, agent2, loc, conflict_time = conflict
+            # [디버깅]
+            # print(f"  > Found conflict: ({agent1}, {agent2}) at {loc}, t={conflict_time}")
+
+            for agent_to_constrain in [agent1, agent2]:
+                
+                # [수정] 제약조건 생성 로직을 명확히 함
+                # loc는 (x,y) (vertex) 또는 ((x1,y1), (x2,y2)) (edge)일 수 있습니다.
+                # Edge conflict인 경우, 해당 agent의 이동 (pos1_t -> pos1_t_plus_1)을 loc로 받습니다.
+                # 이 로직은 find_first_conflict의 반환 값에 의존합니다.
+                
+                # agent1, agent2, loc, conflict_time = conflict
+                # find_first_conflict가 edge conflict시 (a1, a2, (a1_from, a1_to), t)를 반환한다고 가정
+                
+                new_constraint_loc = loc
+                
+                # [수정] Edge conflict의 경우, 각 agent에 맞는 edge constraint를 만들어야 합니다.
+                if isinstance(loc, tuple) and len(loc) == 2 and isinstance(loc[0], tuple):
+                    # loc = (pos1_t, pos1_t_plus_1)
+                    # A*는 (current_pos, neighbor_pos)를 확인합니다.
+                    # conflict는 agent1과 agent2의 스왑입니다.
+                    # agent1의 이동: loc[0] -> loc[1]
+                    # agent2의 이동: loc[1] -> loc[0]
+                    if agent_to_constrain == agent1:
+                        new_constraint_loc = (loc[0], loc[1])
+                    else: # agent_to_constrain == agent2
+                        new_constraint_loc = (loc[1], loc[0])
+
+                new_constraint = (agent_to_constrain, new_constraint_loc, conflict_time)
+                
+                # 이 에이전트에 대한 모든 제약조건을 부모로부터 수집
+                agent_constraints = self._get_constraints_for_agent(P, agent_to_constrain)
+                
+                # 새 제약조건 추가
+                agent_constraints.add((new_constraint[1], new_constraint[2]))
+
+                start, goal = self.agents[agent_to_constrain]['start'], self.agents[agent_to_constrain]['goal']
+
+                # Tie-Breaking을 위해 다른 에이전트들의 경로를 전달
+                other_agents_solution = {aid: p for aid, p in P.solution.items() if aid != agent_to_constrain}
+                planner = AStar_for_CBS(self.map, start, goal, other_agents_solution)
+                
+                new_path = planner.find_path(agent_constraints)
+
+                if new_path is not None:
+                    new_solution = P.solution.copy()
+                    new_solution[agent_to_constrain] = new_path
+                    
+                    new_cost = self.calculate_sic(new_solution)
+                    new_num_conflicts = self.find_all_conflicts(new_solution)
+
+                    child_node = CTNode(
+                        cost=new_cost,
+                        num_conflicts=new_num_conflicts,
+                        solution=new_solution,
+                        constraint=new_constraint,
+                        parent=P,
+                        node_id=node_counter
+                    )
+
+
+
+
+
+
+
+
+                    # [디버깅]
+                    # print(f"    > Creating child {node_counter}: constraint=({new_constraint[0]}, {new_constraint[1]}, {new_constraint[2]}), cost={new_cost}, conflicts={new_num_conflicts}")
+
+                    node_counter += 1
+                    heapq.heappush(open_list, child_node)
+                # else:
+                    # [디버깅]
+                    # print(f"    > Child for agent {agent_to_constrain} found NO PATH. Pruning branch.")
+
+        print(f"\n[CBS Solve] No solution found after {time.time() - start_time:.2f} seconds.")
+        return None
+
+    def find_first_conflict(self, solution: Dict[int, List[Tuple[int, int]]]):
+        max_len = max(len(p) for p in solution.values()) if solution else 0
+        
+        # [수정] 경로는 0-indexed이므로 max_len까지 순회 (padding 감안)
+        for t in range(max_len):
+            positions_at_t = defaultdict(list)
+            for agent_id, path in solution.items():
+                pos = path[t] if t < len(path) else path[-1]
+                positions_at_t[pos].append(agent_id)
+
+            for pos, agents in positions_at_t.items():  # vertex conflict
+                if len(agents) > 1:
+                    return (agents[0], agents[1], pos, t) # (A1, A2, (x,y), t)
+
+            # Edge conflict (swaps)
+            # [수정] Edge conflict는 t -> t+1 이동에서 발생합니다.
+            # t+1이 max_len을 넘지 않도록 range(max_len - 1)까지 확인
+            if t < max_len - 1:
+                for agent1 in self.agent_ids:
+                    for agent2 in self.agent_ids:
+                        if agent1 >= agent2: continue
+                        
+                        path1, path2 = solution[agent1], solution[agent2]
+                        
+                        pos1_t = path1[t] if t < len(path1) else path1[-1]
+                        pos1_t_plus_1 = path1[t+1] if t + 1 < len(path1) else path1[-1]
+                        
+                        pos2_t = path2[t] if t < len(path2) else path2[-1]
+                        pos2_t_plus_1 = path2[t+1] if t + 1 < len(path2) else path2[-1]
+
+                        # Swap
+                        if pos1_t == pos2_t_plus_1 and pos2_t == pos1_t_plus_1:
+                            # (A1, A2, (A1's move), time)
+                            return (agent1, agent2, (pos1_t, pos1_t_plus_1), t)
+        return None
+
+    def find_all_conflicts(self, solution: Dict[int, List[Tuple[int, int]]]) -> int:
+        NumOfConflicts = 0
+        max_len = max(len(p) for p in solution.values()) if solution else 0
+        
+        for t in range(max_len):
+            positions_at_t = defaultdict(list)
+            for agent_id, path in solution.items():
+                pos = path[t] if t < len(path) else path[-1]
+                positions_at_t[pos].append(agent_id)
+            
+            for pos, agents in positions_at_t.items():
+                if len(agents) > 1:
+                    from itertools import combinations
+                    for a1, a2 in combinations(agents, 2):
+                        NumOfConflicts += 1
+            
+            if t < max_len - 1:
+                for agent1 in self.agent_ids:
+                    for agent2 in self.agent_ids:
+                        if agent1 >= agent2: continue
+                        
+                        path1, path2 = solution[agent1], solution[agent2]
+                        
+                        pos1_t = path1[t] if t < len(path1) else path1[-1]
+                        pos1_t_plus_1 = path1[t+1] if t + 1 < len(path1) else path1[-1]
+                        
+                        pos2_t = path2[t] if t < len(path2) else path2[-1]
+                        pos2_t_plus_1 = path2[t+1] if t + 1 < len(path2) else path2[-1]
+                        
+                        if pos1_t == pos2_t_plus_1 and pos2_t == pos1_t_plus_1:
+                            NumOfConflicts += 1
+
+        return NumOfConflicts
+
+    def calculate_sic(self, solution: Dict[int, List[Tuple[int, int]]]) -> int:
+        """
+        [수정] Sum-of-Costs는 목표에 도달한 '시간'의 합입니다.
+        경로 길이가 L이면, t=0, 1, ..., L-1 이므로 비용은 L-1 입니다.
+        하지만, A*가 목표 지점에서 제약 때문에 더 기다리도록 경로를 반환할 수 있습니다.
+        (예: 10초짜리 경로지만, 제약 때문에 t=12까지 기다리면, 경로는 13개가 됨)
+        정확한 비용은 "목표에 도달한 시간"입니다.
+        
+        A*가 반환하는 경로는 (start, ... , goal, [goal, ...]) 형태입니다.
+        비용은 (경로의 길이 - 1)이 맞습니다.
+        """
+        cost = 0
+        for path in solution.values():
+            if not path: continue
+            # 경로의 마지막이 목표지점이라고 가정
+            goal = path[-1]
+            last_goal_time = 0
+            for t, pos in enumerate(path):
+                if pos == goal:
+                    last_goal_time = t
+            
+            # 만약 경로가 (start) -> (goal) [t=1] -> (goal) [t=2] 라면 len=3, cost=2.
+            # 하지만 (start) -> (other) [t=1] -> (goal) [t=2] 라면 len=3, cost=2.
+            # (start) -> (goal) [t=1] -> (other) [t=2] -> (goal) [t=3] 라면 len=4, cost=3.
+            
+            # [cite_start]논문에 따르면[cite: 118], 비용은 "목표에 마지막으로 도달한 시간"입니다.
+            # A*가 반환한 경로의 마지막은 항상 목표이므로, len(path) - 1이 그 시간입니다.
+            cost += len(path) - 1
+        return cost
+
+
+    def pad_paths(self, solution: Dict[int, List[Tuple[int, int]]]):
+        max_len = max(len(path) for path in solution.values()) if solution else 0
+        padded_solution = {}
+        for agent_id, path in solution.items():
+            if not path: # 경로가 없는 비상상황
+                start_pos = self.agents[agent_id]['start']
+                padded_solution[agent_id] = [start_pos] * max_len
+                continue
+                
+            last_pos = path[-1]
+            padded_path = path + [last_pos] * (max_len - len(path))
+            padded_solution[agent_id] = padded_path
+        return padded_solution
+
+
+# ... (Commented out old implementations) ...
