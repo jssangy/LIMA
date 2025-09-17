@@ -20,298 +20,247 @@ class Intersection:
         self.all_lane_coords.add((self.center_x, self.center_y))
 
         # 이벤트 기반 AMR object 추적
-        self.amrs_in_intersection = set()  # 교차로 내 AMR만 추적
-        self.amrs_in_lanes = {'N': [], 'E': [], 'S': [], 'W': []}
-        self.center_amr = None
-        self.is_deadlock = False
-
-        self.ingoing = {"N": False, "E": False, "S": False, "W": False}
-        self.outgoing = {"N": False, "E": False, "S": False, "W": False}
-
-    def reset(self):
-        self.amrs_in_intersection.clear()
-        self.amrs_in_lanes = {'N': [], 'E': [], 'S': [], 'W': []}
-        self.center_amr = None
-        self.ingoing = {"N": False, "E": False, "S": False, "W": False}
-        self.outgoing = {"N": False, "E": False, "S": False, "W": False}
+        self.amr_intent_map = {}            # [수정] {amr_id: {'amr_obj': amr, 'current_arm': 'N', 'exit_arm': 'S'}}
         self.is_deadlock = False
         self.swap_conflict_arms = {'N': False, 'E': False, 'S': False, 'W': False}
 
-    def add_amr(self, amr_object):
-        nxt = amr_object.next_buffer
-        self.amrs_in_intersection.add(amr_object)
+    def reset(self):
+        self.amr_intent_map = {}
+        self.is_deadlock = False
+        self.swap_conflict_arms = {'N': False, 'E': False, 'S': False, 'W': False}
 
-        if amr_object.pos == (self.center_x, self.center_y):
-            self.center_amr = amr_object
-        else:        
-            cx, cy = self.center_x, self.center_y
-            for direction, coords in self.lane_coords.items():
-                if amr_object.pos in coords:
-                    self.amrs_in_lanes[direction].append(amr_object)
-                    curd = (np.sign(amr_object.pos[0] - cx), np.sign(amr_object.pos[1] - cy))
+    def register_amr(self, amr):
+        if amr.id in self.amr_intent_map: return  # 이미 등록된 AMR
+        
+        path = amr.path
+        if not path: return
 
-                    if curd == nxt:
-                        self.outgoing[direction] = True
-                    elif curd == (-nxt[0], -nxt[1]):
-                        self.ingoing[direction] = True
-                    break
+        current_arm_direction = None
+        exit_arm_direction = None
+
+        for pos in path:
+            if pos == (self.center_x, self.center_y):
+                next_pos_index = path.index(pos) + 1
+                exit_cell = path[next_pos_index]
+                break
+        
+        for direction, coords in self.lane_coords.items():
+            if amr.pos == (self.center_x, self.center_y):
+                current_arm_direction = 'C'  # 중앙에 위치한 경우
+            if amr.pos in coords:
+                current_arm_direction = direction
+            if exit_cell in coords:
+                exit_arm_direction = direction
+
+        if current_arm_direction and exit_arm_direction:
+            self.amr_intent_map[amr.id] = {
+                'amr_obj': amr,
+                'current_arm': current_arm_direction,
+                'exit_arm': exit_arm_direction,
+            }
+            self._calculate_buffer_inside(amr, current_arm_direction, exit_arm_direction)
+
+
+    def update_amr_state(self, amr):
+        if amr.id  not in self.amr_intent_map: return
+        
+        if amr.pos == (self.center_x, self.center_y):
+            self.center_amr = amr
+            return
+        
+        for direction, coords in self.lane_coords.items():
+            if amr.pos == (self.center_x, self.center_y):
+                self.amr_intent_map[amr.id]['current_arm'] = 'C'  # 중앙에 위치한 경우
+                self._calculate_buffer_inside(amr, self.amr_intent_map[amr.id]['current_arm'], self.amr_intent_map[amr.id]['exit_arm'])
+                return
+            if amr.pos in coords:
+                self.amr_intent_map[amr.id]['current_arm'] = direction
+                self._calculate_buffer_inside(amr, self.amr_intent_map[amr.id]['current_arm'], self.amr_intent_map[amr.id]['exit_arm'])
+                return
+            
+    def unregister_amr(self, amr):
+        if amr.id in self.amr_intent_map:
+            del self.amr_intent_map[amr.id]
+
+    def _calculate_buffer_inside(self, amr, current_arm, exit_arm):
+        """
+        [신규] 교차로 내부의 AMR을 위한 next_buffer 계산 로직.
+        (기존 AMR._recover_inside_intersection 로직을 가져와 수정)
+        """
+        # --- 경로 이탈 시 복귀 로직 ---
+        # 잘못된 팔에 있다면, 무조건 교차로 중앙으로 이동
+        if current_arm != 'C' and current_arm != exit_arm:
+            center_pos = (self.center_x, self.center_y)
+            dx = np.sign(center_pos[0] - amr.pos[0])
+            dy = np.sign(center_pos[1] - amr.pos[1])
+            amr.next_buffer = (dx, dy)
 
     def get_state(self):
+        """관측 상태 생성: 오직 amr_intent_map의 정보만을 사용합니다."""
         state_vector = []
-        center = (self.center_x, self.center_y)
+        center_pos = (self.center_x, self.center_y)
 
-        closest_cfg = {
-            'N': ('y',  max),  # y가 가장 큰(아래쪽)
-            'E': ('x',  min),  # x가 가장 작은(왼쪽)
-            'S': ('y',  min),  # y가 가장 작은(위쪽)
-            'W': ('x',  max),  # x가 가장 큰(오른쪽)
-        }
+        amrs_by_arm = {d: [] for d in ['N', 'E', 'S', 'W', 'C']}
+        for data in self.amr_intent_map.values():
+            arm = data['current_arm']
+            if arm: amrs_by_arm[arm].append(data)
 
         for d in ['N', 'E', 'S', 'W']:
-            amrs = self.amrs_in_lanes[d]  # [AMR,...]
-            goal_onehot = [0, 0, 0, 0]
-            distance = 0
+            arm_data = amrs_by_arm[d]
+            goal_onehot, distance, is_ingoing = [0, 0, 0, 0], 0.0, 0.0
 
-            if amrs:
-                axis, sel = closest_cfg[d]
-                key_fn = (lambda a: a.pos[1]) if axis == 'y' else (lambda a: a.pos[0])
-                closest_amr = sel(amrs, key=key_fn)
-
-                path = closest_amr.path
-                if path:
-                    exit_dir = self._get_exit_direction(path)
-                    idx = DIR2IDX.get(exit_dir)
-                    if idx is not None: goal_onehot[idx] = 1
-
-                distance = abs(closest_amr.pos[0] - center[0]) + abs(closest_amr.pos[1] - center[1])
-
-            ingoing = 1.0 if self.ingoing[d] else 0.0
+            if arm_data:
+                closest_data = min(arm_data, key=lambda data: self._mdist(data['amr_obj'].pos, center_pos))
+                exit_dir = closest_data['exit_arm']
+                idx = DIR2IDX.get(exit_dir)
+                if idx is not None: goal_onehot[idx] = 1
+                distance = self._mdist(closest_data['amr_obj'].pos, center_pos)
+                if exit_dir != d: is_ingoing = 1.0
 
             state_vector.extend(goal_onehot)
             state_vector.append(distance)
-            state_vector.append(ingoing)
+            state_vector.append(is_ingoing)
 
         center_goal_onehot = [0, 0, 0, 0]
-        if self.center_amr:
-            path = self.center_amr.path
-            if path:
-                exit_dir = self._get_exit_direction(path)
-                idx = DIR2IDX.get(exit_dir)
-                if idx is not None: center_goal_onehot[idx] = 1
-
+        if amrs_by_arm['C']:
+            center_data = amrs_by_arm['C'][0]
+            exit_dir = center_data['exit_arm']
+            idx = DIR2IDX.get(exit_dir)
+            if idx is not None: center_goal_onehot[idx] = 1
+        
         state_vector.extend(center_goal_onehot)
         return np.array(state_vector, dtype=np.float32)
 
     def action_control(self, action, priority):
-        if self.center_amr is None:
-            return
-        
-        base_priority = priority
-        # 1순위 그룹 (밀려나는 체인): P + 0.8 ~
-        chain_base_priority = base_priority + 0.8
-        # 2순위 (밀려나는 중앙 AMR): P + 0.6
-        center_priority = base_priority + 0.6
-        
-        move_map = {0:(0,-1),1:(1,0),2:(0,1),3:(-1,0)}
+        """RL 에이전트의 행동을 수행합니다."""
+        center_data = next((data for data in self.amr_intent_map.values() if data['current_arm'] == 'C'), None)
+        if not center_data: return
+
+        center_amr = center_data['amr_obj']
+        chain_base_priority, center_priority = priority + 0.8, priority + 0.6
+        move_map = {0:(0,-1), 1:(1,0), 2:(0,1), 3:(-1,0)}
         dir_map  = {0:'N', 1:'E', 2:'S', 3:'W'}
         
         target_dir = dir_map.get(action)
         chain = self._collect_chain_near_to_far(target_dir)
         move_vec = move_map[action]
 
-        # 체인은 안쪽->바깥쪽 순서이므로, 인덱스가 클수록 바깥쪽 AMR.
-        # 바깥쪽 AMR이 더 높은 우선순위를 갖도록 인덱스를 활용.
         for i, amr_obj in enumerate(chain):
             amr_obj.control_buffer = move_vec
-            amr_obj.priority = max(amr_obj.priority, chain_base_priority + i * 0.001)    # 우선순위 1순위
+            amr_obj.priority = max(amr_obj.priority, chain_base_priority + i * 0.001)
 
-        # 중앙 AMR도 동일한 방향으로 이동하도록 지시
-        self.center_amr.control_buffer = move_vec
-        self.center_amr.priority = max(self.center_amr.priority, center_priority)   # 우선순위 2순위
+        center_amr.control_buffer = move_vec
+        center_amr.priority = max(center_amr.priority, center_priority)
 
     def check_deadlock(self):
-        amrs_in_intersection = list(self.amrs_in_intersection)
-        if len(amrs_in_intersection) < 2:
-            return False
+        """
+        [전면 수정] 모든 종류의 데드락을 조사하여 swap_conflict_arms를 종합적으로 업데이트합니다.
+        """
+        # 1. 상태 초기화
+        self.is_deadlock = False
+        for d in ['N', 'E', 'S', 'W']: self.swap_conflict_arms[d] = False
+        
+        if len(self.amr_intent_map) < 2: return False
 
-        # 모든 AMR 쌍에 대해 데드락 검사 (O(N^2))
-        for i in range(len(amrs_in_intersection)):
-            for j in range(i + 1, len(amrs_in_intersection)):
-                amr1 = amrs_in_intersection[i]
-                amr2 = amrs_in_intersection[j]
+        # 2. 데이터 준비: amr_intent_map을 기반으로 그룹 분류
+        amrs_by_arm = {d: {'ingoing': [], 'outgoing': []} for d in ['N', 'E', 'S', 'W']}
+        center_data = None
+        intent_list = list(self.amr_intent_map.values())
 
-                # 1. 즉각적인 스왑 충돌 검사
-                is_immediate_swap = self._check_immediate_swap(amr1, amr2)
+        for data in intent_list:
+            current = data['current_arm']
+            exit_arm = data['exit_arm']
+            
+            if current == 'C':
+                center_data = data
+                continue
+            
+            if current in amrs_by_arm:
+                if current != exit_arm:
+                    amrs_by_arm[current]['ingoing'].append(data)
+                else:
+                    amrs_by_arm[current]['outgoing'].append(data)
+
+        # 3. 모든 데드락 유형 검사 (즉시 반환하지 않음)
+        deadlock_found_this_step = False
+        
+        # 유형 A: 중앙 AMR의 진출로가 막힌 경우
+        if center_data:
+            target_exit_arm = center_data['exit_arm']
+            if amrs_by_arm.get(target_exit_arm, {}).get('ingoing'):
+                deadlock_found_this_step = True
+                self.swap_conflict_arms[target_exit_arm] = True
+
+        # 유형 B: 팔 내부에서 진출 차량이 진입 차량에 의해 갇힌 경우 (요청하신 로직)
+        center_pos = (self.center_x, self.center_y)
+        for arm, groups in amrs_by_arm.items():
+            ingoing_data = groups['ingoing']
+            outgoing_data = groups['outgoing']
+
+            if not (ingoing_data and outgoing_data): continue
+
+            closest_out_dist = min(self._mdist(d['amr_obj'].pos, center_pos) for d in outgoing_data)
+            farthest_in_dist = max(self._mdist(d['amr_obj'].pos, center_pos) for d in ingoing_data)
+
+            if closest_out_dist < farthest_in_dist:
+                deadlock_found_this_step = True
+                self.swap_conflict_arms[arm] = True
+        
+        # 유형 C: 팔과 팔 사이의 의도 충돌 (교차 또는 대립)
+        for i in range(len(intent_list)):
+            for j in range(i + 1, len(intent_list)):
+                data1, data2 = intent_list[i], intent_list[j]
+                if data1['current_arm'] == 'C' or data2['current_arm'] == 'C': continue
                 
-                # 2. 경로 기반 스왑 충돌 검사
-                is_path_conflict = self._check_swapping_path(amr1, amr2) or self._check_swapping_path(amr2, amr1)
+                entry1, exit1 = data1['current_arm'], data1['exit_arm']
+                entry2, exit2 = data2['current_arm'], data2['exit_arm']
 
-                if is_immediate_swap or is_path_conflict:
-                    self.is_deadlock = True
-                    
-                    # 이 스왑이 어떤 팔(arm)과 관련 있는지 식별하여 기록
-                    for d in ['N', 'E', 'S', 'W']:
-                        if amr1.pos in self.lane_coords[d] or amr2.pos in self.lane_coords[d]:
-                            self.swap_conflict_arms[d] = True
-                    
-                    # 데드락이 하나라도 발견되면 즉시 종료
-                    return True
+                if (entry1 == exit2 and entry2 == exit1) or (entry1 == entry2 and exit1 == exit2):
+                    deadlock_found_this_step = True
+                    self.swap_conflict_arms[entry1] = True
+                    self.swap_conflict_arms[entry2] = True
 
-        # 루프를 모두 통과했다면 데드락이 없는 것
-        return False
+        # 4. 최종 결과 설정
+        self.is_deadlock = deadlock_found_this_step
+        return self.is_deadlock
 
-    def _check_immediate_swap(self, amr1, amr2):
-        """
-        [신규] A의 다음 위치가 B의 현재 위치이고, B의 다음 위치가 A의 현재 위치인지 확인합니다.
-        """
-        move1 = amr1.next_buffer
-        move2 = amr2.next_buffer
-
-        pos1 = amr1.pos
-        pos2 = amr2.pos
-
-        next_pos1 = (pos1[0] + move1[0], pos1[1] + move1[1])
-        next_pos2 = (pos2[0] + move2[0], pos2[1] + move2[1])
-
-        # 스와핑 조건 확인
-        return next_pos1 == pos2 and next_pos2 == pos1
-
-    def _check_swapping_path(self, amr1, amr2):
-        """
-        [신규] A(amr1)의 경로에 B(amr2)의 위치가 있고, 그 경로의 일부를 뒤집은 것이 B의 경로에 포함되는지 확인합니다.
-        """
-        path1 = amr1.path
-        path2 = amr2.path
-        if not path1 or not path2:
-            return False
-
-        pos2 = amr2.pos
-
-        # A의 경로에서 B의 현재 위치 인덱스 찾기
-        try:
-            index2_in_1 = path1.index(pos2)
-        except ValueError:
-            return False
-
-        # A의 현재 위치 인덱스
-        current_index1 = amr1.path_cursor
-
-        # A의 현재 위치가 B의 위치보다 앞에 있어야 경로 스왑 가능
-        if current_index1 >= index2_in_1:
-            return False
-
-        # A의 경로에서 스왑을 검사할 구간 추출: (A의 다음 위치)부터 (B의 이전 위치)까지
-        sub_path1 = path1[current_index1 + 1 : index2_in_1]
-        if not sub_path1:
-            return False
-        
-        reversed_sub_path1 = sub_path1[::-1]
-        L = len(reversed_sub_path1)
-
-        # B의 경로에서 스왑 구간이 포함되는지 확인
-        if len(path2) < L:
-            return False
-        
-        for i in range(len(path2) - L + 1):
-            if path2[i:i + L] == reversed_sub_path1:
-                return True
-        
-        return False
-
-    
     def resolve_all_conflicts(self, priority):
-        eps = 1e-3
-        base_force  = priority + 0.40   # Case3: 강제 inward tier
-
-        center = (self.center_x, self.center_y)
-
-        def mdist(p):
-            return abs(p[0] - center[0]) + abs(p[1] - center[1])
-
-        def sort_close_first(amrs):
-            return sorted(amrs, key=lambda a: (mdist(a.pos), a.id))
+        """데드락으로 판정된 팔의 AMR들을 중앙으로 당깁니다."""
+        eps, base_force = 1e-3, priority + 0.40
+        center_pos = (self.center_x, self.center_y)
 
         for d in ['N', 'E', 'S', 'W']:
-            arm_amrs = list(self.amrs_in_lanes.get(d, []))
-            if len(arm_amrs) < 2:
-                continue
-
             if self.swap_conflict_arms[d]:
+                arm_amrs = [data['amr_obj'] for data in self.amr_intent_map.values() if data['current_arm'] == d]
+                if not arm_amrs: continue
+
                 v_in = self._dir_vec(d, inward=True)
-                ordered_all = sort_close_first(arm_amrs)
-                n = len(ordered_all)
-                for i, amr in enumerate(ordered_all):
+                ordered_amrs = sorted(arm_amrs, key=lambda a: (self._mdist(a.pos, center_pos), a.id))
+                n = len(ordered_amrs)
+                for i, amr in enumerate(ordered_amrs):
                     amr.control_buffer = v_in
                     amr.priority = max(amr.priority, base_force + (n - 1 - i) * eps)
-                continue
-
-
-    def _collect_chain_near_to_far(self, d: str):
-        """
-        체인에 엮인 AMR 객체 목록을 반환
-        """
-        cells = self.lane_coords.get(d, [])  # 반드시 center→outside 순서의 '리스트'여야 함
-        pos2amrs = {a.pos: a for a in self.amrs_in_lanes.get(d, [])}
-
-        chain = []
-        started = False
-        for p in cells:
-            if not started:
-                if p in pos2amrs:
-                    chain.append(pos2amrs[p])
-                    started = True
-            else:
-                if p in pos2amrs:
-                    chain.append(pos2amrs[p])
-                else:
-                    break
-        return chain
-
-    def _get_exit_direction(self, path):
-        center_node = (self.center_x, self.center_y)
-        if center_node in path:
-            center_index = path.index(center_node)
-            exit_node = path[center_index + 1]
-            return self._coords_to_direction(exit_node)
-        else:
-            return self._coords_to_direction(path[0])
-        
-    def _coords_to_direction(self, coords):
-        for direction, lane_coords in self.lane_coords.items():
-            if coords in lane_coords:
-                return direction
-
-    def _back_action_index_from_prev(self):
-        if self.center_amr is None:
-            return None
-        cur = (self.center_x, self.center_y)
-        prev = self.center_amr.prev_pos
-
-        # prev→cur로 들어왔으니, 그 반대가 '뒤로가기'
-        vx, vy = cur[0]-prev[0], cur[1]-prev[1]
-        back_vec = (-vx, -vy)
-        vec2idx = {(0,-1):0,(1,0):1,(0,1):2,(-1,0):3}
-        return vec2idx.get(back_vec)
 
     def calculate_action_mask(self, deadlock_queue):
-        # 중앙 AMR 없으면 전부 금지
-        if self.center_amr is None:
-            return np.zeros(4, dtype=np.bool_)
+        """RL 에이전트가 취할 수 있는 행동을 마스킹합니다."""
+        center_data = next((data for data in self.amr_intent_map.values() if data['current_arm'] == 'C'), None)
+        if not center_data: return np.zeros(4, dtype=np.bool_)
 
-        mask = np.ones(4, dtype=np.bool_)  # N E S W
+        mask = np.ones(4, dtype=np.bool_)
+        center_amr = center_data['amr_obj']
+        
+        # 1. 뒤로가기 금지
+        back_vec = (center_amr.pos[0] - center_amr.prev_pos[0], center_amr.pos[1] - center_amr.prev_pos[1])
+        vec2idx = {(0,-1):0, (1,0):1, (0,1):2, (-1,0):3}
+        back_idx = vec2idx.get(back_vec)
+        if back_idx is not None: mask[back_idx] = False
 
-        # 1) 뒤로가기 금지 (기존 로직)
-        back_idx = self._back_action_index_from_prev()
-        if back_idx is not None and 0 <= back_idx < 4:
-            mask[back_idx] = False
-
-        # 2) 용량이 가득 찬 방향으로 이동 금지
+        # 2. 꽉 찬 팔로 이동 금지
         for direction, action_idx in DIR2IDX.items():
             if not mask[action_idx]: continue
             lane_capacity = len(self.lane_coords.get(direction, []))
-            current_occupancy = len(self.amrs_in_lanes.get(direction, []))
-            if current_occupancy >= lane_capacity:
-                mask[action_idx] = False
+            current_occupancy = sum(1 for data in self.amr_intent_map.values() if data['current_arm'] == direction)
+            if current_occupancy >= lane_capacity: mask[action_idx] = False
 
         # 3) 우선순위 규칙에 따른 마스킹
         if not deadlock_queue:
@@ -340,7 +289,51 @@ class Intersection:
             if neighbor_rank < current_rank:
                 mask[action_idx] = False
         
-        return mask
+        return mask       
+
+
+    def _collect_chain_near_to_far(self, d: str):
+        if d not in self.lane_coords: return []
+        amrs_on_arm = [data['amr_obj'] for data in self.amr_intent_map.values() if data['current_arm'] == d]
+        if not amrs_on_arm: return []
+        
+        pos2amr = {a.pos: a for a in amrs_on_arm}
+        chain, started = [], False
+        for p in self.lane_coords[d]:
+            if p in pos2amr:
+                if not started: started = True
+                chain.append(pos2amr[p])
+            elif started: break
+        return chain
+
+    def _get_exit_direction(self, path):
+        center_node = (self.center_x, self.center_y)
+        if center_node in path:
+            center_index = path.index(center_node)
+            exit_node = path[center_index + 1]
+            return self._coords_to_direction(exit_node)
+        else:
+            return self._coords_to_direction(path[0])
+        
+    def _coords_to_direction(self, coords):
+        for direction, lane_coords in self.lane_coords.items():
+            if coords in lane_coords:
+                return direction
+
+    def _back_action_index_from_prev(self):
+        if self.center_amr is None:
+            return None
+        cur = (self.center_x, self.center_y)
+        prev = self.center_amr.prev_pos
+
+        # prev→cur로 들어왔으니, 그 반대가 '뒤로가기'
+        vx, vy = cur[0]-prev[0], cur[1]-prev[1]
+        back_vec = (-vx, -vy)
+        vec2idx = {(0,-1):0,(1,0):1,(0,1):2,(-1,0):3}
+        return vec2idx.get(back_vec)
+
+    def _mdist(self, p1, p2):
+        return abs(p1[0]-p2[0]) + abs(p1[1]-p2[1])
 
     def _dir_vec(self, d: str, inward: bool = False):
         """

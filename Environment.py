@@ -54,6 +54,7 @@ class ENV():
         self.use_rl = False
         self.rl_policy = None
         self.completed_amr_steps = []
+        self.amr_prev_intersection_map = {}
 
     def reset(self):        
         self.time = 0
@@ -68,6 +69,7 @@ class ENV():
         obs, info = self.generate_observation()
         self.prev_deadlock_map: dict[str, bool] = {}
         self.completed_amr_steps.clear()
+        self.amr_prev_intersection_map.clear()
 
         return obs, info
 
@@ -118,10 +120,6 @@ class ENV():
         - 교차로 최신화(_update_intersections_state)
         - 상태/마스크/푸시아웃 플래그 계산만 수행
         """
-        for amr in self.amr_list.values():
-            amr.update_next_buffer(self.map)
-            amr.control_buffer = amr.next_buffer
-
         # 1. 교차로 상태 최신화
         self._update_intersections_state()
 
@@ -139,10 +137,17 @@ class ENV():
         return obs, info
     
     def _get_actions_to_apply(self, actions, obs_now, info_now, train):
+        """
+        [수정] 'center_amr' 대신 'amr_intent_map'을 확인하여 중앙 AMR 존재 여부를 판단합니다.
+        """
         act_to_apply = dict(actions)
         if (not train) and self.use_rl and self.rl_policy:
             for iid, meta in info_now.items():
-                if isinstance(meta, dict) and meta.get("is_deadlock", False) and self.intersections[iid].center_amr and iid not in act_to_apply:
+                # 중앙에 AMR이 있는지 확인하는 로직 수정
+                intersection = self.intersections[iid]
+                has_center_amr = any(data['current_arm'] == 'C' for data in intersection.amr_intent_map.values())
+
+                if isinstance(meta, dict) and meta.get("is_deadlock", False) and has_center_amr and iid not in act_to_apply:
                     action_mask = meta.get("action_mask")
                     # obs_now[iid]는 state, action_mask 등을 포함한 딕셔너리이므로 state만 전달
                     rl_action = int(self.rl_policy(obs_now[iid], action_mask))
@@ -298,7 +303,7 @@ class ENV():
             is_deadlocked = bool(meta.get("is_deadlock", False))
             
             if is_deadlocked:
-                num_amrs = len(self.intersections[iid].amrs_in_intersection)
+                num_amrs = len(self.intersections[iid].amr_intent_map)
                 if iid in queue_map:
                     # 기존 데드락: AMR 수만 업데이트하고, 발생 시간은 유지
                     _, _, timestamp = queue_map[iid]
@@ -332,18 +337,46 @@ class ENV():
             return math.inf
     
     def _update_intersections_state(self):
-        for I in self.intersections.values():
-            I.reset()
+        """
+        [전면 수정] AMR의 이동에 따른 교차로 진입/갱신/탈출 이벤트를 감지하고 처리합니다.
+        """
+        amr_current_intersection_map = {}
+        # 1. 모든 AMR의 현재 소속 교차로를 파악하고, AMR 객체의 상태도 업데이트
+        for amr in self.amr_list.values():
+            amr.current_intersection_id.clear() # 매 스텝 새로 계산
+            for iid, I in self.intersections.items():
+                if amr.pos in I.all_lane_coords:
+                    amr_current_intersection_map.setdefault(amr.id, set()).add(iid)
+                    amr.current_intersection_id.add(iid)
 
-        for amr_id, amr_obj in self.amr_list.items():
-            pos = amr_obj.pos
-            for I in self.intersections.values():
-                if pos in I.all_lane_coords:
-                    I.add_amr(amr_obj)
-                    amr_obj.current_intersection_id.add(I.id)  # [추가] 현재 속한 교차로 ID 갱신
+        # 2. 이전 상태와 비교하여 이벤트 감지 및 처리
+        all_involved_amr_ids = set(self.amr_prev_intersection_map.keys()) | set(amr_current_intersection_map.keys())
 
+        for amr_id in all_involved_amr_ids:
+            amr = self.amr_list.get(amr_id)
+            if not amr: continue
+
+            prev_iids = self.amr_prev_intersection_map.get(amr_id, set())
+            current_iids = amr_current_intersection_map.get(amr_id, set())
+
+            # 진입 이벤트: 이전에 없던 교차로에 새로 나타남
+            for iid in current_iids - prev_iids:
+                self.intersections[iid].register_amr(amr)
+
+            # 탈출 이벤트: 이전에 있던 교차로에서 사라짐
+            for iid in prev_iids - current_iids:
+                self.intersections[iid].unregister_amr(amr)
+            
+            # 갱신 이벤트: 계속 교차로 내에 있음
+            for iid in prev_iids & current_iids:
+                self.intersections[iid].update_amr_state(amr)
+
+        # 3. 모든 교차로에 대해 데드락 재검사
         for I in self.intersections.values():
             I.check_deadlock()
+
+        # 4. 다음 스텝을 위해 현재 상태를 이전 상태로 저장
+        self.amr_prev_intersection_map = amr_current_intersection_map
 
     def set_traffic_mode(self, mode: str):
         """
@@ -541,16 +574,24 @@ class ENV():
         return processed_intersections
     
     def is_arm_outgoing_clear(self, iid: str, d: str) -> bool:
+        """
+        [수정] 'outgoing' 속성 대신 'amr_intent_map'을 확인하여 진출 AMR 존재 여부를 판단합니다.
+        """
         I = self.intersections[iid]
 
-        # 1. 해당 팔에 나가는 AMR가 있으면 생성 금지
-        has_outgoing = bool(getattr(I, "outgoing", {}).get(d, False))
+        # 1. 해당 팔에 나가는(outgoing) AMR이 있으면 생성 금지
+        # AMR의 현재 팔과 출구 팔이 같으면 'outgoing' 상태임
+        has_outgoing = any(
+            data['current_arm'] == d and data['exit_arm'] == d 
+            for data in I.amr_intent_map.values()
+        )
         if has_outgoing:
             return False
             
         # 2. 해당 교차로가 데드락 상태이면 생성 금지
-        is_deadlocked = iid in self.deadlock_queue
-        if is_deadlocked:
+        # 데드락 큐의 아이템은 (iid, amr_count, timestamp) 튜플이므로 iid만 추출하여 확인
+        deadlocked_iids = {item[0] for item in self.deadlock_queue}
+        if iid in deadlocked_iids:
             return False
             
         # 두 조건 모두 통과하면 생성 허용
