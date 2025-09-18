@@ -37,24 +37,29 @@ def load_policy(model_path: str, state_dim: int, device="cpu", greedy=False):
     return RLPolicy(model, device=device, greedy=greedy)
 
 def main():
-    parser = argparse.ArgumentParser(description="Run DAA-CPS Simulation.")
-    parser.add_argument('--mode', type=str, default='task', choices=['traffic', 'task'],
-                        help="Set the traffic generation mode: 'traffic' for streaming, 'task' for a fixed set.")
-    parser.add_argument('--prob', type=str, default='problems/cross/cross_3030.json',
-                        help="Path to the problem file.")
+    parser = argparse.ArgumentParser(description="Run simulations and log ENV.make_info() to CSV.")
+    parser.add_argument("--prob", type=str, default="cross_9")
+    parser.add_argument("--algo", type=int, default=0, choices=[0,1,2,3,4],
+                        help="0=BFS, 1=A*, 2=D*, 3=PIBT, 4=CBS")
+    parser.add_argument("--runs", type=int, default=10)
+    parser.add_argument("--use-rl", action="store_true", default=False)
+    parser.add_argument("--density", type=float, default=0.1)
+    parser.add_argument("--max-arm-h", type=int, default=5)
+    parser.add_argument("--max-arm-v", type=int, default=5)
+    parser.add_argument("--max-steps", type=int, default=1000)
+    parser.add_argument("--model-path", type=str, default="checkpoint/final_mlp_policy.pt")
     args = parser.parse_args()
 
-    prob_path = args.prob
-    model_path = os.path.join('checkpoint', 'final_mlp_policy.pt')
+    prob_path = f"problems/cross/{args.prob}.json"
 
-    # 1. ENV 환경 인스턴스 생성
-    env = ENV(prob_path)
-    env.set_traffic_mode(args.mode)
+    # ENV 생성자에는 max_steps 없음 → 생성 후 속성으로 지정
+    env = ENV(prob_path, max_arm_len_h=args.max_arm_h, max_arm_len_v=args.max_arm_v, density=args.density, max_steps=args.max_steps, running_opt=args.algo, traffic_mode='task')
+    env.set_traffic_mode('task')
 
     # RL 정책 로드 & 연결
     state_dim = int(np.asarray(next(iter(env.intersections.values())).get_state()).shape[-1])
-    env.rl_policy = load_policy(model_path, state_dim, device=("cuda" if torch.cuda.is_available() else "cpu"), greedy=False)
-    
+    env.rl_policy = load_policy(args.model_path, state_dim, device=("cuda" if torch.cuda.is_available() else "cpu"), greedy=False)
+
     env.use_rl = True  # GUI 체크박스도 자동으로 켜지게 하려면 True로
     env.reset()
     

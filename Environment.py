@@ -8,12 +8,12 @@ from collections import defaultdict
 from utils.AGV import agv
 from utils.Intersection import Intersection
 from utils import Funct
-from utils.traffic_generator import discover_border_arms_NxM, TrafficGenerator, TrafficGenerator12, TaskSetGenerator
+from utils.traffic_generator import discover_border_arms_NxM, TrafficGenerator12, TaskSetGenerator
 from utils.Controller import controller
 
 
 class ENV():
-    def __init__(self, prob_path):
+    def __init__(self, prob_path, max_arm_len_h=5, max_arm_len_v=5, density: float = 0.1, max_steps=1000, running_opt=0, traffic_mode='task'):
         super().__init__()
         """환경 초기화"""
         base_dir = os.path.dirname(prob_path)
@@ -24,15 +24,17 @@ class ENV():
         self.map = self._load_map(map_path)
         self.walkable_tiles = np.count_nonzero(self.map == 0)
         print(f"Map loaded. Walkable tiles (value 0): {self.walkable_tiles}")
+        self.max_arm_len_h = max_arm_len_h
+        self.max_arm_len_v = max_arm_len_v
         processed_intersections = self._find_intersections_and_build_graph()
         
         self.time = 0
         self.agv_list = {}
         self.l_hop = 1
-        self.max_steps = 1000
+        self.max_steps = max_steps
 
-        self.controller = controller(self.map)
-        
+        self.controller = controller(self.map, running_opt=running_opt)
+
         self.intersections: Dict[str, Intersection] = {}
         for iid, inter_info in processed_intersections.items():
             self.intersections[iid] = Intersection(
@@ -48,9 +50,9 @@ class ENV():
 
         # [수정] 두 종류의 트래픽 생성기를 모두 인스턴스화
         self.traffic_gen_stream = TrafficGenerator12(arms12=arms)
-        self.traffic_gen_task_set = TaskSetGenerator(all_arms=arms)
+        self.traffic_gen_task_set = TaskSetGenerator(self.map, density=density)
 
-        self.traffic_mode = 'traffic'
+        self.traffic_mode = "traffic"
         self.traffic_generator = self.traffic_gen_stream
         self.traffic_generator.set_arm_gate(lambda iid, d: self.is_arm_outgoing_clear(iid, d))
 
@@ -209,6 +211,12 @@ class ENV():
         elif self.traffic_mode == 'traffic':
             self._spawn_amrs_from_stream_gen()
 
+        if self.controller.pibt_bump:
+            for aid, inc in list(self.controller.pibt_bump.items()):
+                if inc and aid in self.agv_list:
+                    self.agv_list[aid].action_count += inc
+            self.controller.pibt_bump.clear()
+
         # GUI/테스트 모드: 기존 요약 반환 유지
         if not train:
             return self.make_info()
@@ -343,7 +351,7 @@ class ENV():
 
     def _is_valid_move(self, current_agv, control_signal):
 
-        if self.controller.running_opt == 1: # PIBT 충돌 시
+        if self.controller.running_opt == 3: # PIBT 충돌 시
             return True
 
         nx = current_agv.pos[0] + control_signal[0]
@@ -430,19 +438,10 @@ class ENV():
         
         for task in new_tasks:
             agv_id = task['id']
-            start_iid = task['intersection_id']
-            start_dir = task['start_direction']
-            goal_iid = task['goal_intersection_id']
-            goal_dir = task['goal_direction']
-            
-            start_pos = self._direction_to_coords(start_dir, start_iid) 
-            goal_pos = self._direction_to_coords(goal_dir, goal_iid)
 
-            if start_pos is None or goal_pos is None:
-                print(f"Warning: Could not get start/goal position for AGV {agv_id}. Skipping.")
-                continue
+            start_pos = tuple(task['start_pos'])
+            goal_pos  = tuple(task['goal_pos'])
 
-            # AGV 생성 및 등록 (agv 생성자 인자 순서 수정)
             new_agv = agv(start_pos, agv_id, self.color_map[agv_id % 6])
             self.agv_list[agv_id] = new_agv
             self.controller.add_agv(agv_id, start_pos, goal_pos)
@@ -563,70 +562,64 @@ class ENV():
         centers = (np.argwhere(matches) + 1).tolist()
         return centers
         
-    def _ray_len(self, r, c, dr, dc):
+    def _ray_len(self, r, c, dr, dc, max_len=None):
         H, W = self.map.shape
         length = 0
         rr, cc = r + dr, c + dc
         while 0 <= rr < H and 0 <= cc < W and self.map[rr][cc] == 0:
             if dr != 0:
-                left_wall = (cc - 1 < 0) or (self.map[rr][cc - 1] == 1)
+                left_wall  = (cc - 1 < 0) or (self.map[rr][cc - 1] == 1)
                 right_wall = (cc + 1 >= W) or (self.map[rr][cc + 1] == 1)
                 if not (left_wall or right_wall): break
             else:
-                up_wall = (rr - 1 < 0) or (self.map[rr - 1][cc] == 1)
+                up_wall   = (rr - 1 < 0) or (self.map[rr - 1][cc] == 1)
                 down_wall = (rr + 1 >= H) or (self.map[rr + 1][cc] == 1)
                 if not (up_wall or down_wall): break
+
             length += 1
+            if max_len is not None and length >= max_len:
+                break
             rr += dr
             cc += dc
         return length
     
     def _find_intersections_and_build_graph(self):
-        """
-        [수정] 교차로 데이터를 찾고, 각 교차로의 방향별 이웃 정보까지 계산하여
-        처리된 딕셔너리를 한 번에 반환.
-        """
-        # 1. 모든 교차로 중심 좌표를 찾음
         centers_rc = self._find_intersection_center()
         centers_xy = [(c, r) for r, c in centers_rc]
-        
-        # 2. 각 중심에 대해 intersection_data 튜플을 생성하고, 좌표-데이터 맵을 만듦
+
         center_xy_to_data = {}
         for c, r in centers_xy:
-            len_N = self._ray_len(r, c, -1, 0)
-            len_E = self._ray_len(r, c, 0, 1)
-            len_S = self._ray_len(r, c, 1, 0)
-            len_W = self._ray_len(r, c, 0, -1)
+            # 세로(N/S)는 vertical 캡, 가로(E/W)는 horizontal 캡
+            len_N = self._ray_len(r, c, -1, 0, max_len=self.max_arm_len_v)
+            len_S = self._ray_len(r, c,  1, 0, max_len=self.max_arm_len_v)
+            len_E = self._ray_len(r, c,  0, 1, max_len=self.max_arm_len_h)
+            len_W = self._ray_len(r, c,  0,-1, max_len=self.max_arm_len_h)
 
             if min(len_N, len_E, len_S, len_W) > 0:
-                current_data = (c, r, len_N, len_E, len_S, len_W)
-                center_xy_to_data[(c, r)] = current_data
+                center_xy_to_data[(c, r)] = (c, r, len_N, len_E, len_S, len_W)
 
-        # 3. 각 교차로에 대해 이웃 정보를 계산하고 최종 데이터 구조 생성
         processed_intersections = {}
-        for center_coord, current_data in center_xy_to_data.items():
-            c, r, len_N, len_E, len_S, len_W = current_data
+        for (c, r), current_data in center_xy_to_data.items():
+            _, _, len_N, len_E, len_S, len_W = current_data
             current_iid = f'x{c}y{r}'
-            
-            # 각 방향의 도로 끝에서 한 칸 더 나아간 '연결 예상 좌표' 계산
+
             target_coords = {
-                'N': (c, r - len_N - 1), 'E': (c + len_E + 1, r),
-                'S': (c, r + len_S + 1), 'W': (c - len_W - 1, r)
+                'N': (c, r - len_N - 1),
+                'E': (c + len_E + 1, r),
+                'S': (c, r + len_S + 1),
+                'W': (c - len_W - 1, r),
             }
 
             neighbors_map = {}
-            # 4. 연결 예상 좌표가 다른 교차로의 중심과 일치하는지 확인
             for direction, target_coord in target_coords.items():
                 if target_coord in center_xy_to_data:
-                    neighbor_data = center_xy_to_data[target_coord]
-                    neighbor_iid = f'x{neighbor_data[0]}y{neighbor_data[1]}'
-                    neighbors_map[direction] = neighbor_iid
-            
+                    nc, nr, *_ = center_xy_to_data[target_coord]
+                    neighbors_map[direction] = f'x{nc}y{nr}'
+
             processed_intersections[current_iid] = {
                 'data': current_data,
                 'neighbors': neighbors_map
             }
-        
         return processed_intersections
     
     def is_arm_outgoing_clear(self, iid: str, d: str) -> bool:
@@ -699,8 +692,10 @@ class ENV():
         # 스루풋 계산 (분 단위)
         throughput = (completed_tasks / self.time * 60) if self.time > 0 else 0.0
 
-        # 평균 Action Count 계산
-        avg_action_count = np.mean(self.completed_agv_actions) if self.completed_agv_actions else 0.0
+        # 평균 Action Count 계산 (완료 + 현재 활성 모두 포함)
+        current_action_counts = [agv_obj.action_count for agv_obj in self.agv_list.values()]
+        all_action_counts = list(self.completed_agv_actions) + current_action_counts
+        avg_action_count = float(np.mean(all_action_counts)) if all_action_counts else 0.0
 
         # --- 3. 현재 활성화된 AGV들의 상세 정보 수집 ---
         active_agv_details = {}

@@ -2,6 +2,7 @@ import heapq
 from typing import Dict, Tuple, Iterable, Optional, Set, List
 import random
 import numpy as np
+import time  
 
 import heapq, random
 from collections import defaultdict, deque
@@ -355,160 +356,422 @@ class PIBT:
         if a not in self._age:
             self._age[a] = 0
 
-class PIBTVanilla:
+
+# =================================================================
+# --- [추가] Conflict-Based Search (CBS) 구현 시작 ---
+# =================================================================
+
+from dataclasses import dataclass, field
+
+class AStar_for_CBS:
+    """ Low-level: Space-Time A* for CBS """
+    def __init__(self, map_data, start, goal, solution_for_cat):
+        self.map = map_data
+        self.start = start
+        self.goal = goal
+        self.height, self.width = map_data.shape
+        self.conflict_avoidance_table = self._build_cat(solution_for_cat)  # CAT: Conflict Avoidance Table
+
+    def _build_cat(self, solution):
+        """Tie-Breaking을 위한 충돌 회피 테이블(CAT)을 생성"""
+        cat = defaultdict(int)  # Key: (position, time) / Value: count of agents at that position and time
+        if not solution:
+            return cat
+
+        max_len = max(len(path) for path in solution.values()) if solution else 0
+        for t in range(max_len):
+            for path in solution.values():
+                pos = path[t] if t < len(path) else path[-1]
+                cat[(pos, t)] += 1
+        return cat
+
+    def _get_neighbors(self, pos):
+        x, y = pos
+        neighbors = []
+        for dx, dy in [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < self.width and 0 <= ny < self.height and self.map[ny][nx] == 0:
+                neighbors.append((nx, ny))
+        return neighbors
+
+    def _manhattan_distance(self, pos1, pos2):
+        return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
+
+    def find_path(self, constraints: Set):
+        # (f-value, tie-breaker, g-value, position, time, path)
+        open_list = [(self._manhattan_distance(self.start, self.goal), 0, 0, self.start, 0, [self.start])]
+        visited = set() # (position, time)
+
+        while open_list:
+            f, tie_breaker, g, current_pos, time, path = heapq.heappop(open_list)
+
+            if (current_pos, time) in visited: # Duplicate Detection
+                continue
+            visited.add((current_pos, time))
+
+            # [수정] A*는 GOAL을 pop했을 때가 최단 경로임을 보장합니다.
+            # "wait at goal" 제약 조건을 처리하기 위한 로직을 추가합니다.
+            if current_pos == self.goal:
+                max_time = time
+                for c_item, c_time in constraints:
+                    # c_item이 (x,y) 형태의 vertex이고, goal과 일치하는지 확인
+                    if c_item == self.goal:
+                        max_time = max(max_time, c_time)
+                
+                # 제약시간까지 목표 지점에서 대기하는 경로를 만듭니다.
+                if time < max_time:
+                    path.extend([self.goal] * (max_time - time))
+                
+                # 경로를 찾았으므로 반환합니다.
+                return path
+
+            for neighbor_pos in self._get_neighbors(current_pos):
+                next_time = time + 1
+
+                # [수정] 제약조건을 명시적으로 확인합니다.
+                # 1. Vertex constraint
+                vertex_constraint = (neighbor_pos, next_time)
+                if vertex_constraint in constraints:
+                    continue
+                
+                # 2. Edge constraint (swap)
+                edge_constraint = ((current_pos, neighbor_pos), time)
+                if edge_constraint in constraints:
+                    continue
+                
+                # [수정] A* f-value 계산
+                if (neighbor_pos, next_time) not in visited:
+                    new_path = path + [neighbor_pos]
+                    new_g = g + 1 # g-value는 시간(time)과 동일
+                    h = self._manhattan_distance(neighbor_pos, self.goal)
+                    new_f = new_g + h
+
+                    # Tie-Breaking Policy
+                    new_tie_breaker = self.conflict_avoidance_table.get((neighbor_pos, next_time), 0)
+                    heapq.heappush(open_list, (new_f, new_tie_breaker, new_g, neighbor_pos, next_time, new_path))
+        
+        return None
+
+@dataclass(order=True)
+class CTNode:
+    """충돌 트리(CT)의 노드. 부모를 따라 제약조건을 수집하는 방식."""
+    cost: int
+    # Tie-Breaking을 위해 충돌 수를 두 번째 정렬 기준으로 추가
+    num_conflicts: int = field(compare=True)
+    solution: Dict[int, List[Tuple[int, int]]] = field(compare=False)
+    constraint: Optional[Tuple[int, Tuple, int]] = field(compare=False, default=None)
+    parent: Optional['CTNode'] = field(compare=False, default=None)
+
+class CBS:
+    """Conflict-Based Search (CBS) 알고리즘 구현 (메모리 효율적 방식)"""
+    def __init__(self, map_data: np.ndarray, agents: Dict[int, Dict[str, Tuple[int, int]]]):
+        self.map = map_data
+        self.agents = agents
+        self.agent_ids = list(agents.keys())
+
+    def _get_constraints_for_agent(self, node: CTNode, agent_id: int) -> Set:
+        constraints = set()
+        curr = node
+        while curr is not None:
+            if curr.constraint and curr.constraint[0] == agent_id:
+                constraints.add((curr.constraint[1], curr.constraint[2]))
+            curr = curr.parent
+        return constraints
+
+    def solve(self, time_limit: float = 10.0) -> Optional[Dict[int, List[Tuple[int, int]]]]:
+        start_time = time.time()
+
+        open_list = []
+        initial_solution = {}
+
+        for agent_id in self.agent_ids:
+            start, goal = self.agents[agent_id]['start'], self.agents[agent_id]['goal']
+            planner = AStar_for_CBS(self.map, start, goal, {})
+            path = planner.find_path(set())
+            if path is None: return None
+            initial_solution[agent_id] = path
+
+        root = CTNode(
+            cost=self.calculate_sic(initial_solution),
+            num_conflicts=self.find_all_conflicts(initial_solution),
+            solution=initial_solution
+        )
+        heapq.heappush(open_list, root)
+
+        best_node_so_far = root
+
+        while open_list:
+            # [추가] 루프 시작 부분에서 시간제한 체크
+            elapsed_time = time.time() - start_time
+            if elapsed_time > time_limit:
+                print(f"\n!!! CBS Timeout after {elapsed_time:.2f} seconds. !!!")
+                # 제한 시간을 초과하면, 현재까지 찾은 가장 좋은 해를 반환
+                print(f"    > Returning best found solution with {best_node_so_far.num_conflicts} conflicts.")
+                return self.pad_paths(best_node_so_far.solution)
+
+            P = heapq.heappop(open_list)
+
+            if P.num_conflicts < best_node_so_far.num_conflicts:
+                best_node_so_far = P
+
+            conflict = self.find_first_conflict(P.solution)
+
+            if conflict is None:
+                return self.pad_paths(P.solution)
+
+            agent1, agent2, loc, conflict_time = conflict
+
+
+            for agent in [agent1, agent2]:
+
+                # [수정] Edge conflict의 경우, 각 agent에 맞는 edge constraint를 만들어야 합니다.
+                new_constraint_loc = loc
+
+                if isinstance(loc, tuple) and len(loc) == 2 and isinstance(loc[0], tuple):
+                    # loc = (pos1_t, pos1_t_plus_1)
+                    # A*는 (current_pos, neighbor_pos)를 확인합니다.
+                    # conflict는 agent1과 agent2의 스왑입니다.
+                    # agent1의 이동: loc[0] -> loc[1]
+                    # agent2의 이동: loc[1] -> loc[0]
+                    if agent == agent1:
+                        new_constraint_loc = (loc[0], loc[1])
+                    else: # agent_to_constrain == agent2
+                        new_constraint_loc = (loc[1], loc[0])
+
+                new_constraint = (agent, new_constraint_loc, conflict_time)
+                
+                
+                # new_constraint = None
+                # if isinstance(loc, tuple) and len(loc) == 2 and isinstance(loc[0], tuple):
+                #     new_constraint = (agent, (loc[0], loc[1]), conflict_time)  # edge conflict
+                # else:
+                #     new_constraint = (agent, loc, conflict_time)  # vertex conflict
+
+
+
+                agent_constraints = self._get_constraints_for_agent(P, agent)  # Get constraints from parents
+                agent_constraints.add((new_constraint[1], new_constraint[2]))
+
+                start, goal = self.agents[agent]['start'], self.agents[agent]['goal']
+
+                # Tie-Breaking을 위해 다른 에이전트들의 경로를 전달
+                other_agents_solution = {aid: p for aid, p in P.solution.items() if aid != agent}
+                planner = AStar_for_CBS(self.map, start, goal, other_agents_solution)
+                new_path = planner.find_path(agent_constraints)
+
+                if new_path is not None:
+                    new_solution = P.solution.copy()
+                    new_solution[agent] = new_path
+
+                    child_node = CTNode(
+                        cost=self.calculate_sic(new_solution),
+                        num_conflicts=self.find_all_conflicts(new_solution),
+                        solution=new_solution,
+                        constraint=new_constraint,
+                        parent=P
+                    )
+                    heapq.heappush(open_list, child_node)
+        return None
+
+    def find_first_conflict(self, solution: Dict[int, List[Tuple[int, int]]]):
+        max_len = max(len(p) for p in solution.values()) if solution else 0
+        for t in range(max_len):
+            positions_at_t = defaultdict(list)
+            for agent_id, path in solution.items():
+                pos = path[t] if t < len(path) else path[-1]
+                positions_at_t[pos].append(agent_id)
+
+            for pos, agents in positions_at_t.items():  # vertex conflict (including the case of k > 2)
+                if len(agents) > 1:
+                    # k > 2 충돌의 경우, 처음 두 에이전트만 선택
+                    return (agents[0], agents[1], pos, t)
+
+            for agent1 in self.agent_ids:  # edge conflict
+                for agent2 in self.agent_ids:
+                    if agent1 >= agent2: continue
+                    path1, path2 = solution[agent1], solution[agent2]
+                    pos1_t = path1[t] if t < len(path1) else path1[-1]
+                    pos1_t_plus_1 = path1[t+1] if t + 1 < len(path1) else path1[-1]
+                    pos2_t = path2[t] if t < len(path2) else path2[-1]
+                    pos2_t_plus_1 = path2[t+1] if t + 1 < len(path2) else path2[-1]
+                    if pos1_t == pos2_t_plus_1 and pos2_t == pos1_t_plus_1:
+                        return (agent1, agent2, (pos1_t, pos1_t_plus_1), t)
+        return None
+
+    def find_all_conflicts(self, solution: Dict[int, List[Tuple[int, int]]]) -> int:
+        """High-level Tie-Breaking을 위해 모든 충돌을 찾기."""
+        NumOfConflicts = 0
+        # conflicts = []
+        max_len = max(len(p) for p in solution.values()) if solution else 0
+        for t in range(max_len):
+            positions_at_t = defaultdict(list)
+            for agent_id, path in solution.items():
+                pos = path[t] if t < len(path) else path[-1]
+                positions_at_t[pos].append(agent_id)
+            for pos, agents in positions_at_t.items():
+                if len(agents) > 1:
+                    from itertools import combinations
+                    for a1, a2 in combinations(agents, 2):
+                        # conflicts.append((a1, a2, pos, t))
+                        NumOfConflicts += 1
+            
+            for agent1 in self.agent_ids:  # edge conflict
+                for agent2 in self.agent_ids:
+                    if agent1 >= agent2: continue
+                    path1, path2 = solution[agent1], solution[agent2]
+                    pos1_t = path1[t] if t < len(path1) else path1[-1]
+                    pos1_t_plus_1 = path1[t+1] if t + 1 < len(path1) else path1[-1]
+                    pos2_t = path2[t] if t < len(path2) else path2[-1]
+                    pos2_t_plus_1 = path2[t+1] if t + 1 < len(path2) else path2[-1]
+                    if pos1_t == pos2_t_plus_1 and pos2_t == pos1_t_plus_1:
+                        # conflicts.append((agent1, agent2, (pos1_t, pos1_t_plus_1), t))
+                        NumOfConflicts += 1
+
+        return NumOfConflicts
+
+    def calculate_sic(self, solution: Dict[int, List[Tuple[int, int]]]) -> int:
+        return sum(len(path) - 1 for path in solution.values())
+
+    def pad_paths(self, solution: Dict[int, List[Tuple[int, int]]]):
+        max_len = max(len(path) for path in solution.values()) if solution else 0
+        padded_solution = {}
+        for agent_id, path in solution.items():
+            last_pos = path[-1]
+            padded_path = path + [last_pos] * (max_len - len(path))
+            padded_solution[agent_id] = padded_path
+        return padded_solution
+
+class BFS:
     """
-    Priority Inheritance with Backtracking (PIBT) - Algorithm 1 (vanilla)
-
-    - 4방향 격자 G(V,E)에서 작동 (0=free, 1=obstacle)
-    - 한 타임스텝의 다음 칸 π_i[t+1]만 결정
-    - 어떤 힌트/부분재계획/고정엣지 같은 변형 없음 (논문 그대로)
-
-    References: Algorithm 1 (PIBT), Sec. 4.2; Distance table via BFS (Sec. 4.4.1).
+    - goal 기반 distance field를 캐시하여 빠르게 경로를 추출
+    - plan_all_paths(...)로 모든 AGV 경로를 한 번에 반환
+    - plan_path(...)는 단일 경로 호환
     """
-
-    def __init__(self, grid: np.ndarray, seed: int = 1234):
-        assert isinstance(grid, np.ndarray) and grid.ndim == 2
-        self.grid = grid
-        self.H, self.W = grid.shape
+    def __init__(self, map_data: np.ndarray, seed: Optional[int] = None):
+        assert map_data.ndim == 2, "map_data must be a 2D grid (H x W)"
+        self.map = map_data
+        self.H, self.W = map_data.shape
+        self._distance_fields: Dict[Pos, np.ndarray] = {}  # goal -> field
         self._rng = random.Random(seed)
-        self._eps: Dict[int, float] = {}   # unique ε_i in [0,1)
-        self._prio: Dict[int, float] = {}  # p_i
-        self._dist_cache: Dict[Pos, np.ndarray] = {}  # goal -> 2D distance table
 
-    # ---------- public ----------
-
-    def reset(self):
-        """모든 내부 우선순위/난수 초기화."""
-        self._eps.clear()
-        self._prio.clear()
-        self._dist_cache.clear()
-
-    def plan_one_step(self, pos: Dict[int, Pos], goals: Dict[int, Pos]) -> Dict[int, Pos]:
+    # ---------- Public API ----------
+    def plan_all_paths(
+        self,
+        positions: Dict[int, Pos],   # {agv_id: (x,y)}
+        goals: Dict[int, Pos],       # {agv_id: (x,y)}
+    ) -> Dict[int, List[Pos]]:
         """
-        입력:
-          pos   : {agent_id: (x,y)} at time t
-          goals : {agent_id: (x,y)}
-        출력:
-          {agent_id: next_pos}   # π_i[t+1]
+        현재 모든 AGV의 start->goal 전체 경로를 반환.
+        - 도달 불가면 [start] 반환
+        - start==goal이면 [start]
         """
-        agents = list(pos.keys())
-        agent_at_t: Dict[Pos, int] = {p: a for a, p in pos.items()}
+        paths: Dict[int, List[Pos]] = {}
 
-        # --- distance tables (goal-based, BFS) ---
-        for g in set(goals.values()):
-            if g not in self._dist_cache:
-                self._dist_cache[g] = self._bfs_from_goal(g)
+        # 1) 유니크 goal에 대해 distance field 준비
+        unique_goals = {g for g in goals.values() if g is not None}
+        fields: Dict[Pos, Optional[np.ndarray]] = {}
+        for g in unique_goals:
+            fields[g] = self._get_or_build_field(g)  # None이면 goal이 벽/유효하지 않음
 
-        def dist_to_goal(cell: Pos, goal: Pos) -> int:
-            dt = self._dist_cache[goal]
-            x, y = cell
-            d = dt[y, x]
-            # unreachable -> treat as large
-            return int(d) if d >= 0 else 10**9
+        # 2) 각 AGV 경로 추출
+        for aid, start in positions.items():
+            goal = goals.get(aid)
+            if goal is None or not self._in_bounds(start):
+                paths[aid] = [start]
+                continue
 
-        # --- update priorities (Alg.1 Line 3) ---
-        for a in agents:
-            if a not in self._eps:
-                self._eps[a] = self._fresh_eps()
-                self._prio[a] = self._eps[a]
-            if pos[a] == goals[a]:
-                self._prio[a] = self._eps[a]    # reset to ε_i
-            else:
-                self._prio[a] = self._prio.get(a, self._eps[a]) + 1
+            if start == goal:
+                paths[aid] = [start]
+                continue
 
-        # --- sort agents by decreasing priority (Alg.1 Line 4) ---
-        order = sorted(agents, key=lambda i: self._prio[i], reverse=True)
+            field = fields.get(goal)
+            if field is None or field[start[1], start[0]] < 0:
+                # goal이 벽이거나 start에서 goal 불가
+                paths[aid] = [start]
+                continue
 
-        # next positions π_i[t+1], None means "undecided yet"
-        next_pos: Dict[int, Optional[Pos]] = {a: None for a in agents}
+            paths[aid] = self._extract_path(start, goal, field)
 
-        # Helpers -----------------------------------------------------------
-        def in_map(x: int, y: int) -> bool:
-            return 0 <= x < self.W and 0 <= y < self.H
+        return paths
 
-        def free_cell(c: Pos) -> bool:
-            x, y = c
-            return in_map(x, y) and self.grid[y, x] == 0
+    def plan_path(self, start: Pos, goal: Pos) -> List[Pos]:
+        """
+        단일 AGV 경로 반환(호환용).
+        """
+        if start == goal:
+            return [start]
+        field = self._get_or_build_field(goal)
+        if field is None or not self._in_bounds(start) or field[start[1], start[0]] < 0:
+            return [start]
+        return self._extract_path(start, goal, field)
 
-        def neighbors(c: Pos) -> List[Pos]:
-            x, y = c
-            cand = [(x+1,y), (x-1,y), (x,y+1), (x,y-1)]
-            return [q for q in cand if free_cell(q)]
+    def clear_cache(self):
+        """모든 distance field 캐시 초기화(맵이 바뀌었을 때 사용)."""
+        self._distance_fields.clear()
 
-        # Candidate set C (Alg.1 Lines 9–10), then checks (Lines 12–13)
-        def candidates(i: int, parent: Optional[int]) -> List[Pos]:
-            here = pos[i]
-            C = neighbors(here) + [here]  # Neigh(π_i[t]) ∪ {π_i[t]}
-            g = goals[i]
+    # ---------- Internals ----------
+    def _get_or_build_field(self, goal: Pos) -> Optional[np.ndarray]:
+        if not self._in_bounds(goal) or self.map[goal[1], goal[0]] == 1:
+            return None
+        field = self._distance_fields.get(goal)
+        if field is None:
+            field = self._create_field_from_goal(goal)
+            self._distance_fields[goal] = field
+        return field
 
-            # sort by dist(u, g) asc; tie-break by absence/presence of agent (prefer empty)
-            def key(u: Pos):
-                occupied_flag = 1 if u in agent_at_t else 0  # 0(비점유) 먼저
-                return (dist_to_goal(u, g), occupied_flag)
-
-            C.sort(key=key)
-            # 필터링은 루프 안(Alg.1 Lines 12–13)에서 수행
-            return C
-
-        # Recursive PIBT(i, j) per Alg.1 Lines 8–22 ------------------------
-        def pibt(i: int, parent: Optional[int]) -> bool:
-            for v in candidates(i, parent):
-                # Line 12: avoid vertex conflict with already-requested nodes
-                if any((npv == v) for npv in next_pos.values() if npv is not None):
-                    continue
-                # Line 13: avoid swap with parent only
-                if parent is not None and pos[parent] == v:
-                    continue
-
-                # Line 14: reserve v for i
-                next_pos[i] = v
-
-                # Line 15: priority inheritance to current occupant at time t (if undecided)
-                occ = agent_at_t.get(v)
-                if occ is not None and next_pos[occ] is None:
-                    if not pibt(occ, i):          # Line 16: replanning on INVALID
-                        next_pos[i] = None
-                        continue
-
-                # Line 18: VALID
-                return True
-
-            # Lines 20–21: stay & INVALID
-            next_pos[i] = pos[i]
-            return False
-
-        # Top-level loop (Alg.1 Lines 5–7)
-        for i in order:
-            if next_pos[i] is None:
-                pibt(i, None)
-
-        # finalize
-        return {a: (next_pos[a] if next_pos[a] is not None else pos[a]) for a in agents}
-
-    # ---------- internals ----------
-
-    def _fresh_eps(self) -> float:
-        """[0,1) 난수로 ε_i 생성 (고유 보장)."""
-        used = set(self._eps.values())
-        x = self._rng.random()
-        while x in used:
-            x = self._rng.random()
-        return x
-
-    def _bfs_from_goal(self, goal: Pos) -> np.ndarray:
-        """목표에서 역방향 BFS로 거리테이블 생성. 장애물은 -1."""
-        dt = np.full((self.H, self.W), -1, dtype=int)
+    def _create_field_from_goal(self, goal: Pos) -> np.ndarray:
+        field = np.full((self.H, self.W), -1, dtype=int)
         gx, gy = goal
-        if not (0 <= gx < self.W and 0 <= gy < self.H) or self.grid[gy, gx] == 1:
-            return dt
-        q = deque()
-        dt[gy, gx] = 0
-        q.append((gx, gy))
+        field[gy, gx] = 0
+        q = deque([goal])
+
         while q:
             x, y = q.popleft()
-            for nx, ny in ((x+1,y),(x-1,y),(x,y+1),(x,y-1)):
-                if 0 <= nx < self.W and 0 <= ny < self.H and self.grid[ny, nx] == 0:
-                    if dt[ny, nx] == -1:
-                        dt[ny, nx] = dt[y, x] + 1
-                        q.append((nx, ny))
-        return dt
+            curd = field[y, x]
+            for nx, ny in self._get_neighbors((x, y)):
+                if field[ny, nx] == -1:
+                    field[ny, nx] = curd + 1
+                    q.append((nx, ny))
+        return field
+
+    def _extract_path(self, start: Pos, goal: Pos, field: np.ndarray) -> List[Pos]:
+        """
+        distance가 '엄격히 감소'하는 이웃만 선택(plateau 방지).
+        동순위 후보가 여러 개면 PRNG로 타이브레이크.
+        """
+        path = [start]
+        cur = start
+        while cur != goal:
+            curd = field[cur[1], cur[0]]
+            best: List[Pos] = []
+            best_d = curd
+
+            for nx, ny in self._get_neighbors(cur):
+                d = field[ny, nx]
+                if d >= 0 and d < best_d:
+                    best = [(nx, ny)]
+                    best_d = d
+                elif d >= 0 and d == best_d:
+                    best.append((nx, ny))
+
+            if not best:
+                # 이론상 발생 X(거리장은 단조 감소해야 함). 안전하게 중단.
+                break
+
+            cur = self._rng.choice(best)
+            path.append(cur)
+
+        return path
+
+    def _get_neighbors(self, pos: Pos) -> List[Pos]:
+        x, y = pos
+        neigh = []
+        for dx, dy in ((0,-1),(0,1),(-1,0),(1,0)):
+            nx, ny = x+dx, y+dy
+            if self._in_bounds((nx,ny)) and self.map[ny, nx] == 0:
+                neigh.append((nx, ny))
+        return neigh
+
+    def _in_bounds(self, p: Pos) -> bool:
+        x, y = p
+        return 0 <= x < self.W and 0 <= y < self.H

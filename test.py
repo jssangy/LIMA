@@ -1,168 +1,129 @@
-import os
-import sys
-import argparse
-import csv
-import time
-from datetime import datetime
-from typing import Dict
-
-import torch
-import numpy as np
-
+# test.py (수정본의 핵심 부분만)
+import os, csv, time, argparse, torch, numpy as np
 from Environment import ENV
 from module.model import ActorCritic
 
 class RLPolicy:
-    def __init__(self, model: ActorCritic, device="cpu"):
+    def __init__(self, model: ActorCritic, device="cpu", greedy=False):
         self.model = model.to(device).eval()
         self.device = device
+        self.greedy = greedy
 
     @torch.no_grad()
-    def __call__(self, obs: dict, action_mask: np.ndarray | None) -> int:
-        am = None
-        if action_mask is not None:
-            am = torch.as_tensor(action_mask, dtype=torch.bool, device=self.device).unsqueeze(0)
-        a, _, _ = self.model.act(obs, action_mask=am)
-        return int(a.item())
+    def __call__(self, obs: dict, action_mask: np.ndarray | None):
+        if self.greedy:
+            logits, _ = self.model.forward(obs)
+            if action_mask is not None:
+                am = torch.as_tensor(action_mask, dtype=torch.bool, device=logits.device).unsqueeze(0)
+                logits = logits.masked_fill(~am, -1e9)
+            a = torch.argmax(logits, dim=-1)
+            return int(a.item())
+        else:
+            am = None
+            if action_mask is not None:
+                am = torch.as_tensor(action_mask, dtype=torch.bool, device=self.device).unsqueeze(0)
+            a, _, _ = self.model.act(obs, action_mask=am)
+            return int(a.item())
 
-def load_policy(model_path: str, state_dim: int, device="cpu") -> RLPolicy:
+def load_policy(model_path: str, state_dim: int, device="cpu", greedy=False):
     model = ActorCritic(state_dim=state_dim, action_dim=4)
     sd = torch.load(model_path, map_location=device)
     model.load_state_dict(sd, strict=True)
-    return RLPolicy(model, device=device)
+    return RLPolicy(model, device=device, greedy=greedy)
 
-def run_simulation(env: ENV) -> Dict:
-    """한 에피소드의 시뮬레이션을 실행하고 결과를 반환합니다."""
-    start_time = time.time()
+def algo_name(algo: int) -> str:
+    return {0:"BFS", 1:"AStar", 2:"DStar", 3:"PIBT", 4:"CBS"}.get(algo, f"Algo{algo}")
+
+def compute_avg_steps(env: ENV) -> float:
+    completed = list(env.completed_agv_steps) if getattr(env, "completed_agv_steps", None) else []
+    active = [agv.steps for agv in env.agv_list.values()] if getattr(env, "agv_list", None) else []
+    all_steps = completed + active
+    return float(np.mean(all_steps)) if all_steps else 0.0
+
+def run_one_episode(env: ENV, use_rl: bool) -> dict:
+    env.use_rl = bool(use_rl)   # ← 여기서 on/off
     env.reset()
-    
     while True:
-        run_signal = env.step(actions={}, train=False)
-        
-        if run_signal is False:
+        if env.step(actions={}, train=False) is False:
             break
-    
-    end_time = time.time()
-
-    completed_steps_list = env.completed_agv_steps
-    agvs_steps = np.mean(completed_steps_list) if completed_steps_list else 0
-
-    final_progress = env.traffic_generator.get_progress()
-    total_tasks = final_progress['spawned_total']
-    completed_tasks = final_progress['completed_total']
-    
-    # [수정] 성공률을 (완료된 Task / 전체 Task) 비율로 계산
-    success_rate = (completed_tasks / total_tasks) if total_tasks > 0 else 0.0
-    completion_time = end_time - start_time
-    
-    throughput = (completed_tasks / completion_time) * 60 if completion_time > 0 else 0
-
+    info = env.make_info()
     return {
-        "success_rate": success_rate,
-        "throughput": throughput,
-        "agv_steps": agvs_steps,
-        "completion_time": completion_time,
-        "completed_tasks": completed_tasks,
-        "total_tasks": total_tasks,
+        "success_rate": float(info.get("success_rate", 0.0)),
+        "throughput":   float(info.get("throughput", 0.0)),
+        "avg_agv_steps": float(compute_avg_steps(env)),
+        "avg_action_count": float(info.get("avg_action_count", 0.0)),
     }
 
-def get_unique_filename(base_path: str) -> str:
-    """기존 파일을 덮어쓰지 않는 고유한 파일 경로를 반환합니다."""
-    counter = 0
-    file_path = base_path
-    while os.path.exists(file_path):
-        counter += 1
-        name, extension = os.path.splitext(base_path)
-        if '_' in name:
-            name = '_'.join(name.split('_')[:-1])
-        file_path = f"{name}_{counter}{extension}"
-    return file_path
-
 def main():
-    parser = argparse.ArgumentParser(description="Run DAA-CPS Simulation for evaluation.")
-    parser.add_argument('--prob', type=str, default='problems/cross/cross_3030.json', help="Path to the problem file.")
-    parser.add_argument('--runs', type=int, default=30, help="Number of simulation runs.")
-    parser.add_argument('--algo', type=int, default=0, choices=[0, 1, 2], 
-                        help="Planning algorithm: 0=D*, 1=PIBT, 2=D*+PIBT_on_conflict")
-    parser.add_argument('--use_rl', action='store_true', default=False, help="Enable intersection RL for deadlock resolution.")
+    parser = argparse.ArgumentParser(description="Run simulations and log ENV.make_info() to CSV.")
+    parser.add_argument("--prob", type=str, default="cross_9")
+    parser.add_argument("--algo", type=int, default=0, choices=[0,1,2,3,4],
+                        help="0=BFS, 1=A*, 2=D*, 3=PIBT, 4=CBS")
+    parser.add_argument("--runs", type=int, default=10)
+    parser.add_argument("--use-rl", action="store_true", default=False)
+    parser.add_argument("--density", type=float, default=0.1)
+    parser.add_argument("--max-arm-h", type=int, default=5)
+    parser.add_argument("--max-arm-v", type=int, default=5)
+    parser.add_argument("--max-steps", type=int, default=1000)
+    parser.add_argument("--model-path", type=str, default="checkpoint/final_mlp_policy.pt")
     args = parser.parse_args()
 
-    # --- 설정 ---
-    NUM_RUNS = args.runs
-    PROB_PATH = args.prob
-    MODEL_PATH = os.path.join('checkpoint', 'final_mlp_policy.pt')
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    
-    # --- 환경 로드 및 알고리즘 설정 ---
-    env = ENV(PROB_PATH)
-    env.set_traffic_mode('task')
-    
-    env.controller.running_opt = args.algo
-    env.use_rl = args.use_rl
+    prob_path = f"problems/cross/{args.prob}.json"
 
-    if env.use_rl:
-        print("Intersection RL is ENABLED.")
+    # ENV 생성자에는 max_steps 없음 → 생성 후 속성으로 지정
+    env = ENV(prob_path, max_arm_len_h=args.max_arm_h, max_arm_len_v=args.max_arm_v, density=args.density, max_steps=args.max_steps, running_opt=args.algo, traffic_mode='task')
+
+    # RL 정책은 --use-rl 켠 경우에만 로드
+    if args.use_rl:
         try:
             state_dim = int(np.asarray(next(iter(env.intersections.values())).get_state()).shape[-1])
-            env.rl_policy = load_policy(MODEL_PATH, state_dim, device=DEVICE)
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            env.rl_policy = load_policy(args.model_path, state_dim, device=device, greedy=False)
+            print(f"[info] RL policy loaded from: {args.model_path} (device={device})")
         except FileNotFoundError:
-            print(f"Error: RL policy model not found at {MODEL_PATH}. Disabling RL.")
-            env.use_rl = False
-    else:
-        print("Intersection RL is DISABLED.")
+            print(f"[warn] RL model not found at {args.model_path}. Disabling RL.")
+            args.use_rl = False
+        except Exception as e:
+            print(f"[warn] Failed to load RL model ({e}). Disabling RL.")
+            args.use_rl = False
 
-    # --- 로깅 설정 ---
-    algo_map = {0: "DStar", 1: "PIBT", 2: "DStar_PIBT"}
-    algo_name = algo_map.get(args.algo, "Unknown")
-    rl_suffix = "_RL" if env.use_rl else ""
-    
-    log_filename = f"results/eval_{algo_name}{rl_suffix}.csv"
+    # CSV 경로/헤더
     os.makedirs("results", exist_ok=True)
-    
-    all_results = []
+    prob_base = os.path.splitext(os.path.basename(args.prob))[0]
+    algo_label = algo_name(args.algo)
+    rl_suffix = "_RL" if args.use_rl else ""
+    csv_path = f"results/{prob_base}_{algo_label}{rl_suffix}.csv"
+    fields = ["run", "success_rate", "throughput", "avg_agv_steps", "avg_action_count"]
 
-    with open(log_filename, 'w', newline='') as csvfile:
-        # [수정] CSV 헤더를 'success_rate'로 변경
-        fieldnames = ["run", "success_rate", "throughput", "agv_steps", "completion_time", "completed_tasks", "total_tasks"]
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
+    print(f"Problem: {args.prob}")
+    print(f"Algorithm: {algo_label} (running_opt={args.algo})")
+    print(f"Runs: {args.runs}")
+    print(f"RL: {'ON' if args.use_rl else 'OFF'}")
+    print(f"Task density: {args.density}")
+    print(f"Arm caps: H={args.max_arm_h}, V={args.max_arm_v}")
+    print(f"Max steps: {args.max_steps}")
+    print(f"Saving to: {csv_path}")
 
-        print(f"Starting evaluation for {NUM_RUNS} runs...")
-        print(f"Algorithm: {algo_name}, RL: {'On' if env.use_rl else 'Off'}")
-        print(f"Logging results to {log_filename}")
+    with open(csv_path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        for i in range(1, args.runs + 1):
+            t0 = time.time()
+            res = run_one_episode(env, use_rl=args.use_rl)
+            dt = time.time() - t0
+            w.writerow({
+                "run": i,
+                "success_rate":    f"{res['success_rate']:.6f}",
+                "throughput":      f"{res['throughput']:.6f}",
+                "avg_agv_steps":   f"{res['avg_agv_steps']:.6f}",
+                "avg_action_count":f"{res['avg_action_count']:.6f}",
+            })
+            f.flush()
+            print(f"[{algo_label}] Run {i}/{args.runs} | SR={res['success_rate']:.2%} "
+                  f"| TH={res['throughput']:.2f}/min | Steps={res['avg_agv_steps']:.2f} "
+                  f"| Act={res['avg_action_count']:.2f} | {dt:.2f}s")
 
-        # --- 시뮬레이션 반복 실행 ---
-        for i in range(NUM_RUNS):
-            print(f"--- Running simulation {i+1}/{NUM_RUNS} ---")
-            
-            result = run_simulation(env)
-            result['run'] = i + 1
-            all_results.append(result)
-            
-            writer.writerow(result)
-            csvfile.flush()
+    print(f"\nSaved results to: {csv_path}")
 
-            # [수정] 각 실행 결과 출력 포맷 변경
-            print(f"Run {i+1}: Success Rate={result['success_rate']:.2%}, Throughput={result['throughput']:.2f}/min, Agv Steps={result['agv_steps']:.2f}, Time={result['completion_time']:.2f}s")
-
-    # --- 최종 평균 계산 및 출력 ---
-    if not all_results:
-        print("\nNo simulations were run.")
-        return
-        
-    # [수정] 평균 성공률 계산
-    agv_success_rate = np.mean([r['success_rate'] for r in all_results])
-    agv_throughput = np.mean([r['throughput'] for r in all_results])
-    agv_time = np.mean([r['completion_time'] for r in all_results])
-    overall_agv_steps = np.mean([r['agv_steps'] for r in all_results if r['completed_tasks'] > 0])
-
-    print("\n--- Evaluation Summary ---")
-    # [수정] 최종 요약 정보 출력 포맷 변경
-    print(f"Average Success Rate: {agv_success_rate:.2%}")
-    print(f"Average Throughput: {agv_throughput:.2f} tasks/min")
-    print(f"Average AGV Steps: {overall_agv_steps:.2f}")
-    print(f"Average Completion Time: {agv_time:.2f} s")
-    print("--------------------------")
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

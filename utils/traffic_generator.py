@@ -1,3 +1,4 @@
+import math
 import random
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Callable
@@ -349,115 +350,101 @@ class TrafficGenerator12:
 
 class TaskSetGenerator:
     """
-    [최적화된 버전]
-    사용자 제안에 따라, 매 배치마다 팔 목록을 새로 셔플하여 Task를 생성.
-    10초(스텝) 간격으로 각 배치를 단계적으로 제공.
+    한 번에 모든 태스크를 생성/스폰하는 TaskSetGenerator (배치 없음).
+    - 시작: '모서리 4칸'만 제외한 모든 walkable(0) 좌표에서 중복 없이 랜덤 샘플
+    - 목표: 네 모서리 중 walkable(0)에서 랜덤(없으면 테두리 walkable로 폴백)
+    - 총 개수: floor(#walkable * density), 시작 후보 수를 초과하지 않도록 캡
+    - 반환 포맷: {"id": int, "start_pos": (x,y), "goal_pos": (x,y)}
     """
-    def __init__(self, all_arms: List[Tuple[str, str]], seed: Optional[int] = 7, agvs_per_arm: int = 1, interval_steps: int = 20):
-        self.rng = np.random.default_rng(seed)
+    def __init__(
+        self,
+        map_array: np.ndarray,
+        density: float = 0.1,     # 예: 0.10, walkable 1000개면 100개 생성
+        exclude_only_corners: bool = True,  # True: 모서리 4칸만 제외, 나머지 테두리 허용
+    ):
+        assert map_array.ndim == 2, "map_array must be 2D"
+        self.map = map_array
+        self.H, self.W = map_array.shape
+        self.rng = np.random.default_rng()
+
+        self.density = max(0.0, min(1.0, float(density)))
+        self.exclude_only_corners = bool(exclude_only_corners)
+
+        # 상태
         self.agv_id_counter = 0
-        self.task_set: List[Dict] = [] # 모든 Task의 전체 목록
         self.completed_total = 0
-        
-        self.agvs_per_arm = agvs_per_arm
-        self.interval_steps = interval_steps
+        self.task_set: List[Dict] = []
+        self.spawned_once = False
 
-        # 단계적 생성을 위한 변수
-        self.task_batches: List[List[Dict]] = []
-        self.next_batch_index = 0
+        # 미리 집계
+        self.walkable_coords = self._collect_walkables()
+        self.walkable_count = len(self.walkable_coords)
 
-        # 방향별로 팔 분류
-        self.arms_by_direction = {"N": [], "S": [], "E": [], "W": []}
-        for iid, d in all_arms:
-            if d in self.arms_by_direction:
-                self.arms_by_direction[d].append((iid, d))
-        
-        self.opposite_direction = {"N": "S", "S": "N", "E": "W", "W": "E"}
+        self.start_candidates = self._collect_start_candidates()
+        self.goal_candidates = self._collect_goal_corners()
+        if not self.goal_candidates:
+            # 코너가 다 막혔으면 테두리 walkable에서 폴백
+            self.goal_candidates = self._collect_border_walkables()
+            if not self.goal_candidates:
+                print("[DensityCornerGoalTaskSetGenerator] Warning: no valid goal candidates.")
 
+    # --- ENV에서 호출되는 API ---
     def start_new_episode(self, reset_ids: bool = True):
-        """에피소드 시작 시 모든 Task를 배치 단위로 미리 생성."""
         if reset_ids:
             self.agv_id_counter = 0
-        
-        self.task_set = []
         self.completed_total = 0
-        self.task_batches = []
-        self.next_batch_index = 0
-        
-        # 1. agvs_per_arm 만큼 반복하여 각 배치를 생성
-        for _ in range(self.agvs_per_arm):
-            current_batch = []
-            # N-S, E-W 쌍에 대해 Task를 생성하여 현재 배치에 추가
-            self._create_batch_for_pair("N", "S", current_batch)
-            self._create_batch_for_pair("E", "W", current_batch)
-            self.task_batches.append(current_batch)
+        self.task_set = []
+        self.spawned_once = False
 
-        # 2. 모든 배치를 하나의 리스트로 통합 (전체 진행 상황 추적용)
-        self.task_set = [task for batch in self.task_batches for task in batch]
-
-        total_agvs = len(self.task_set)
-        num_batches = len(self.task_batches)
-        print(f"Generated {total_agvs} AGVs in {num_batches} batches ({self.interval_steps} steps interval).")
-
-    def _create_batch_for_pair(self, dir1: str, dir2: str, batch: List[Dict]):
-        """
-        두 방향 그룹(예: N-S) 간의 Task를 생성하여 주어진 배치 리스트에 추가.
-        이 함수가 호출될 때마다 목록을 새로 셔플.
-        """
-        starts1 = self.arms_by_direction[dir1][:]
-        goals2 = self.arms_by_direction[dir2][:]
-        starts2 = self.arms_by_direction[dir2][:]
-        goals1 = self.arms_by_direction[dir1][:]
-
-        random.shuffle(starts1)
-        random.shuffle(goals2)
-        random.shuffle(starts2)
-        random.shuffle(goals1)
-
-        # dir1 -> dir2 Task 생성
-        self._match_and_add_to_batch(starts1, goals2, batch)
-        # dir2 -> dir1 Task 생성
-        self._match_and_add_to_batch(starts2, goals1, batch)
-
-    def _match_and_add_to_batch(self, start_arms: List[Tuple[str, str]], goal_arms: List[Tuple[str, str]], batch: List[Dict]):
-        """셔플된 목록을 기반으로 Task를 생성하고 배치에 추가."""
-        if not start_arms or not goal_arms:
+        if not self.start_candidates or not self.goal_candidates or self.walkable_count == 0:
             return
 
-        for i, (start_iid, start_d) in enumerate(start_arms):
-            # 1:1 매칭이 가능하면 인덱스 순으로 할당
-            if i < len(goal_arms):
-                goal_iid, goal_d = goal_arms[i]
-            # 출발지가 더 많으면, 목적지 중 무작위 선택
-            else:
-                goal_iid, goal_d = random.choice(goal_arms)
-            
-            batch.append({
+        # 총 AGV 수 = floor(walkable * density), 시작 후보 수를 넘지 않도록 캡
+        total_agvs = int(self.walkable_count * self.density)
+        total_agvs = max(0, min(total_agvs, len(self.start_candidates)))
+        if total_agvs == 0:
+            print("[DensityCornerGoalTaskSetGenerator] density too low or no candidates; no AGVs generated.")
+            return
+
+        # 시작 좌표: 중복 없이 샘플
+        idxs = self.rng.choice(len(self.start_candidates), size=total_agvs, replace=False)
+        starts = [self.start_candidates[i] for i in idxs]
+
+        # 목표 좌표: 코너 중에서 랜덤(중복 허용)
+        tasks: List[Dict] = []
+        for s in starts:
+            g = self.goal_candidates[int(self.rng.integers(0, len(self.goal_candidates)))]
+            if g == s:
+                # 드물지만 동일할 수 있으니 몇 번 교체 시도
+                for _ in range(8):
+                    g2 = self.goal_candidates[int(self.rng.integers(0, len(self.goal_candidates)))]
+                    if g2 != s:
+                        g = g2
+                        break
+            tasks.append({
                 "id": self.agv_id_counter,
-                "intersection_id": start_iid,
-                "start_direction": start_d,
-                "goal_intersection_id": goal_iid,
-                "goal_direction": goal_d,
+                "start_pos": tuple(s),
+                "goal_pos": tuple(g),
             })
             self.agv_id_counter += 1
 
+        self.task_set = tasks
+        print(f"Generated {len(self.task_set)} AGVs (one-shot).")
+
     def get_next_task_pair(self, current_time: int) -> List[Dict]:
-        """현재 시간에 맞춰 다음 Task 배치를 반환."""
-        spawn_time = self.next_batch_index * self.interval_steps
-        
-        if current_time >= spawn_time and self.next_batch_index < len(self.task_batches):
-            batch_to_spawn = self.task_batches[self.next_batch_index]
-            self.next_batch_index += 1
-            print(f"[Time: {current_time}] Spawning batch {self.next_batch_index}/{len(self.task_batches)} ({len(batch_to_spawn)} AGVs)")
-            return batch_to_spawn
-            
+        # 한 번만 전부 반환
+        if not self.spawned_once and self.task_set:
+            self.spawned_once = True
+            print(f"[Time: {current_time}] Spawning ALL {len(self.task_set)} AGVs")
+            return list(self.task_set)
         return []
 
     def should_spawn_next(self) -> bool:
-        return True
+        # 첫 호출에서만 스폰
+        return (not self.spawned_once) and bool(self.task_set)
 
-    # --- 호환성을 위한 나머지 함수들 ---
-    def set_arm_gate(self, fn: Callable[[str, str], bool]):
+    def set_arm_gate(self, *args, **kwargs):
+        # 호환용
         pass
 
     def complete_task(self, agv_id: int):
@@ -466,17 +453,56 @@ class TaskSetGenerator:
     def is_episode_done(self) -> bool:
         if not self.task_set:
             return False
-        all_spawned = self.next_batch_index >= len(self.task_batches)
+        all_spawned = self.spawned_once
         all_completed = self.completed_total >= len(self.task_set)
         return all_spawned and all_completed
 
     def get_progress(self) -> Dict:
-        # 생성된 AGV 수는 이제까지 제공된 배치의 총합
-        spawned_count = sum(len(b) for b in self.task_batches[:self.next_batch_index])
+        spawned_count = len(self.task_set) if self.spawned_once else 0
         active = spawned_count - self.completed_total
         return {
             "spawned_total": spawned_count,
             "completed_total": self.completed_total,
             "active_agvs": active,
             "max_agvs": len(self.task_set),
+            "total_tasks": len(self.task_set),  # ENV.make_info() 호환
         }
+
+    # --- 내부 유틸 ---
+    def _collect_walkables(self) -> List[Tuple[int, int]]:
+        ys, xs = np.where(self.map == 0)
+        return list(zip(xs.tolist(), ys.tolist()))  # (x,y)
+
+    def _collect_start_candidates(self) -> List[Tuple[int, int]]:
+        cands: List[Tuple[int, int]] = []
+        for x, y in self.walkable_coords:
+            # ✅ 테두리(가장자리) 전체 제외: x==0, x==W-1, y==0, y==H-1
+            if x == 0 or x == self.W - 1 or y == 0 or y == self.H - 1:
+                continue
+            cands.append((x, y))
+        return cands
+
+    def _collect_goal_corners(self) -> List[Tuple[int, int]]:
+        corners = [(0, 0), (self.W - 1, 0), (0, self.H - 1), (self.W - 1, self.H - 1)]
+        goals = []
+        for x, y in corners:
+            if 0 <= x < self.W and 0 <= y < self.H and self.map[y][x] == 0:
+                goals.append((x, y))
+        return goals
+
+    def _collect_border_walkables(self) -> List[Tuple[int, int]]:
+        border: List[Tuple[int, int]] = []
+        for x in range(self.W):
+            for y in [0, self.H - 1]:
+                if self.map[y][x] == 0:
+                    border.append((x, y))
+        for y in range(1, self.H - 1):
+            for x in [0, self.W - 1]:
+                if self.map[y][x] == 0:
+                    border.append((x, y))
+        # 중복 제거
+        seen = set(); uniq = []
+        for p in border:
+            if p not in seen:
+                seen.add(p); uniq.append(p)
+        return uniq
