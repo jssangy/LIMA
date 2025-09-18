@@ -81,7 +81,7 @@ class GUI():
         # AGV Algorithm Setting
         self.algorithm_label = tk.Label(self.setting, text = 'Algorithms', font = self.font_style2)
         self.algorithm_box = ttk.Combobox(self.setting, 
-                                    values=["D*", "PIBT", "MAAPF-LNS2"], state = 'readonly',
+                                    values=["A*", "D*", "CBS", "PIBT"], state = 'readonly',
                                     font=self.font_style2)
         self.algorithm_box.current(0)
         self.algorithm_box.bind("<<ComboboxSelected>>", self.algorithm_changed)
@@ -354,12 +354,14 @@ class GUI():
     # When trajectory algorithm is changed
     def algorithm_changed(self, event):
         self.append_log("Changed Avoidance algorithm to {}".format(event.widget.get()))
-        if event.widget.get() == "D*":
+        if event.widget.get() == "A*":
             self.env.controller.running_opt = 0
-        if event.widget.get() == "PIBT":
+        if event.widget.get() == "D*":
             self.env.controller.running_opt = 1
-        if event.widget.get() == "MAPF-LNS2":
+        if event.widget.get() == "PIBT":
             self.env.controller.running_opt = 2
+        if event.widget.get() == "CBS":
+            self.env.controller.running_opt = 3
 
     def make_state_info(self, info_list):
         if info_list == False:

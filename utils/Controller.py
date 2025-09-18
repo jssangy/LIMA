@@ -1,7 +1,8 @@
+import copy
 import numpy as np
 from collections import defaultdict
 
-from utils.global_planning import AStar, PIBT, PIBTVanilla
+from utils.global_planning import AStar, PIBT
 
 class controller():    
     def __init__(self, map_data):
@@ -65,10 +66,12 @@ class controller():
         """모든 활성 AGV에 대한 제어 신호 생성"""
         if self.running_opt == 0:              # A*
             self.astar_rout()
-        elif self.running_opt == 1:            # PIBT 전체
+        elif self.running_opt == 1:            # D*
+            self.dstar_rout()
+        elif self.running_opt == 2:            # PIBT 충돌 시
             self.pibt_rout(use_dstar_hint=True, on_conflict=False)
-        elif self.running_opt == 2:            # MAPF-LNS2
-            self.vanilla_pibt_rout()
+        elif self.running_opt == 3:            # CBS
+            self.cbs_rout()
     
     def astar_rout(self):
         """A* 알고리즘을 사용하여 각 AGV의 경로를 계산하고 제어 신호 생성"""
@@ -196,31 +199,55 @@ class controller():
             self.next_buffer[a] = (dx, dy)
             self.control_buffer[a] = (dx, dy)
 
-    def vanilla_pibt_rout(self):
-        """
-        [새로 추가된 함수]
-        가장 기본적인 PIBT 알고리즘(PIBTVanilla)을 사용하여 제어 신호를 생성합니다.
-        """
-        if not self.agv_nums:
-            return
+    def dstar_rout(self):
+        """D* 알고리즘을 사용하여 각 AGV의 경로를 계산하고, 다른 AGV를 장애물로 취급하여 제어 신호 생성"""
+        for num in self.agv_nums:
+            pos = self.agv_pos.get(num)
+            goal = self.agv_goal.get(num)
+            planner = self.planners.get(num)
 
-        # 1. PIBT에 필요한 현재 위치와 목표 위치 스냅샷 생성
-        pos = {a: self.agv_pos[a] for a in self.agv_nums}
-        goals = {a: self.agv_goal[a] for a in self.agv_nums}
+            if pos is None or goal is None:
+                continue
 
-        # 2. 순수 PIBT(PIBTVanilla) 호출
-        final_next = self.pibt_vanilla.plan_one_step(
-            pos=pos, goals=goals
-        )
+            # 맵 복사 및 다른 AGV를 장애물로 표시
+            # self.map이 numpy 배열 또는 2D 리스트라고 가정
+            if hasattr(self.map, 'copy'):
+                dynamic_map = self.map.copy()
+            else:
+                dynamic_map = copy.deepcopy(self.map)
 
-        # 3. 결과를 제어 버퍼에 제어 벡터(dx, dy)로 변환하여 저장
-        for a in self.agv_nums:
-            current_pos = pos[a]
-            # PIBT가 어떤 이유로든 다음 위치를 반환하지 못하면 현재 위치 유지
-            next_pos = final_next.get(a, current_pos) 
-            
-            dx = next_pos[0] - current_pos[0]
-            dy = next_pos[1] - current_pos[1]
-            
-            self.next_buffer[a] = (dx, dy)
-            self.control_buffer[a] = (dx, dy)
+            for other in self.agv_nums:
+                if other != num:
+                    ox, oy = self.agv_pos.get(other, (None, None))
+                    if ox is not None and oy is not None:
+                        try:
+                            # numpy array or list
+                            dynamic_map[oy][ox] = 0  # 0: obstacle
+                        except Exception:
+                            pass
+
+            # 목표에 도달하면 이동 멈춤
+            if pos == goal:
+                self.next_buffer[num] = (0, 0)
+                self.control_buffer[num] = (0, 0)
+                continue
+
+            # D* 플래너로 경로 계산
+            self.planners[num] = AStar(dynamic_map, pos, goal)
+            self.planners[num].compute_shortest_path()
+            path = self.planners[num].extract_path()
+            self.agv_path[num] = path
+
+            if path and len(path) >= 2:
+                next_pos = path[1]
+                dx = next_pos[0] - pos[0]
+                dy = next_pos[1] - pos[1]
+                self.next_buffer[num] = (dx, dy)
+                self.control_buffer[num] = (dx, dy)
+            else:
+                self.next_buffer[num] = (0, 0)
+                self.control_buffer[num] = (0, 0)
+
+    def cbs_rout(self):
+        """CBS로 한 스텝 제어 벡터를 채운다."""
+        pass
