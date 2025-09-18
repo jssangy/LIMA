@@ -65,7 +65,7 @@ class controller():
         if self.running_opt == 0:              # A*
             self.astar_rout()
         elif self.running_opt == 1:            # PIBT 충돌 시
-            self.pibt_rout(use_dstar_hint=True, on_conflict=False)
+            self.pibt_rout()
         elif self.running_opt == 2:            # CBS
             self.cbs_rout()
     
@@ -194,6 +194,14 @@ class controller():
             dx, dy = nx[0] - pos[a][0], nx[1] - pos[a][1]
             self.next_buffer[a] = (dx, dy)
             self.control_buffer[a] = (dx, dy)
+
+            # ---- NEW: D*/A* 제안(dstar_next)과 PIBT 결과(final_next) 비교 ----
+            # 제안과 다르면 "PIBT가 개입해 액션 발생"으로 간주
+            if nx != dstar_next.get(a, pos[a]):
+                # (A) AGV 객체가 있다면 거기에 기록
+                agv_obj = getattr(self, "agv_objects", {}).get(a, None)  # id->obj 딕셔너리가 있다면
+                if agv_obj is not None and hasattr(agv_obj, "action_count"):
+                    agv_obj.action_count += 1
 
     def cbs_rout(self):
         """CBS로 한 스텝 제어 벡터를 채운다."""

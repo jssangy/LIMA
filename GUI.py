@@ -361,23 +361,39 @@ class GUI():
         if event.widget.get() == "CBS":
             self.env.controller.running_opt = 2
 
-    def make_state_info(self, info_list):
-        if info_list == False:
+    def make_state_info(self, info_dict):
+        """
+        [수정] 새로운 info_dict 구조에 맞춰 State Panel을 업데이트합니다.
+        """
+        if not isinstance(info_dict, dict):
             return
+        
         self.state_box.delete(0, self.state_box.size())
-        self.update_state('{:>20} {:<10}'.format('Whole Product: ', info_list[0]))
-        self.update_state('{:>20} {:<10}'.format('Throughput (/min): ', round(info_list[1], 3)))
-        # [추가] 현재 활성화된 AGV 수 출력
-        self.update_state('{:>20} {:<10}'.format('Active AGVs: ', len(info_list[2])))
+
+        # --- 상단 요약 정보 ---
+        success_rate = info_dict.get("success_rate", 0.0)
+        throughput = info_dict.get("throughput", 0.0)
+        avg_actions = info_dict.get("avg_action_count", 0.0)
+
+        self.update_state('{:>20} {:<10.2%}'.format('Success Rate: ', success_rate))
+        self.update_state('{:>20} {:<10.2f}'.format('Throughput (/min): ', throughput))
+        self.update_state('{:>20} {:<10.2f}'.format('Avg Action Count: ', avg_actions))
         self.update_state(' ')
-        self.update_state('{:^7} {:^7} {:^7}'.format('AGVs', 'Products', 'Mode'))
-        for num, info in info_list[2].items():
-            if info[1] == 0:
-                self.update_state('{:^7} {:^7} {:^7}'.format(num, info[0], "Normal"))
-            if info[1] == 1:
-                self.update_state('{:^7} {:^7} {:^7}'.format(num, info[0], "Collision"))
-            if info[1] == 2:
-                self.update_state('{:^7} {:^7} {:^7}'.format(num, info[0], "Deadlock"))
+
+        # --- 개별 AGV 정보 ---
+        active_agvs = info_dict.get("active_agvs", {})
+        self.update_state('{:^10} {:^10} {:^15}'.format('AGV ID', 'Steps', 'Action Count'))
+        self.update_state('-' * 40)
+
+        # AGV ID를 정수로 변환하여 정렬
+        sorted_agv_ids = sorted(active_agvs.keys(), key=int)
+
+        for agv_id in sorted_agv_ids:
+            details = active_agvs[agv_id]
+            steps = details.get("steps", 0)
+            actions = details.get("action_count", 0)
+            self.update_state('{:^10} {:^10} {:^15}'.format(agv_id, steps, actions))
+            
         return 
 
     def rl_agent_toggled(self):

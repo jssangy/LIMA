@@ -96,6 +96,17 @@ class ENV():
         actions: { "x{cx}y{cy}": action_idx, ... }
         반환: obs_next, reward_map, info_next
         """
+        # --- 에피소드 종료 조건 확인 ---
+        terminated = False
+        if self.traffic_mode == 'task':
+            # Task 모드: 모든 작업이 완료되면 종료
+            if self.traffic_generator.is_episode_done():
+                terminated = True
+        
+        # 공통 종료 조건: 최대 스텝 도달
+        if self.time >= self.max_steps or terminated:
+            return False
+        
         self.time += 1
         if actions is None:
             actions = {}
@@ -177,6 +188,7 @@ class ENV():
                 sig = self.controller.control_buffer.get(agv_id, (0, 0))
                 if self._is_valid_move(agv_obj, sig):
                     agv_obj.move(sig)
+                    agv_obj.action_count += 1
                     moved.add(agv_id)
         
         # 나머지 AGV 이동
@@ -672,27 +684,36 @@ class ENV():
         return self.controller.agv_goal
 
     def make_info(self):
-        # [수정] 에피소드 종료 조건 확인
-        terminated = False
-        # 'task' 모드일 경우, 모든 AGV가 작업을 완료했는지 확인
-        if self.traffic_mode == 'task':
-            if self.traffic_generator.is_episode_done():
-                terminated = True
-        
-        # 타임아웃 또는 정상 종료 시 False를 반환하여 루프 중단 신호
-        if self.time >= self.max_steps or terminated:
-            return False
-
+        """
+        [수정] GUI에 필요한 모든 정보를 계산하여 반환합니다.
+        'task' 모드와 'traffic' 모드를 명시적으로 구분하여 처리합니다.
+        """
+        # --- 2. 모드에 따라 통계 정보 계산 ---
         progress = self.traffic_generator.get_progress()
-        total_pairs_done = progress['completed_total']
+        completed_tasks = progress.get('completed_total', 0)
+        total_tasks = progress.get('spawned_total', 0)
 
+        # Success Rate 계산
+        success_rate = (completed_tasks / total_tasks) if total_tasks > 0 else 0.0
+        
         # 스루풋 계산 (분 단위)
-        throughput = (total_pairs_done / self.time * 60) if self.time > 0 else 0.0
+        throughput = (completed_tasks / self.time * 60) if self.time > 0 else 0.0
 
-        agv_states = {}
+        # 평균 Action Count 계산
+        avg_action_count = np.mean(self.completed_agv_actions) if self.completed_agv_actions else 0.0
+
+        # --- 3. 현재 활성화된 AGV들의 상세 정보 수집 ---
+        active_agv_details = {}
         for agv_id, agv_obj in self.agv_list.items():
-            # AGV 상태를 더미 값으로 채움 (평가 스크립트에서는 사용하지 않음)
-            agv_states[agv_id] = [f"Goal_{agv_id}", 0]
+            active_agv_details[agv_id] = {
+                "steps": agv_obj.steps,
+                "action_count": agv_obj.action_count
+            }
 
-        # GUI가 사용하던 포맷 유지: [완료수, 스루풋, AGV상태]
-        return [total_pairs_done, throughput, agv_states]
+        # --- 4. 최종 정보 취합하여 반환 ---
+        return {
+            "success_rate": success_rate,
+            "throughput": throughput,
+            "avg_action_count": avg_action_count,
+            "active_agvs": active_agv_details
+        }
