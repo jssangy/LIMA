@@ -71,7 +71,7 @@ def main():
     prob_path = f"problems/cross/{args.prob}.json"
 
     # ENV 생성자에는 max_steps 없음 → 생성 후 속성으로 지정
-    env = ENV(prob_path, max_arm_len_h=args.max_arm_h, max_arm_len_v=args.max_arm_v, density=args.density, max_steps=args.max_steps, running_opt=args.algo, traffic_mode='task')
+    env = ENV(prob_path, max_arm_len_h=args.max_arm_h, max_arm_len_v=args.max_arm_v, density=args.density, max_steps=args.max_steps, running_opt=args.algo)
 
     # RL 정책은 --use-rl 켠 경우에만 로드
     if args.use_rl:
@@ -91,8 +91,9 @@ def main():
     os.makedirs("results", exist_ok=True)
     prob_base = os.path.splitext(os.path.basename(args.prob))[0]
     algo_label = algo_name(args.algo)
+    density_label = f"{args.density * 100:.0f}%"
     rl_suffix = "_RL" if args.use_rl else ""
-    csv_path = f"results/{prob_base}_{algo_label}{rl_suffix}.csv"
+    csv_path = f"results/{prob_base}_{density_label}_{algo_label}{rl_suffix}.csv"
     fields = ["run", "success_rate", "throughput", "avg_agv_steps", "avg_action_count"]
 
     print(f"Problem: {args.prob}")

@@ -3,17 +3,16 @@ import json
 import math
 import numpy as np
 from typing import Dict
-from collections import defaultdict
 
 from utils.AGV import agv
 from utils.Intersection import Intersection
 from utils import Funct
-from utils.traffic_generator import discover_border_arms_NxM, TrafficGenerator, TaskSetGenerator
+from utils.traffic_generator import TaskSetGenerator
 from utils.Controller import controller
 
 
 class ENV():
-    def __init__(self, prob_path, max_arm_len_h=5, max_arm_len_v=5, density: float = 0.1, max_steps=1000, running_opt=0, traffic_mode='task'):
+    def __init__(self, prob_path, max_arm_len_h=5, max_arm_len_v=5, density: float = 0.1, max_steps=1000, running_opt=0):
         super().__init__()
         """환경 초기화"""
         base_dir = os.path.dirname(prob_path)
@@ -23,7 +22,9 @@ class ENV():
         
         self.map = self._load_map(map_path)
         self.walkable_tiles = np.count_nonzero(self.map == 0)
-        print(f"Map loaded. Walkable tiles (value 0): {self.walkable_tiles}")
+        print(f"Map loaded.")
+        print(f"Map width: {self.map.shape[1]}, Map height: {self.map.shape[0]}")
+        print(f"Walkable tiles (value 0): {self.walkable_tiles}")
         self.max_arm_len_h = max_arm_len_h
         self.max_arm_len_v = max_arm_len_v
         processed_intersections = self._find_intersections_and_build_graph()
@@ -46,15 +47,7 @@ class ENV():
         self.deadlock_queue = []
 
         # TrafficGenerator
-        arms = discover_border_arms_NxM(self.intersections)
-
-        # [수정] 두 종류의 트래픽 생성기를 모두 인스턴스화
-        self.traffic_gen_stream = TrafficGenerator(arms12=arms)
-        self.traffic_gen_task_set = TaskSetGenerator(self.map, density=density)
-
-        self.traffic_mode = "traffic"
-        self.traffic_generator = self.traffic_gen_stream
-        self.traffic_generator.set_arm_gate(lambda iid, d: self.is_arm_outgoing_clear(iid, d))
+        self.traffic_generator = TaskSetGenerator(self.map, density=density)
 
         # Color mapping
         self.color_map = Funct.Color_dict(6).dic
@@ -79,10 +72,7 @@ class ENV():
             I.reset()
         self.deadlock_queue = []
 
-        if self.traffic_mode == 'task':
-            self._spawn_amrs_from_task_gen()
-        elif self.traffic_mode == 'traffic':
-            self._spawn_amrs_from_stream_gen()
+        self._spawn_amrs_from_task_gen()
 
         # 리셋 시에는 초기 관찰 상태만 반환
         obs, info = self.generate_observation()
@@ -100,10 +90,8 @@ class ENV():
         """
         # --- 에피소드 종료 조건 확인 ---
         terminated = False
-        if self.traffic_mode == 'task':
-            # Task 모드: 모든 작업이 완료되면 종료
-            if self.traffic_generator.is_episode_done():
-                terminated = True
+        if self.traffic_generator.is_episode_done():
+            terminated = True
         
         # 공통 종료 조건: 최대 스텝 도달
         if self.time >= self.max_steps or terminated:
@@ -206,10 +194,7 @@ class ENV():
         # 4) 환경 변화 처리
         self._check_amr_completion()
 
-        if self.traffic_mode == 'task':
-            self._spawn_amrs_from_task_gen()
-        elif self.traffic_mode == 'traffic':
-            self._spawn_amrs_from_stream_gen()
+        self._spawn_amrs_from_task_gen()
 
         if self.controller.pibt_bump:
             for aid, inc in list(self.controller.pibt_bump.items()):
@@ -446,54 +431,6 @@ class ENV():
             self.agv_list[agv_id] = new_agv
             self.controller.add_agv(agv_id, start_pos, goal_pos)
 
-    def _spawn_amrs_from_stream_gen(self):
-        """
-        [새로 추가된 함수 - Traffic 모드 전용]
-        TrafficGenerator12로부터 새로운 AMR을 받아 환경에 추가.
-        """
-        gen = self.traffic_generator
-        if not gen or not gen.should_spawn_next():
-            return
-        
-        # TrafficGenerator12는 current_time 인자가 없음
-        new_tasks = gen.get_next_task_pair()
-
-        for task in new_tasks:
-            agv_id = task['id']
-            start_iid = task['intersection_id']
-            start_dir = task['start_direction']
-            goal_iid = task['goal_intersection_id']
-            goal_dir = task['goal_direction']
-
-            start_pos = self._direction_to_coords(start_dir, start_iid)
-            goal_pos = self._direction_to_coords(goal_dir, goal_iid)
-
-            if start_pos is None or goal_pos is None:
-                print(f"Warning: Could not get start/goal position for AGV {agv_id}. Skipping.")
-                continue
-            
-            # AGV 생성 및 등록 (agv 생성자 인자 순서 수정)
-            new_agv = agv(start_pos, agv_id, self.color_map[agv_id % 6])
-            self.agv_list[agv_id] = new_agv
-            self.controller.add_agv(agv_id, start_pos, goal_pos)
-
-    def set_traffic_mode(self, mode: str):
-        """
-        [새로 추가된 함수]
-        트래픽 생성 모드를 설정합니다 ('traffic' 또는 'task').
-        """
-        if mode == 'task':
-            self.traffic_mode = 'task'
-            self.traffic_generator = self.traffic_gen_task_set
-            print("Traffic mode set to: 'task' (Fixed Task Set at reset)")
-        elif mode == 'traffic':
-            self.traffic_mode = 'traffic'
-            self.traffic_generator = self.traffic_gen_stream
-            self.traffic_generator.set_arm_gate(lambda iid, d: self.is_arm_outgoing_clear(iid, d))
-            print("Traffic mode set to: 'traffic' (Streaming Poisson Traffic)")
-        else:
-            raise ValueError(f"Unknown traffic mode: '{mode}'. Choose 'traffic' or 'task'.")
-
     def _check_amr_completion(self):
         completed_agvs = []
         for agv_id, agv_obj in list(self.agv_list.items()):
@@ -637,35 +574,6 @@ class ENV():
             
         # 두 조건 모두 통과하면 생성 허용
         return True
-
-    """
-    def _center_occupied_any(self) -> bool:
-        # (단일 교차로 가정) 교차로 중앙 점유 여부
-        return self.intersection.center_agv is not None
-
-    def _count_inside_intersection(self) -> int:
-        # 교차로 내부(팔+중앙) AMR 수 (인덱스 사용)
-        # agvs_in_intersection: set of AGV objects
-        return len(self.intersection.agvs_in_intersection)
-
-    def _arm_has_outgoing(self, direction: str) -> bool:
-        # 해당 팔에서 바깥으로 나가려는(outgoing) AMR이 하나라도 있으면 True
-        return bool(getattr(self.intersection, 'outgoing', {}).get(direction, False))
-
-    def _spawn_gate(self, direction: str) -> bool:    
-        # Poisson 스폰을 막는 글로벌 게이트:
-        # - 중앙 점유 시 전체 스폰 정지
-        # - 교차로 내부 AMR 수가 임계치 이상이면 정지
-        # - 해당 팔 점유 시 해당 방향 스폰 금지
-
-        if self._center_occupied_any():               # ★ 중앙 점유 금지
-            return False
-        if self._count_inside_intersection() >= self.max_inside:
-            return False
-        if self._arm_has_outgoing(direction):
-            return False
-        return True
-    """
 
     # --- [GUI 연동을 위한 어댑터 함수들] ---
     def Get_AGV(self):
