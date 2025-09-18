@@ -22,7 +22,6 @@ class controller():
 
         self.running_opt = 0
         self.pibt = PIBT(self.map)
-        self.pibt_vanilla = PIBTVanilla(self.map)
 
     def reset(self):
         self.agv_pos.clear()
@@ -34,7 +33,6 @@ class controller():
         self.agv_path.clear()
         self.push_sequence.clear()
         self.pibt.reset()
-        self.pibt_vanilla.reset()
 
     def add_agv(self, agv_num, start_pos, goal_pos):
         """AGV를 컨트롤러에 동적으로 추가"""
@@ -66,11 +64,9 @@ class controller():
         """모든 활성 AGV에 대한 제어 신호 생성"""
         if self.running_opt == 0:              # A*
             self.astar_rout()
-        elif self.running_opt == 1:            # D*
-            self.dstar_rout()
-        elif self.running_opt == 2:            # PIBT 충돌 시
+        elif self.running_opt == 1:            # PIBT 충돌 시
             self.pibt_rout(use_dstar_hint=True, on_conflict=False)
-        elif self.running_opt == 3:            # CBS
+        elif self.running_opt == 2:            # CBS
             self.cbs_rout()
     
     def astar_rout(self):
@@ -198,55 +194,6 @@ class controller():
             dx, dy = nx[0] - pos[a][0], nx[1] - pos[a][1]
             self.next_buffer[a] = (dx, dy)
             self.control_buffer[a] = (dx, dy)
-
-    def dstar_rout(self):
-        """D* 알고리즘을 사용하여 각 AGV의 경로를 계산하고, 다른 AGV를 장애물로 취급하여 제어 신호 생성"""
-        for num in self.agv_nums:
-            pos = self.agv_pos.get(num)
-            goal = self.agv_goal.get(num)
-            planner = self.planners.get(num)
-
-            if pos is None or goal is None:
-                continue
-
-            # 맵 복사 및 다른 AGV를 장애물로 표시
-            # self.map이 numpy 배열 또는 2D 리스트라고 가정
-            if hasattr(self.map, 'copy'):
-                dynamic_map = self.map.copy()
-            else:
-                dynamic_map = copy.deepcopy(self.map)
-
-            for other in self.agv_nums:
-                if other != num:
-                    ox, oy = self.agv_pos.get(other, (None, None))
-                    if ox is not None and oy is not None:
-                        try:
-                            # numpy array or list
-                            dynamic_map[oy][ox] = 0  # 0: obstacle
-                        except Exception:
-                            pass
-
-            # 목표에 도달하면 이동 멈춤
-            if pos == goal:
-                self.next_buffer[num] = (0, 0)
-                self.control_buffer[num] = (0, 0)
-                continue
-
-            # D* 플래너로 경로 계산
-            self.planners[num] = AStar(dynamic_map, pos, goal)
-            self.planners[num].compute_shortest_path()
-            path = self.planners[num].extract_path()
-            self.agv_path[num] = path
-
-            if path and len(path) >= 2:
-                next_pos = path[1]
-                dx = next_pos[0] - pos[0]
-                dy = next_pos[1] - pos[1]
-                self.next_buffer[num] = (dx, dy)
-                self.control_buffer[num] = (dx, dy)
-            else:
-                self.next_buffer[num] = (0, 0)
-                self.control_buffer[num] = (0, 0)
 
     def cbs_rout(self):
         """CBS로 한 스텝 제어 벡터를 채운다."""

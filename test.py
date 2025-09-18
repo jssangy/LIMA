@@ -116,9 +116,8 @@ def main():
     algo_name = algo_map.get(args.algo, "Unknown")
     rl_suffix = "_RL" if env.use_rl else ""
     
-    base_log_filename = f"results/eval_{algo_name}{rl_suffix}.csv"
+    log_filename = f"results/eval_{algo_name}{rl_suffix}.csv"
     os.makedirs("results", exist_ok=True)
-    log_filename = get_unique_filename(base_log_filename)
     
     all_results = []
 

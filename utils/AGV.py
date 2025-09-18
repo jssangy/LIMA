@@ -17,6 +17,8 @@ class agv():
         self.goal = (0, 0)
 
         self.steps = 0
+        
+        self.action_count = 0
 
     def move(self, control_signal):
         self.prev_pos = self.pos
