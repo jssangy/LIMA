@@ -8,7 +8,7 @@ from collections import defaultdict
 from utils.AGV import agv
 from utils.Intersection import Intersection
 from utils import Funct
-from utils.traffic_generator import discover_border_arms_NxM, TrafficGenerator12, TaskSetGenerator
+from utils.traffic_generator import discover_border_arms_NxM, TrafficGenerator, TaskSetGenerator
 from utils.Controller import controller
 
 
@@ -49,7 +49,7 @@ class ENV():
         arms = discover_border_arms_NxM(self.intersections)
 
         # [수정] 두 종류의 트래픽 생성기를 모두 인스턴스화
-        self.traffic_gen_stream = TrafficGenerator12(arms12=arms)
+        self.traffic_gen_stream = TrafficGenerator(arms12=arms)
         self.traffic_gen_task_set = TaskSetGenerator(self.map, density=density)
 
         self.traffic_mode = "traffic"
