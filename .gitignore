@@ -3,11 +3,6 @@ __pycache__/
 
 wandb/
 
-checkpoint/
-*.pth
-
-checkpoints/
-
 
 .vscode/
 

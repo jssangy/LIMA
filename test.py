@@ -14,7 +14,6 @@ class RLPolicy:
 
     @torch.no_grad()
     def __call__(self, obs: dict, action_mask: np.ndarray | None):
-        # dict obs 그대로 사용 ({"state","edge_index"})
         if self.greedy:
             logits, _ = self.model.forward(obs)
             if action_mask is not None:
@@ -39,7 +38,7 @@ def main():
 
     # 환경 설정 파일 경로
     prob_path = os.path.join('problems', 'cross', 'cross_1.json')
-    model_path = os.path.join('checkpoint', 'best_mlp_policy.pt')
+    model_path = os.path.join('checkpoint', 'final_policy.pt')
 
     # 1. ENV 환경 인스턴스 생성
     env = ENV(prob_path)
