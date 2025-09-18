@@ -357,9 +357,9 @@ class GUI():
         if event.widget.get() == "A*":
             self.env.controller.running_opt = 0
         if event.widget.get() == "PIBT":
-            self.env.controller.running_opt = 2
+            self.env.controller.running_opt = 1
         if event.widget.get() == "CBS":
-            self.env.controller.running_opt = 3
+            self.env.controller.running_opt = 2
 
     def make_state_info(self, info_list):
         if info_list == False:

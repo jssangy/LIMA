@@ -220,7 +220,7 @@ class TrafficGenerator12:
         lambda_per_arm: Optional[Dict[Tuple[str, str], float]] = None,
         arm_gate: Optional[Callable[[str, str], bool]] = None,
         debug: bool = False,
-        max_agvs: int = 500,
+        max_agvs: int = 20,
     ):
         self.rng = np.random.default_rng()
         self.arms = [(str(iid), d) for (iid, d) in arms12]

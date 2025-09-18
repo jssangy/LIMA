@@ -63,6 +63,7 @@ class ENV():
         self.rl_policy = None
 
         self.completed_agv_steps = []
+        self.completed_agv_actions = [] # [신규] 완료된 AMR의 행동 카운트 저장 리스트
 
     def reset(self):        
         self.time = 0
@@ -86,6 +87,7 @@ class ENV():
         self.prev_deadlock_map: dict[str, bool] = {}
 
         self.completed_agv_steps.clear()
+        self.completed_agv_actions.clear()
 
         return obs, info
 
@@ -329,7 +331,7 @@ class ENV():
 
     def _is_valid_move(self, current_agv, control_signal):
 
-        if self.controller.running_opt in [0, 1, 2]:
+        if self.controller.running_opt == 1: # PIBT 충돌 시
             return True
 
         nx = current_agv.pos[0] + control_signal[0]
@@ -490,6 +492,7 @@ class ENV():
         for agv_id in completed_agvs:
             if agv_id in self.agv_list:
                 self.completed_agv_steps.append(self.agv_list[agv_id].steps)
+                self.completed_agv_actions.append(self.agv_list[agv_id].action_count)
             self.traffic_generator.complete_task(agv_id)
             del self.agv_list[agv_id]
             self.controller.remove_agv(agv_id)
