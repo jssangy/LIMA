@@ -49,6 +49,7 @@ def run_one_episode(env: ENV, use_rl: bool) -> dict:
     return {
         "success_rate": float(info.get("success_rate", 0.0)),
         "throughput":   float(info.get("throughput", 0.0)),
+        "avg_integrity": float(info.get("avg_path_integrity", 0.0)),
         "avg_agv_steps": float(compute_avg_steps(env)),
         "avg_action_count": float(info.get("avg_action_count", 0.0)),
     }
@@ -92,7 +93,7 @@ def main():
     algo_label = algo_name(args.algo)
     rl_suffix = "_RL" if args.use_rl else ""
     csv_path = f"results/{prob_base}_{algo_label}{rl_suffix}_{args.num_amrs}.csv"
-    fields = ["run", "success_rate", "throughput", "avg_agv_steps", "avg_action_count"]
+    fields = ["run", "success_rate", "throughput", "avg_integrity", "avg_agv_steps", "avg_action_count"]
 
     print(f"Problem: {args.prob}")
     print(f"Algorithm: {algo_label} (running_opt={args.algo})")
@@ -114,6 +115,7 @@ def main():
                 "run": i,
                 "success_rate":    f"{res['success_rate']:.6f}",
                 "throughput":      f"{res['throughput']:.6f}",
+                "avg_integrity":    f"{res['avg_integrity']:.6f}",
                 "avg_agv_steps":   f"{res['avg_agv_steps']:.6f}",
                 "avg_action_count":f"{res['avg_action_count']:.6f}",
             })
