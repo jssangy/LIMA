@@ -312,7 +312,7 @@ class controller():
         }
 
         self.cbs_planner = CBS(self.map, agents_to_plan)
-        timeout_seconds = 60.0  # 타임아웃 설정
+        timeout_seconds = 3600  # 타임아웃 설정
         print('Trying to calculate within', timeout_seconds, 'seconds...')
         solution = self.cbs_planner.solve(time_limit=timeout_seconds)
 
