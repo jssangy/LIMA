@@ -26,8 +26,7 @@ class controller():
 
         self.bfs = BFS(self.map)
         self.initial_paths = {}
-        self.initial_next_idx = {}
-
+        self.initial_visit_idx = {}
 
         self.cbs_planner = None
         self.agv_full_paths = {}
@@ -50,7 +49,7 @@ class controller():
         self.pibt_bump.clear()
         
         self.initial_paths.clear()
-        self.initial_next_idx.clear()
+        self.initial_visit_idx.clear()
 
         self.agv_full_paths.clear()
         self.agv_path_timestep.clear()
@@ -70,7 +69,7 @@ class controller():
 
         init_path = self.bfs.plan_path(start_pos, goal_pos) or [start_pos]
         self.initial_paths[agv_num] = init_path
-        self.initial_next_idx[agv_num] = 1 if len(init_path) > 1 else 0
+        self.initial_visit_idx[agv_num] = 0
 
         self.agv_path_timestep[agv_num] = 0
 
@@ -86,7 +85,7 @@ class controller():
             self.agv_path.pop(agv_num, None)
 
             self.initial_paths.pop(agv_num, None)
-            self.initial_next_idx.pop(agv_num, None)
+            self.initial_visit_idx.pop(agv_num, None)
 
 
             self.agv_full_paths.pop(agv_num, None)
@@ -416,58 +415,65 @@ class controller():
                 self.control_buffer[aid] = (0, 0)
                 continue
 
-            # 0) 초기 경로/포인터 보장 (스폰 직후 보강)
+            # 0) 초기 경로/포인터 보장
             ipath = self.initial_paths.get(aid)
             if not ipath:
                 ipath = self.bfs.plan_path(pos, goal) or [pos]
                 self.initial_paths[aid] = ipath
-                self.initial_next_idx[aid] = 1 if len(ipath) > 1 else 0
+                self.initial_visit_idx[aid] = 0
 
-            next_idx = self.initial_next_idx.get(aid, 1 if len(ipath) > 1 else 0)
+            visit_idx = self.initial_visit_idx.get(aid, 0)
+            visit_idx = max(0, min(visit_idx, len(ipath)-1))
 
-            # 1) 현재가 초기 경로 위인지 검사
-            try:
-                idx_on = ipath.index(pos)  # pos가 초기경로 몇 번째인지
-            except ValueError:
-                idx_on = -1
+            # 1) 현재가 "다음에 반드시 밟아야 할" 노드 위에 있으면 인덱스 전진
+            if pos == ipath[visit_idx]:
+                # 여러 칸 건너뛰어 붙었더라도 '정확히 그 노드'에 올랐을 때만 1칸 전진
+                visit_idx = min(visit_idx + 1, len(ipath))  # len(ipath)까지 허용(끝 표시)
+                self.initial_visit_idx[aid] = visit_idx
 
-            if idx_on >= 0:
-                # 경로 위: 다음 인덱스를 당겨주고 현재→goal 전체 경로 제공
-                next_idx = max(next_idx, min(idx_on + 1, max(1, len(ipath) - 1)))
-                self.initial_next_idx[aid] = next_idx
-                full_path = ipath[idx_on:]            # [pos, ..., goal]
+            # 2) 방문해야 할 노드가 더 없다면(=초기 경로 끝), goal 체크 후 정지
+            if visit_idx >= len(ipath) or pos == goal:
+                self.agv_path[aid] = [pos]
+                self.next_buffer[aid] = (0, 0)
+                self.control_buffer[aid] = (0, 0)
+                continue
+
+            # 3) 반드시 밟아야 할 다음 노드(target) 정의
+            target = ipath[visit_idx]
+
+            # 4) full_path 구성: pos→target 재합류 경로 + target 이후 초기경로 꼬리
+            if abs(target[0]-pos[0]) + abs(target[1]-pos[1]) == 1:
+                # 인접하면 바로 붙이기
+                full_path = [pos] + ipath[visit_idx:]
             else:
-                # 경로 밖: target=초기경로[next_idx]로 재합류
-                if next_idx >= len(ipath):
-                    target = goal
-                else:
-                    target = ipath[next_idx]
-
-                # 인접하면 바로 target로 붙고, 아니면 BFS로 rejoin 경로 생성
-                if abs(target[0] - pos[0]) + abs(target[1] - pos[1]) == 1:
-                    # [pos] + [target..goal]
-                    full_path = [pos] + ipath[next_idx:]
-                else:
-                    rejoin_path = self.bfs.plan_path(pos, target) or [pos]
-                    if len(rejoin_path) >= 2:
-                        # rejoin_path 끝이 target이므로 target은 한 번만 포함
-                        tail = ipath[next_idx + 1:] if next_idx + 1 < len(ipath) else []
-                        full_path = rejoin_path + tail
-                    else:
-                        # 타겟까지 경로 실패 시 goal까지 바로 경로 시도
+                # 재합류 경로: target까지 BFS (실패시 뒤 인덱스로 완화)
+                rejoin = self.bfs.plan_path(pos, target) or [pos]
+                if len(rejoin) < 2:
+                    # target이 벽/봉쇄 등으로 실패하면 뒤쪽에서 가장 가까운 reachable 노드 탐색
+                    found = False
+                    for j in range(visit_idx+1, len(ipath)):
+                        rp = self.bfs.plan_path(pos, ipath[j]) or [pos]
+                        if len(rp) >= 2:
+                            tail = ipath[j+1:] if j+1 < len(ipath) else []
+                            full_path = rp + tail
+                            found = True
+                            break
+                    if not found:
+                        # 최후: 그냥 goal까지
                         fallback = self.bfs.plan_path(pos, goal) or [pos]
                         full_path = fallback
+                else:
+                    tail = ipath[visit_idx+1:] if visit_idx+1 < len(ipath) else []
+                    full_path = rejoin + tail  # rejoin 끝이 target이므로 target은 한 번만 포함
 
-            # 2) 최종 버퍼/경로 적용 (항상 2개 이상 보장하려고 노력)
+            # 5) 제어 벡터/경로 적용
             self.agv_full_paths[aid] = full_path
-            if pos == goal or len(full_path) < 2:
+            if len(full_path) < 2:
                 self.agv_path[aid] = [pos]
                 self.next_buffer[aid] = (0, 0)
                 self.control_buffer[aid] = (0, 0)
             else:
                 self.agv_path[aid] = full_path
                 next_pos = full_path[1]
-                dx = next_pos[0] - pos[0]
-                dy = next_pos[1] - pos[1]
-                self.next_buffer[aid] = (dx, dy)
-                self.control_buffer[aid] = (dx, dy)
+                self.next_buffer[aid] = (next_pos[0]-pos[0], next_pos[1]-pos[1])
+                self.control_buffer[aid] = self.next_buffer[aid]
