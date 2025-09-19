@@ -378,10 +378,12 @@ class GUI():
         success_rate = info_dict.get("success_rate", 0.0)
         throughput = info_dict.get("throughput", 0.0)
         avg_actions = info_dict.get("avg_action_count", 0.0)
+        avg_integrity = info_dict.get("avg_path_integrity", 0.0)
 
         self.update_state('{:>20} {:<10.2%}'.format('Success Rate: ', success_rate))
         self.update_state('{:>20} {:<10.2f}'.format('Throughput (/min): ', throughput))
-        self.update_state('{:>20} {:<10.2f}'.format('Avg Action Count: ', avg_actions))
+        self.update_state('{:>20} {:<10.2f}'.format('Avg AC: ', avg_actions))
+        self.update_state('{:>20} {:<10.2f}'.format('Avg PI: ', avg_integrity))
         self.update_state(' ')
 
         # --- 개별 AGV 정보 ---

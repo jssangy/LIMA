@@ -20,6 +20,8 @@ class ENV():
         with open(prob_path, 'r') as f:
             data = json.load(f)
         map_path = os.path.join(base_dir, data['mapFile'])
+
+        self.time = 0
         
         self.map = self._load_map(map_path)
         self.walkable_tiles = np.count_nonzero(self.map == 0)
@@ -61,6 +63,8 @@ class ENV():
         self.completed_agv_steps = []
         self.completed_agv_actions = [] # [신규] 완료된 AMR의 행동 카운트 저장 리스트
 
+        self.completed_path_integrities: list[float] = []
+
         self._sig_hist = deque(maxlen=12)  # 전역 시그니처 히스토리
         self._stg_idle_win = 10             # 정지 판단 윈도우(최근 10스텝 모두 동일)
         self._stg_osc_win  = 10             # 진동 판단 윈도우(최근 10스텝이 ABABAB)
@@ -89,6 +93,8 @@ class ENV():
         self.completed_agv_steps.clear()
         self.completed_agv_actions.clear()
 
+        self.completed_path_integrities.clear()
+
         self._sig_hist.clear()
         self._stg_reason = None
 
@@ -113,7 +119,6 @@ class ENV():
         if self.time >= self.max_steps or terminated:
             return False
         
-        self.time += 1
         if actions is None:
             actions = {}
 
@@ -282,6 +287,10 @@ class ENV():
         for agv_id, agv_obj in self.agv_list.items():
             self.controller.get_sensing(agv_id, agv_obj.pos)
         self.controller.make_control()
+        if self.time == 0:
+            # 리셋 직후: AGV별 초기 경로 설정
+            for agv_id, paths in self.controller.agv_path.items():
+                self.agv_list[agv_id].set_initial_path(paths)
 
         # 2) 교차로 최신화 (여기서만 최신화! step에서는 하지 않음)
         self._update_intersections_state()
@@ -311,6 +320,8 @@ class ENV():
                 "is_deadlock": I.is_deadlock,
                 "action_mask": action_mask,
             }
+        
+        self.time += 1
 
         return obs, info
     
@@ -461,9 +472,12 @@ class ENV():
                 completed_agvs.append(agv_id)
 
         for agv_id in completed_agvs:
-            if agv_id in self.agv_list:
-                self.completed_agv_steps.append(self.agv_list[agv_id].steps)
-                self.completed_agv_actions.append(self.agv_list[agv_id].action_count)
+            agv_obj = self.agv_list[agv_id]
+            if agv_obj is not None:
+                pi_pct = agv_obj.path_integrity_ratio()
+                self.completed_path_integrities.append(pi_pct)
+                self.completed_agv_steps.append(agv_obj.steps)
+                self.completed_agv_actions.append(agv_obj.action_count)
             self.traffic_generator.complete_task(agv_id)
             del self.agv_list[agv_id]
             self.controller.remove_agv(agv_id)
@@ -666,6 +680,12 @@ class ENV():
         all_action_counts = list(self.completed_agv_actions) + current_action_counts
         avg_action_count = float(np.mean(all_action_counts)) if all_action_counts else 0.0
 
+        active_pi = []
+        for agv_obj in self.agv_list.values():
+            active_pi.append(agv_obj.path_integrity_ratio())
+        all_pi = self.completed_path_integrities + active_pi
+        avg_pi = float(np.mean(all_pi)) if all_pi else 0.0
+
         # --- 3. 현재 활성화된 AGV들의 상세 정보 수집 ---
         active_agv_details = {}
         for agv_id, agv_obj in self.agv_list.items():
@@ -679,5 +699,6 @@ class ENV():
             "success_rate": success_rate,
             "throughput": throughput,
             "avg_action_count": avg_action_count,
-            "active_agvs": active_agv_details
+            "active_agvs": active_agv_details,
+            "avg_path_integrity": avg_pi,
         }

@@ -23,7 +23,10 @@ class controller():
         self.running_opt = running_opt
         self.pibt = PIBT(self.map)
         self.pibt_bump = defaultdict(int)
+
         self.bfs = BFS(self.map)
+        self.initial_paths = {}
+        self.initial_next_idx = {}
 
 
         self.cbs_planner = None
@@ -45,6 +48,9 @@ class controller():
         self.push_sequence.clear()
         self.pibt.reset()
         self.pibt_bump.clear()
+        
+        self.initial_paths.clear()
+        self.initial_next_idx.clear()
 
         self.agv_full_paths.clear()
         self.agv_path_timestep.clear()
@@ -62,6 +68,10 @@ class controller():
         self.planners[agv_num] = AStar(self.map, start_pos, goal_pos)
         self.agv_path[agv_num] = []
 
+        init_path = self.bfs.plan_path(start_pos, goal_pos) or [start_pos]
+        self.initial_paths[agv_num] = init_path
+        self.initial_next_idx[agv_num] = 1 if len(init_path) > 1 else 0
+
         self.agv_path_timestep[agv_num] = 0
 
     def remove_agv(self, agv_num):
@@ -74,6 +84,9 @@ class controller():
             self.control_buffer.pop(agv_num, None)
             self.planners.pop(agv_num, None)
             self.agv_path.pop(agv_num, None)
+
+            self.initial_paths.pop(agv_num, None)
+            self.initial_next_idx.pop(agv_num, None)
 
 
             self.agv_full_paths.pop(agv_num, None)
@@ -393,38 +406,68 @@ class controller():
         if not self.agv_nums:
             return
 
-        if hasattr(self.bfs, "plan_all_paths"):
-            paths = self.bfs.plan_all_paths(self.agv_pos, self.agv_goal)
-        else:
-            paths = {}
-            for aid in self.agv_nums:
-                s = self.agv_pos.get(aid)
-                g = self.agv_goal.get(aid)
-                if s is None or g is None:
-                    paths[aid] = [s] if s is not None else []
-                else:
-                    paths[aid] = self.bfs.plan_path(s, g)
-
         for aid in self.agv_nums:
             pos  = self.agv_pos.get(aid)
             goal = self.agv_goal.get(aid)
-            path = paths.get(aid, [])
 
-            self.agv_full_paths[aid] = path
-
-            if not path:
-                safe_path = [pos] if pos is not None else []
-                self.agv_path[aid] = safe_path
-            else:
-                self.agv_path[aid] = path
-
-            if pos is None or goal is None or pos == goal or len(self.agv_path[aid]) < 2:
+            if pos is None or goal is None:
+                self.agv_path[aid] = [pos] if pos is not None else []
                 self.next_buffer[aid] = (0, 0)
                 self.control_buffer[aid] = (0, 0)
                 continue
 
-            next_pos = self.agv_path[aid][1]
-            dx = next_pos[0] - pos[0]
-            dy = next_pos[1] - pos[1]
-            self.next_buffer[aid] = (dx, dy)
-            self.control_buffer[aid] = (dx, dy)
+            # 0) 초기 경로/포인터 보장 (스폰 직후 보강)
+            ipath = self.initial_paths.get(aid)
+            if not ipath:
+                ipath = self.bfs.plan_path(pos, goal) or [pos]
+                self.initial_paths[aid] = ipath
+                self.initial_next_idx[aid] = 1 if len(ipath) > 1 else 0
+
+            next_idx = self.initial_next_idx.get(aid, 1 if len(ipath) > 1 else 0)
+
+            # 1) 현재가 초기 경로 위인지 검사
+            try:
+                idx_on = ipath.index(pos)  # pos가 초기경로 몇 번째인지
+            except ValueError:
+                idx_on = -1
+
+            if idx_on >= 0:
+                # 경로 위: 다음 인덱스를 당겨주고 현재→goal 전체 경로 제공
+                next_idx = max(next_idx, min(idx_on + 1, max(1, len(ipath) - 1)))
+                self.initial_next_idx[aid] = next_idx
+                full_path = ipath[idx_on:]            # [pos, ..., goal]
+            else:
+                # 경로 밖: target=초기경로[next_idx]로 재합류
+                if next_idx >= len(ipath):
+                    target = goal
+                else:
+                    target = ipath[next_idx]
+
+                # 인접하면 바로 target로 붙고, 아니면 BFS로 rejoin 경로 생성
+                if abs(target[0] - pos[0]) + abs(target[1] - pos[1]) == 1:
+                    # [pos] + [target..goal]
+                    full_path = [pos] + ipath[next_idx:]
+                else:
+                    rejoin_path = self.bfs.plan_path(pos, target) or [pos]
+                    if len(rejoin_path) >= 2:
+                        # rejoin_path 끝이 target이므로 target은 한 번만 포함
+                        tail = ipath[next_idx + 1:] if next_idx + 1 < len(ipath) else []
+                        full_path = rejoin_path + tail
+                    else:
+                        # 타겟까지 경로 실패 시 goal까지 바로 경로 시도
+                        fallback = self.bfs.plan_path(pos, goal) or [pos]
+                        full_path = fallback
+
+            # 2) 최종 버퍼/경로 적용 (항상 2개 이상 보장하려고 노력)
+            self.agv_full_paths[aid] = full_path
+            if pos == goal or len(full_path) < 2:
+                self.agv_path[aid] = [pos]
+                self.next_buffer[aid] = (0, 0)
+                self.control_buffer[aid] = (0, 0)
+            else:
+                self.agv_path[aid] = full_path
+                next_pos = full_path[1]
+                dx = next_pos[0] - pos[0]
+                dy = next_pos[1] - pos[1]
+                self.next_buffer[aid] = (dx, dy)
+                self.control_buffer[aid] = (dx, dy)
