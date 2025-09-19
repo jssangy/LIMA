@@ -3,6 +3,7 @@ import json
 import math
 import numpy as np
 from typing import Dict
+from collections import deque
 
 from utils.AGV import agv
 from utils.Intersection import Intersection
@@ -12,7 +13,7 @@ from utils.Controller import controller
 
 
 class ENV():
-    def __init__(self, prob_path, max_arm_len_h=5, max_arm_len_v=5, density: float = 0.1, max_steps=1000, running_opt=0):
+    def __init__(self, prob_path, max_arm_len_h=5, max_arm_len_v=5, num_amrs=500, max_steps=1000, running_opt=0):
         super().__init__()
         """환경 초기화"""
         base_dir = os.path.dirname(prob_path)
@@ -47,7 +48,7 @@ class ENV():
         self.deadlock_queue = []
 
         # TrafficGenerator
-        self.traffic_generator = TaskSetGenerator(self.map, density=density)
+        self.traffic_generator = TaskSetGenerator(self.map, num_tasks=num_amrs)
 
         # Color mapping
         self.color_map = Funct.Color_dict(6).dic
@@ -59,6 +60,13 @@ class ENV():
 
         self.completed_agv_steps = []
         self.completed_agv_actions = [] # [신규] 완료된 AMR의 행동 카운트 저장 리스트
+
+        self._sig_hist = deque(maxlen=12)  # 전역 시그니처 히스토리
+        self._stg_idle_win = 10             # 정지 판단 윈도우(최근 10스텝 모두 동일)
+        self._stg_osc_win  = 10             # 진동 판단 윈도우(최근 10스텝이 ABABAB)
+        self._stg_min_time = 20            # 초반 전이 구간 보호(20스텝 이전엔 감지 안 함)
+        self._stg_enabled  = True          # 필요 시 끄고 켤 수 있음
+        self._stg_reason   = None          # 디버그용(‘idle’/‘osc’)
 
     def reset(self):        
         self.time = 0
@@ -81,6 +89,9 @@ class ENV():
         self.completed_agv_steps.clear()
         self.completed_agv_actions.clear()
 
+        self._sig_hist.clear()
+        self._stg_reason = None
+
         return obs, info
 
     def step(self, actions=None, train=True):
@@ -92,6 +103,11 @@ class ENV():
         terminated = False
         if self.traffic_generator.is_episode_done():
             terminated = True
+
+        if self._update_and_check_stagnation():
+            print(f"[EarlyStop] stagnation detected ({self._stg_reason}) at t={self.time}, "
+                f"AGVs={len(self.agv_list)}")
+            return False  # 테스트 루프에서 break
         
         # 공통 종료 조건: 최대 스텝 도달
         if self.time >= self.max_steps or terminated:
@@ -120,76 +136,83 @@ class ENV():
                     action_mask = meta.get("action_mask")
                     rl_action = int(self.rl_policy(obs_now[iid], action_mask))
                     act_to_apply[iid] = rl_action
-
-        sorted_iids = sorted(self.intersections.keys(), key=self._inter_rank, reverse=True)
-
-        # 2) 교차로별 플래닝 (begin → resolve → action → finalize)
-        for I in self.intersections.values():
-            I.begin_plan()
-
-        for iid in sorted_iids:
-            I = self.intersections[iid]
-
-            # 사전 충돌 해결 로직 (예: 팔 스와핑)
-            I.resolve_arm_swaps_all()
-
-            # 액션 적용
-            if iid in act_to_apply:
-                a_idx = act_to_apply[iid]
-                I.action_control(a_idx)
-
-        final_plan_moves = {}
-        final_plan_prio = {}
-        final_plan_order = {}
-        final_plan_owner = {}
-
-        for iid in sorted_iids:
-            I = self.intersections[iid]
-            for agv_id, prio in I._plan_prio.items():
-                prev_prio = final_plan_prio.get(agv_id, -10**9)
-                if prio >= prev_prio:
-                    final_plan_prio[agv_id] = prio
-                    final_plan_moves[agv_id] = I._plan_moves[agv_id]
-                    final_plan_order[agv_id] = I._plan_order[agv_id]
-                    final_plan_owner[agv_id] = iid
-
-        self.controller.control_buffer.update(final_plan_moves)
         
-        items = []
-        for agv_id, (prio, *order) in final_plan_order.items():
-            owner_iid = final_plan_owner[agv_id]
-            rank = self._inter_rank(owner_iid)
-            items.append((rank, -prio, tuple(order), agv_id))
-        items.sort()
-        
-        seq = []
-        seen = set()
-        for _, _, _, aid in items:
-            if aid not in seen:
-                seen.add(aid)
-                seq.append(aid)
-        self.controller.push_sequence = seq
+        if self.use_rl and self.rl_policy:
+            sorted_iids = sorted(self.intersections.keys(), key=self._inter_rank, reverse=True)
 
-        # 3) Movement 커밋 (컨트롤러의 우선순위 큐 먼저 처리)
-        moved = set()
-        for agv_id in self.controller.push_sequence:
-            agv_obj = self.agv_list.get(agv_id)
-            if agv_obj:
+            # 2) 교차로별 플래닝 (begin → resolve → action → finalize)
+            for I in self.intersections.values():
+                I.begin_plan()
+
+            for iid in sorted_iids:
+                I = self.intersections[iid]
+
+                # 사전 충돌 해결 로직 (예: 팔 스와핑)
+                I.resolve_arm_swaps_all()
+
+                # 액션 적용
+                if iid in act_to_apply:
+                    a_idx = act_to_apply[iid]
+                    I.action_control(a_idx)
+
+            final_plan_moves = {}
+            final_plan_prio = {}
+            final_plan_order = {}
+            final_plan_owner = {}
+
+            for iid in sorted_iids:
+                I = self.intersections[iid]
+                for agv_id, prio in I._plan_prio.items():
+                    prev_prio = final_plan_prio.get(agv_id, -10**9)
+                    if prio >= prev_prio:
+                        final_plan_prio[agv_id] = prio
+                        final_plan_moves[agv_id] = I._plan_moves[agv_id]
+                        final_plan_order[agv_id] = I._plan_order[agv_id]
+                        final_plan_owner[agv_id] = iid
+
+            self.controller.control_buffer.update(final_plan_moves)
+            
+            items = []
+            for agv_id, (prio, *order) in final_plan_order.items():
+                owner_iid = final_plan_owner[agv_id]
+                rank = self._inter_rank(owner_iid)
+                items.append((rank, -prio, tuple(order), agv_id))
+            items.sort()
+            
+            seq = []
+            seen = set()
+            for _, _, _, aid in items:
+                if aid not in seen:
+                    seen.add(aid)
+                    seq.append(aid)
+            self.controller.push_sequence = seq
+
+            # 3) Movement 커밋 (컨트롤러의 우선순위 큐 먼저 처리)
+            moved = set()
+            for agv_id in self.controller.push_sequence:
+                agv_obj = self.agv_list.get(agv_id)
+                if agv_obj:
+                    sig = self.controller.control_buffer.get(agv_id, (0, 0))
+                    if self._is_valid_move(agv_obj, sig):
+                        agv_obj.move(sig)
+                        agv_obj.action_count += 1
+                        moved.add(agv_id)
+            
+            # 나머지 AGV 이동
+            for agv_id, agv_obj in self.agv_list.items():
+                if agv_id not in moved:
+                    sig = self.controller.control_buffer.get(agv_id, (0, 0))
+                    if self._is_valid_move(agv_obj, sig):
+                        agv_obj.move(sig)
+
+            # 사용 후 정리
+            self.controller.push_sequence = []
+        
+        else:
+            for agv_id, agv_obj in self.agv_list.items():
                 sig = self.controller.control_buffer.get(agv_id, (0, 0))
                 if self._is_valid_move(agv_obj, sig):
                     agv_obj.move(sig)
-                    agv_obj.action_count += 1
-                    moved.add(agv_id)
-        
-        # 나머지 AGV 이동
-        for agv_id, agv_obj in self.agv_list.items():
-            if agv_id not in moved:
-                sig = self.controller.control_buffer.get(agv_id, (0, 0))
-                if self._is_valid_move(agv_obj, sig):
-                    agv_obj.move(sig)
-
-        # 사용 후 정리
-        self.controller.push_sequence = []
 
         # 4) 환경 변화 처리
         self._check_amr_completion()
@@ -336,7 +359,7 @@ class ENV():
 
     def _is_valid_move(self, current_agv, control_signal):
 
-        if self.controller.running_opt == 3: # PIBT 충돌 시
+        if self.controller.running_opt in [2, 3]: # PIBT 충돌 시
             return True
 
         nx = current_agv.pos[0] + control_signal[0]
@@ -574,6 +597,44 @@ class ENV():
             
         # 두 조건 모두 통과하면 생성 허용
         return True
+    
+    def _update_and_check_stagnation(self) -> bool:
+        """
+        최근 전역 위치 시그니처를 바탕으로 정지/진동을 감지.
+        True면 조기 종료해야 함.
+        """
+        if not self._stg_enabled:
+            return False
+        if self.time < self._stg_min_time:
+            self._sig_hist.clear()
+            return False
+        if not self.agv_list:
+            self._sig_hist.clear()
+            return False
+
+        # 전역 시그니처: (agv_id, x, y) 튜플을 정렬한 튜플
+        sig = tuple(sorted((aid, agv.pos[0], agv.pos[1]) for aid, agv in self.agv_list.items()))
+        self._sig_hist.append(sig)
+
+        # 1) 정지: 최근 N개가 모두 동일
+        idle = False
+        if len(self._sig_hist) >= self._stg_idle_win:
+            lastN = list(self._sig_hist)[-self._stg_idle_win:]
+            idle = all(s == lastN[0] for s in lastN)
+
+        # 2) 진동: 최근 M개가 ABABAB 형태(두 개의 시그니처가 번갈아)
+        osc = False
+        if len(self._sig_hist) >= self._stg_osc_win:
+            w = self._stg_osc_win
+            lastM = list(self._sig_hist)[-w:]
+            if lastM[0] != lastM[1]:
+                osc = all(lastM[i] == lastM[i % 2] for i in range(w))
+
+        if idle or osc:
+            self._stg_reason = 'idle' if idle else 'osc'
+            return True
+
+        return False
 
     # --- [GUI 연동을 위한 어댑터 함수들] ---
     def Get_AGV(self):

@@ -285,15 +285,7 @@ class controller():
                 self.control_buffer[num] = (0, 0)
 
 
-
-    # --- [추가] CBS ---
     def cbs_initial_plan(self):
-        """
-        CBS 플래너를 실행하여 모든 에이전트의 전체 경로를 미리 계산.
-        시뮬레이션 시작 전에 한 번만 호출되어야 함.
-        """
-
-        # [추가] 1. 계획 시작을 알리는 로그
         print(f"============== CBS Initial Plan START ==============")
 
         if not self.agv_nums:
@@ -308,112 +300,101 @@ class controller():
         }
 
         self.cbs_planner = CBS(self.map, agents_to_plan)
-        timeout_seconds = 10.0
+        timeout_seconds = 60.0  # 타임아웃 설정
         print('Trying to calculate within', timeout_seconds, 'seconds...')
         solution = self.cbs_planner.solve(time_limit=timeout_seconds)
-        # solution = self.cbs_planner.solve()
 
-        # [수정] 계획 성공 여부에 따라 planned_agents 목록을 업데이트
         if solution:
             self.agv_full_paths = solution
             self.agv_path = solution.copy()
-            # 계획에 사용된 AGV 목록을 저장
             self.cbs_planned_agents = set(agents_to_plan.keys())
             print(f"Solution: {solution}")
             print("CBS: Planning ended. New plan stored.")
         else:
-            # 계획 실패 시, 다음 스텝에서 다시 시도하도록 목록을 비워둠
             self.cbs_planned_agents.clear()
             print("CBS: Planning failed or timed out.")
         
-        # self.agv_full_paths = solution
-        # self.agv_path = solution.copy()
-        # print(f"Solution: {solution}")
-        # print("CBS: Planning ended. New plan stored.")
-        # 모든 에이전트의 타임스텝 초기화
         for num in self.agv_nums:
             self.agv_path_timestep[num] = 0
 
     def cbs_rout(self):
-            """
-            미리 계산된 CBS 경로를 따르되, 다음 스텝의 충돌을 예측하여 선제적으로 정지시키는 로직을 포함.
-            """
-            if not self.agv_nums:
-                return
-
-            # --- 1단계: 모든 AGV의 '예상 다음 위치' 계산 ---
-            proposed_moves = {}
-            for num in self.agv_nums:
-                pos = self.agv_pos.get(num)
-                path = self.agv_full_paths.get(num)
-                
-                if not path:
-                    proposed_moves[num] = pos
-                    continue
-
-                t = self.agv_path_timestep.get(num, 0)
-                if t + 1 < len(path):
-                    proposed_moves[num] = path[t + 1]
-                else:
-                    proposed_moves[num] = pos
-
-            # --- 2단계 & 3단계: 충돌을 반복적으로 감지하여 '정지할 AGV' 목록 완성 ---
-            agents_to_stop = set()
-            # (이 부분은 이전과 동일하게 유지합니다)
-            while True:
-                newly_stopped_count = 0
-                for i in range(len(self.agv_nums)):
-                    for j in range(i + 1, len(self.agv_nums)):
-                        agv1_id, agv2_id = self.agv_nums[i], self.agv_nums[j]
-                        if agv1_id in agents_to_stop and agv2_id in agents_to_stop: continue
-                        
-                        pos1, pos2 = self.agv_pos[agv1_id], self.agv_pos[agv2_id]
-                        next_pos1 = pos1 if agv1_id in agents_to_stop else proposed_moves[agv1_id]
-                        next_pos2 = pos2 if agv2_id in agents_to_stop else proposed_moves[agv2_id]
-                        
-                        is_conflict = False
-                        if next_pos1 == next_pos2 and next_pos1 != pos1 and next_pos1 != pos2: is_conflict = True
-                        elif next_pos1 == pos2 and next_pos2 == pos1: is_conflict = True
-
-                        if is_conflict:
-                            if agv1_id not in agents_to_stop:
-                                agents_to_stop.add(agv1_id); newly_stopped_count += 1
-                            if agv2_id not in agents_to_stop:
-                                agents_to_stop.add(agv2_id); newly_stopped_count += 1
-                
-                if newly_stopped_count == 0: break
-
-            # --- 4단계: '정지 목록'을 기반으로 최종 제어 신호 생성 ---
-            for num in self.agv_nums:
-                if num in agents_to_stop:
-                    # [수정] 충돌이 감지된 AGV는 멈추고, 타임스텝을 '증가시키지 않음'
-                    # (다음 스텝에 동일한 이동을 다시 시도해야 하므로)
-                    self.control_buffer[num] = (0, 0)
-                else:
-                    # [수정] 충돌 없는 AGV는 계획(이동 또는 대기)을 따르고, 타임스텝을 '무조건 증가시킴'
-                    pos = self.agv_pos.get(num)
-                    next_pos = proposed_moves[num]
-                    dx = next_pos[0] - pos[0]
-                    dy = next_pos[1] - pos[1]
-                    self.control_buffer[num] = (dx, dy)
-                    
-                    # 계획된 'wait'도 경로의 한 스텝을 완료한 것이므로 타임스텝을 증가시켜야 함
-                    self.agv_path_timestep[num] += 1
-
-    def bfs_rout(self):
-        """
-        BFS로 모든 AGV의 '전체 경로'를 한 번에 재계산/갱신하고
-        A*와 동일한 방식으로 다음 스텝 제어 신호를 만든다.
-        - self.agv_full_paths[aid] = [cur, ..., goal] (풀 경로)
-        - self.agv_path[aid]       = [cur, ..., goal] (Intersection 등에서 참고)
-        - self.control_buffer/next_buffer에 (dx, dy) 세팅
-        """
         if not self.agv_nums:
             return
 
-        # 1) 전체 경로를 한 번에 계산 (플래너에 일괄 API가 없으면 개별 호출로 폴백)
+        proposed_moves = {}
+        for num in self.agv_nums:
+            # AGV가 도중에 추가/제거될 수 있으므로, 경로가 없는 AGV는 현재 위치에 머무르도록 처리
+            if num not in self.agv_full_paths:
+                proposed_moves[num] = self.agv_pos.get(num)
+                continue
+
+            pos = self.agv_pos.get(num)
+            path = self.agv_full_paths.get(num)
+            
+            if not path:
+                proposed_moves[num] = pos
+                continue
+
+            t = self.agv_path_timestep.get(num, 0)
+            if t + 1 < len(path):
+                proposed_moves[num] = path[t + 1]
+            else:
+                proposed_moves[num] = pos
+
+        agents_to_stop = set()
+        while True:
+            newly_stopped_count = 0
+            # 현재 활성화된 AGV 목록으로 충돌 검사
+            active_agvs = [agv_id for agv_id in self.agv_nums if agv_id in self.cbs_planned_agents]
+            for i in range(len(active_agvs)):
+                for j in range(i + 1, len(active_agvs)):
+                    agv1_id, agv2_id = active_agvs[i], active_agvs[j]
+                    if agv1_id in agents_to_stop and agv2_id in agents_to_stop: continue
+                    
+                    pos1, pos2 = self.agv_pos[agv1_id], self.agv_pos[agv2_id]
+                    next_pos1 = pos1 if agv1_id in agents_to_stop else proposed_moves[agv1_id]
+                    next_pos2 = pos2 if agv2_id in agents_to_stop else proposed_moves[agv2_id]
+                    
+                    is_conflict = False
+                    
+                    # [수정] 충돌 감지 로직 개선
+                    # 원인: 기존 로직은 '정지한 AGV'와 '이동하려는 AGV'의 충돌을 감지하지 못했음
+                    # 1. 정점 충돌 (Vertex Conflict): 두 AGV가 다음 스텝에 '같은' 위치를 차지하려는 경우
+                    if next_pos1 == next_pos2:
+                        is_conflict = True
+                    # 2. 교차(스와핑) 충돌 (Edge Conflict): 두 AGV가 서로의 위치를 맞바꾸려는 경우
+                    elif next_pos1 == pos2 and next_pos2 == pos1:
+                        is_conflict = True
+
+                    if is_conflict:
+                        if agv1_id not in agents_to_stop:
+                            agents_to_stop.add(agv1_id); newly_stopped_count += 1
+                        if agv2_id not in agents_to_stop:
+                            agents_to_stop.add(agv2_id); newly_stopped_count += 1
+            
+            if newly_stopped_count == 0: break
+
+        for num in self.agv_nums:
+            if num in agents_to_stop:
+                self.control_buffer[num] = (0, 0)
+            else:
+                pos = self.agv_pos.get(num)
+                # proposed_moves에 없는 AGV(계획에 없던 AGV)는 제자리에 있도록 처리
+                next_pos = proposed_moves.get(num, pos)
+                dx = next_pos[0] - pos[0]
+                dy = next_pos[1] - pos[1]
+                self.control_buffer[num] = (dx, dy)
+                
+                # 계획에 포함된 AGV만 타임스텝을 증가시켜 경로를 따라가도록 함
+                if num in self.cbs_planned_agents:
+                    self.agv_path_timestep[num] = self.agv_path_timestep.get(num, 0) + 1
+
+    def bfs_rout(self):
+        if not self.agv_nums:
+            return
+
         if hasattr(self.bfs, "plan_all_paths"):
-            paths = self.bfs.plan_all_paths(self.agv_pos, self.agv_goal)  # {aid: [(x,y), ...]}
+            paths = self.bfs.plan_all_paths(self.agv_pos, self.agv_goal)
         else:
             paths = {}
             for aid in self.agv_nums:
@@ -424,30 +405,24 @@ class controller():
                 else:
                     paths[aid] = self.bfs.plan_path(s, g)
 
-        # 2) 각 AGV의 풀 경로 갱신 및 다음 이동 결정
         for aid in self.agv_nums:
             pos  = self.agv_pos.get(aid)
             goal = self.agv_goal.get(aid)
             path = paths.get(aid, [])
 
-            # 풀 경로 캐시
             self.agv_full_paths[aid] = path
 
-            # Intersection 등 호환을 위해 A*와 동일하게 "전체 경로"를 저장
-            # (빈 경로 방지: 최소 [현재칸] 보장)
             if not path:
                 safe_path = [pos] if pos is not None else []
                 self.agv_path[aid] = safe_path
             else:
                 self.agv_path[aid] = path
 
-            # 목표 도달 또는 경로가 한 칸뿐이면 정지
             if pos is None or goal is None or pos == goal or len(self.agv_path[aid]) < 2:
                 self.next_buffer[aid] = (0, 0)
                 self.control_buffer[aid] = (0, 0)
                 continue
 
-            # 다음 스텝(= path[1])으로 제어 신호 생성
             next_pos = self.agv_path[aid][1]
             dx = next_pos[0] - pos[0]
             dy = next_pos[1] - pos[1]

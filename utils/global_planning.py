@@ -2,10 +2,11 @@ import heapq
 from typing import Dict, Tuple, Iterable, Optional, Set, List
 import random
 import numpy as np
-import time  
-
-import heapq, random
+import time
+from dataclasses import dataclass, field
+import heapq
 from collections import defaultdict, deque
+from itertools import combinations
 
 # A* Algorithm
 class AStar:
@@ -357,11 +358,8 @@ class PIBT:
             self._age[a] = 0
 
 
-# =================================================================
-# --- [추가] Conflict-Based Search (CBS) 구현 시작 ---
-# =================================================================
 
-from dataclasses import dataclass, field
+# CBS Algorithm
 
 class AStar_for_CBS:
     """ Low-level: Space-Time A* for CBS """
@@ -573,60 +571,75 @@ class CBS:
                     heapq.heappush(open_list, child_node)
         return None
 
+
     def find_first_conflict(self, solution: Dict[int, List[Tuple[int, int]]]):
-        max_len = max(len(p) for p in solution.values()) if solution else 0
+        # [수정] 목표 지점에 도착한 AGV는 충돌 검사에서 제외하는 로직으로 변경
+        if not solution:
+            return None
+        
+        # 각 AGV가 목표에 처음 도달하는 시간(경로 길이 - 1)을 계산
+        arrival_times = {agent_id: len(path) - 1 for agent_id, path in solution.items()}
+        max_len = max(arrival_times.values()) + 1 if arrival_times else 0
+
         for t in range(max_len):
+            # 1. 정점 충돌 (Vertex Conflict) 검사
             positions_at_t = defaultdict(list)
             for agent_id, path in solution.items():
-                pos = path[t] if t < len(path) else path[-1]
+                # AGV가 자신의 도착 시간(arrival_time)보다 이후 시간에는 존재하지 않는 것으로 간주
+                if t > arrival_times[agent_id]:
+                    continue
+                
+                pos = path[t]
                 positions_at_t[pos].append(agent_id)
-
-            for pos, agents in positions_at_t.items():  # vertex conflict (including the case of k > 2)
+            
+            for pos, agents in positions_at_t.items():
                 if len(agents) > 1:
-                    # k > 2 충돌의 경우, 처음 두 에이전트만 선택
                     return (agents[0], agents[1], pos, t)
 
-            for agent1 in self.agent_ids:  # edge conflict
-                for agent2 in self.agent_ids:
-                    if agent1 >= agent2: continue
-                    path1, path2 = solution[agent1], solution[agent2]
-                    pos1_t = path1[t] if t < len(path1) else path1[-1]
-                    pos1_t_plus_1 = path1[t+1] if t + 1 < len(path1) else path1[-1]
-                    pos2_t = path2[t] if t < len(path2) else path2[-1]
-                    pos2_t_plus_1 = path2[t+1] if t + 1 < len(path2) else path2[-1]
-                    if pos1_t == pos2_t_plus_1 and pos2_t == pos1_t_plus_1:
-                        return (agent1, agent2, (pos1_t, pos1_t_plus_1), t)
+            # 2. 교차 충돌 (Edge Conflict) 검사
+            # t -> t+1 이동을 검사하므로, t < arrival_time인 AGV만 후보
+            active_agents_for_move = [aid for aid, arrival in arrival_times.items() if t < arrival]
+            
+            for agent1, agent2 in combinations(active_agents_for_move, 2):
+                path1, path2 = solution[agent1], solution[agent2]
+                
+                pos1_t, pos1_t_plus_1 = path1[t], path1[t+1]
+                pos2_t, pos2_t_plus_1 = path2[t], path2[t+1]
+                
+                if pos1_t == pos2_t_plus_1 and pos2_t == pos1_t_plus_1:
+                    return (agent1, agent2, (pos1_t, pos1_t_plus_1), t)
         return None
 
     def find_all_conflicts(self, solution: Dict[int, List[Tuple[int, int]]]) -> int:
-        """High-level Tie-Breaking을 위해 모든 충돌을 찾기."""
+        # [수정] 목표 지점에 도착한 AGV는 충돌 검사에서 제외하는 로직으로 변경
         NumOfConflicts = 0
-        # conflicts = []
-        max_len = max(len(p) for p in solution.values()) if solution else 0
+        if not solution:
+            return 0
+
+        arrival_times = {agent_id: len(path) - 1 for agent_id, path in solution.items()}
+        max_len = max(arrival_times.values()) + 1 if arrival_times else 0
+
         for t in range(max_len):
+            # 1. 정점 충돌
             positions_at_t = defaultdict(list)
             for agent_id, path in solution.items():
-                pos = path[t] if t < len(path) else path[-1]
+                if t > arrival_times[agent_id]:
+                    continue
+                pos = path[t]
                 positions_at_t[pos].append(agent_id)
+
             for pos, agents in positions_at_t.items():
                 if len(agents) > 1:
-                    from itertools import combinations
-                    for a1, a2 in combinations(agents, 2):
-                        # conflicts.append((a1, a2, pos, t))
-                        NumOfConflicts += 1
+                    NumOfConflicts += len(list(combinations(agents, 2)))
             
-            for agent1 in self.agent_ids:  # edge conflict
-                for agent2 in self.agent_ids:
-                    if agent1 >= agent2: continue
-                    path1, path2 = solution[agent1], solution[agent2]
-                    pos1_t = path1[t] if t < len(path1) else path1[-1]
-                    pos1_t_plus_1 = path1[t+1] if t + 1 < len(path1) else path1[-1]
-                    pos2_t = path2[t] if t < len(path2) else path2[-1]
-                    pos2_t_plus_1 = path2[t+1] if t + 1 < len(path2) else path2[-1]
-                    if pos1_t == pos2_t_plus_1 and pos2_t == pos1_t_plus_1:
-                        # conflicts.append((agent1, agent2, (pos1_t, pos1_t_plus_1), t))
-                        NumOfConflicts += 1
-
+            # 2. 교차 충돌
+            active_agents_for_move = [aid for aid, arrival in arrival_times.items() if t < arrival]
+            for agent1, agent2 in combinations(active_agents_for_move, 2):
+                path1, path2 = solution[agent1], solution[agent2]
+                pos1_t, pos1_t_plus_1 = path1[t], path1[t+1]
+                pos2_t, pos2_t_plus_1 = path2[t], path2[t+1]
+                if pos1_t == pos2_t_plus_1 and pos2_t == pos1_t_plus_1:
+                    NumOfConflicts += 1
         return NumOfConflicts
 
     def calculate_sic(self, solution: Dict[int, List[Tuple[int, int]]]) -> int:
@@ -640,6 +653,77 @@ class CBS:
             padded_path = path + [last_pos] * (max_len - len(path))
             padded_solution[agent_id] = padded_path
         return padded_solution
+
+
+
+
+    # def find_first_conflict(self, solution: Dict[int, List[Tuple[int, int]]]):
+    #     max_len = max(len(p) for p in solution.values()) if solution else 0
+    #     for t in range(max_len):
+    #         positions_at_t = defaultdict(list)
+    #         for agent_id, path in solution.items():
+    #             pos = path[t] if t < len(path) else path[-1]
+    #             positions_at_t[pos].append(agent_id)
+
+    #         for pos, agents in positions_at_t.items():  # vertex conflict (including the case of k > 2)
+    #             if len(agents) > 1:
+    #                 # k > 2 충돌의 경우, 처음 두 에이전트만 선택
+    #                 return (agents[0], agents[1], pos, t)
+
+    #         for agent1 in self.agent_ids:  # edge conflict
+    #             for agent2 in self.agent_ids:
+    #                 if agent1 >= agent2: continue
+    #                 path1, path2 = solution[agent1], solution[agent2]
+    #                 pos1_t = path1[t] if t < len(path1) else path1[-1]
+    #                 pos1_t_plus_1 = path1[t+1] if t + 1 < len(path1) else path1[-1]
+    #                 pos2_t = path2[t] if t < len(path2) else path2[-1]
+    #                 pos2_t_plus_1 = path2[t+1] if t + 1 < len(path2) else path2[-1]
+    #                 if pos1_t == pos2_t_plus_1 and pos2_t == pos1_t_plus_1:
+    #                     return (agent1, agent2, (pos1_t, pos1_t_plus_1), t)
+    #     return None
+
+    # def find_all_conflicts(self, solution: Dict[int, List[Tuple[int, int]]]) -> int:
+    #     """High-level Tie-Breaking을 위해 모든 충돌을 찾기."""
+    #     NumOfConflicts = 0
+    #     # conflicts = []
+    #     max_len = max(len(p) for p in solution.values()) if solution else 0
+    #     for t in range(max_len):
+    #         positions_at_t = defaultdict(list)
+    #         for agent_id, path in solution.items():
+    #             pos = path[t] if t < len(path) else path[-1]
+    #             positions_at_t[pos].append(agent_id)
+    #         for pos, agents in positions_at_t.items():
+    #             if len(agents) > 1:
+    #                 from itertools import combinations
+    #                 for a1, a2 in combinations(agents, 2):
+    #                     # conflicts.append((a1, a2, pos, t))
+    #                     NumOfConflicts += 1
+            
+    #         for agent1 in self.agent_ids:  # edge conflict
+    #             for agent2 in self.agent_ids:
+    #                 if agent1 >= agent2: continue
+    #                 path1, path2 = solution[agent1], solution[agent2]
+    #                 pos1_t = path1[t] if t < len(path1) else path1[-1]
+    #                 pos1_t_plus_1 = path1[t+1] if t + 1 < len(path1) else path1[-1]
+    #                 pos2_t = path2[t] if t < len(path2) else path2[-1]
+    #                 pos2_t_plus_1 = path2[t+1] if t + 1 < len(path2) else path2[-1]
+    #                 if pos1_t == pos2_t_plus_1 and pos2_t == pos1_t_plus_1:
+    #                     # conflicts.append((agent1, agent2, (pos1_t, pos1_t_plus_1), t))
+    #                     NumOfConflicts += 1
+
+    #     return NumOfConflicts
+
+    # def calculate_sic(self, solution: Dict[int, List[Tuple[int, int]]]) -> int:
+    #     return sum(len(path) - 1 for path in solution.values())
+
+    # def pad_paths(self, solution: Dict[int, List[Tuple[int, int]]]):
+    #     max_len = max(len(path) for path in solution.values()) if solution else 0
+    #     padded_solution = {}
+    #     for agent_id, path in solution.items():
+    #         last_pos = path[-1]
+    #         padded_path = path + [last_pos] * (max_len - len(path))
+    #         padded_solution[agent_id] = padded_path
+    #     return padded_solution
 
 class BFS:
     """

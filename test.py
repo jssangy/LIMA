@@ -1,4 +1,3 @@
-# test.py (수정본의 핵심 부분만)
 import os, csv, time, argparse, torch, numpy as np
 from Environment import ENV
 from module.model import ActorCritic
@@ -61,7 +60,7 @@ def main():
                         help="0=BFS, 1=A*, 2=D*, 3=PIBT, 4=CBS")
     parser.add_argument("--runs", type=int, default=10)
     parser.add_argument("--use-rl", action="store_true", default=False)
-    parser.add_argument("--density", type=float, default=0.1)
+    parser.add_argument("--num-amrs", type=int, default=20)
     parser.add_argument("--max-arm-h", type=int, default=5)
     parser.add_argument("--max-arm-v", type=int, default=5)
     parser.add_argument("--max-steps", type=int, default=1000)
@@ -71,7 +70,7 @@ def main():
     prob_path = f"problems/cross/{args.prob}.json"
 
     # ENV 생성자에는 max_steps 없음 → 생성 후 속성으로 지정
-    env = ENV(prob_path, max_arm_len_h=args.max_arm_h, max_arm_len_v=args.max_arm_v, density=args.density, max_steps=args.max_steps, running_opt=args.algo)
+    env = ENV(prob_path, max_arm_len_h=args.max_arm_h, max_arm_len_v=args.max_arm_v, num_amrs=args.num_amrs, max_steps=args.max_steps, running_opt=args.algo)
 
     # RL 정책은 --use-rl 켠 경우에만 로드
     if args.use_rl:
@@ -91,16 +90,15 @@ def main():
     os.makedirs("results", exist_ok=True)
     prob_base = os.path.splitext(os.path.basename(args.prob))[0]
     algo_label = algo_name(args.algo)
-    density_label = f"{args.density * 100:.0f}%"
     rl_suffix = "_RL" if args.use_rl else ""
-    csv_path = f"results/{prob_base}_{density_label}_{algo_label}{rl_suffix}.csv"
+    csv_path = f"results/{prob_base}_{algo_label}{rl_suffix}_{args.num_amrs}.csv"
     fields = ["run", "success_rate", "throughput", "avg_agv_steps", "avg_action_count"]
 
     print(f"Problem: {args.prob}")
     print(f"Algorithm: {algo_label} (running_opt={args.algo})")
     print(f"Runs: {args.runs}")
     print(f"RL: {'ON' if args.use_rl else 'OFF'}")
-    print(f"Task density: {args.density}")
+    print(f"Num AMRs: {args.num_amrs}")
     print(f"Arm caps: H={args.max_arm_h}, V={args.max_arm_v}")
     print(f"Max steps: {args.max_steps}")
     print(f"Saving to: {csv_path}")
