@@ -359,7 +359,7 @@ class ENV():
 
     def _is_valid_move(self, current_agv, control_signal):
 
-        if self.controller.running_opt in [2, 3]: # PIBT 충돌 시
+        if self.controller.running_opt in [3, 4]: # PIBT 충돌 시
             return True
 
         nx = current_agv.pos[0] + control_signal[0]
