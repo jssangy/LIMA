@@ -44,7 +44,8 @@ class ENV():
             self.intersections[iid] = Intersection(
                 inter_info['data'], 
                 self.controller, 
-                inter_info['neighbors']
+                inter_info['neighbors'],
+                inter_info['present_dirs'],
             )
 
         self.deadlock_queue = []
@@ -527,13 +528,46 @@ class ENV():
         return np.array(map_data)
 
     def _find_intersection_center(self):
-        kernel = np.array(
-            [[1, 0, 1], 
-             [0, 0, 0], 
-             [1, 0, 1]])
-        windows = np.lib.stride_tricks.sliding_window_view(self.map, kernel.shape)
-        matches = np.all(windows == kernel, axis=(2, 3))
-        centers = (np.argwhere(matches) + 1).tolist()
+        # 3x3 패턴들: 0=도로, 1=벽
+        plus4 = np.array([
+            [1, 0, 1],
+            [0, 0, 0],
+            [1, 0, 1]
+        ])
+
+        # T자 (팔 하나 없는 방향)
+        t_noN = np.array([  # 위쪽 팔 없음 (E/W/S만 열림)
+            [1, 1, 1],
+            [0, 0, 0],
+            [1, 0, 1]
+        ])
+        t_noE = np.array([  # 오른쪽 팔 없음 (N/W/S만 열림)
+            [1, 0, 1],
+            [0, 0, 1],
+            [1, 0, 1]
+        ])
+        t_noS = np.array([  # 아래쪽 팔 없음 (N/E/W만 열림)
+            [1, 0, 1],
+            [0, 0, 0],
+            [1, 1, 1]
+        ])
+        t_noW = np.array([  # 왼쪽 팔 없음 (N/E/S만 열림)
+            [1, 0, 1],
+            [1, 0, 0],
+            [1, 0, 1]
+        ])
+
+        kernels = (plus4, t_noN, t_noE, t_noS, t_noW)
+
+        # 3x3 슬라이딩 윈도우
+        windows = np.lib.stride_tricks.sliding_window_view(self.map, (3, 3))
+        # 각 커널에 대해 매칭 후 OR 합치기
+        match_any = np.zeros(windows.shape[:2], dtype=bool)
+        for K in kernels:
+            match_any |= np.all(windows == K, axis=(2, 3))
+
+        # 윈도우 좌표 → 중심 좌표(슬라이딩 오프셋 +1)
+        centers = (np.argwhere(match_any) + 1).tolist()
         return centers
         
     def _ray_len(self, r, c, dr, dc, max_len=None):
@@ -563,38 +597,52 @@ class ENV():
 
         center_xy_to_data = {}
         for c, r in centers_xy:
-            # 세로(N/S)는 vertical 캡, 가로(E/W)는 horizontal 캡
             len_N = self._ray_len(r, c, -1, 0, max_len=self.max_arm_len_v)
             len_S = self._ray_len(r, c,  1, 0, max_len=self.max_arm_len_v)
             len_E = self._ray_len(r, c,  0, 1, max_len=self.max_arm_len_h)
             len_W = self._ray_len(r, c,  0,-1, max_len=self.max_arm_len_h)
 
-            if min(len_N, len_E, len_S, len_W) > 0:
-                center_xy_to_data[(c, r)] = (c, r, len_N, len_E, len_S, len_W)
+            # ★ 사거리/삼거리 허용: 팔이 3개 이상 존재해야 교차로 인정
+            present = {d for d, L in zip("NESW", [len_N, len_E, len_S, len_W]) if L > 0}
+            if len(present) >= 3:
+                center_xy_to_data[(c, r)] = (c, r, len_N, len_E, len_S, len_W, present)
 
         processed_intersections = {}
-        for (c, r), current_data in center_xy_to_data.items():
-            _, _, len_N, len_E, len_S, len_W = current_data
+        for (c, r), tup in center_xy_to_data.items():
+            c, r, len_N, len_E, len_S, len_W, present = tup
             current_iid = f'x{c}y{r}'
 
-            target_coords = {
-                'N': (c, r - len_N - 1),
-                'E': (c + len_E + 1, r),
-                'S': (c, r + len_S + 1),
-                'W': (c - len_W - 1, r),
-            }
-
+            # ★ 있는 팔만 이웃 계산
             neighbors_map = {}
-            for direction, target_coord in target_coords.items():
-                if target_coord in center_xy_to_data:
-                    nc, nr, *_ = center_xy_to_data[target_coord]
-                    neighbors_map[direction] = f'x{nc}y{nr}'
+            if 'N' in present:
+                t = (c, r - len_N - 1)
+                if t in center_xy_to_data:
+                    nc, nr, *_ = center_xy_to_data[t]
+                    neighbors_map['N'] = f'x{nc}y{nr}'
+            if 'E' in present:
+                t = (c + len_E + 1, r)
+                if t in center_xy_to_data:
+                    nc, nr, *_ = center_xy_to_data[t]
+                    neighbors_map['E'] = f'x{nc}y{nr}'
+            if 'S' in present:
+                t = (c, r + len_S + 1)
+                if t in center_xy_to_data:
+                    nc, nr, *_ = center_xy_to_data[t]
+                    neighbors_map['S'] = f'x{nc}y{nr}'
+            if 'W' in present:
+                t = (c - len_W - 1, r)
+                if t in center_xy_to_data:
+                    nc, nr, *_ = center_xy_to_data[t]
+                    neighbors_map['W'] = f'x{nc}y{nr}'
 
             processed_intersections[current_iid] = {
-                'data': current_data,
-                'neighbors': neighbors_map
+                'data': (c, r, len_N, len_E, len_S, len_W),
+                'neighbors': neighbors_map,
+                # ↓ 이후 단계에서 마스크/상태 0패딩에 쓰기 좋게 전달
+                'present_dirs': present,
             }
         return processed_intersections
+
     
     def is_arm_outgoing_clear(self, iid: str, d: str) -> bool:
         I = self.intersections[iid]

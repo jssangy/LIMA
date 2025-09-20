@@ -9,19 +9,26 @@ PR_ACTION = 90    # Center Action
 PR_PUSH = 100     # Center Action Push (플래닝/실행 우선순위 가장 높음)
 
 class Intersection:
-    def __init__(self, intersection_data, controller_ref, neighbors_map):
+    def __init__(self, intersection_data, controller_ref, neighbors_map, present_dirs):
         self.center_x, self.center_y, self.len_N, self.len_E, self.len_S, self.len_W = intersection_data
         self.id = f'x{self.center_x}y{self.center_y}'
         self.controller = controller_ref
         self.neighbors = neighbors_map
         self.map = self.controller.map
 
-        self.lane_coords = {
-            'N': [(self.center_x, self.center_y - i) for i in range(1, self.len_N + 1)],
-            'E': [(self.center_x + i, self.center_y) for i in range(1, self.len_E + 1)],
-            'S': [(self.center_x, self.center_y + i) for i in range(1, self.len_S + 1)],
-            'W': [(self.center_x - i, self.center_y) for i in range(1, self.len_W + 1)]
-        }
+        if present_dirs is None:
+            present_dirs = {d for d,L in zip("NESW",[self.len_N,self.len_E,self.len_S,self.len_W]) if L>0}
+        self.present_dirs = set(present_dirs)
+
+        self.lane_coords = {}
+        if 'N' in self.present_dirs:
+            self.lane_coords['N'] = [(self.center_x, self.center_y - i) for i in range(1, self.len_N + 1)]
+        if 'E' in self.present_dirs:
+            self.lane_coords['E'] = [(self.center_x + i, self.center_y) for i in range(1, self.len_E + 1)]
+        if 'S' in self.present_dirs:
+            self.lane_coords['S'] = [(self.center_x, self.center_y + i) for i in range(1, self.len_S + 1)]
+        if 'W' in self.present_dirs:
+            self.lane_coords['W'] = [(self.center_x - i, self.center_y) for i in range(1, self.len_W + 1)]
 
         self.all_lane_coords = set(chain.from_iterable(self.lane_coords.values()))
         self.all_lane_coords.add((self.center_x, self.center_y))
@@ -81,6 +88,10 @@ class Intersection:
         }
 
         for d in ['N', 'E', 'S', 'W']:
+            if d not in self.present_dirs:
+                state_vector.extend([0, 0, 0, 0, 0, 0])  # goal_onehot(4), distance(1), ingoing(1)
+                continue
+
             agvs = self.agvs_in_lanes[d]  # [AGV,...]
             goal_onehot = [0, 0, 0, 0]
             distance = 0
@@ -260,11 +271,11 @@ class Intersection:
         return vec2idx.get(back_vec)
 
     def calculate_action_mask(self, deadlock_queue):
-        # 중앙 AMR 없으면 전부 금지
-        if self.center_agv is None:
-            return np.zeros(4, dtype=np.bool_)
-
         mask = np.ones(4, dtype=np.bool_)  # N E S W
+
+        for d, idx in DIR2IDX.items():
+            if d not in self.present_dirs:
+                mask[idx] = False
 
         # 1) 뒤로가기 금지 (기존 로직)
         back_idx = self._back_action_index_from_prev()
@@ -272,12 +283,13 @@ class Intersection:
             mask[back_idx] = False
 
         # 2) 용량이 가득 찬 방향으로 이동 금지
-        for direction, action_idx in DIR2IDX.items():
-            if not mask[action_idx]: continue
-            lane_capacity = len(self.lane_coords.get(direction, []))
-            current_occupancy = len(self.agvs_in_lanes.get(direction, []))
-            if current_occupancy >= lane_capacity:
-                mask[action_idx] = False
+        for d, idx in DIR2IDX.items():
+            if not mask[idx] or d not in self.present_dirs:
+                continue
+            cap = len(self.lane_coords.get(d, []))
+            occ = len(self.agvs_in_lanes.get(d, []))
+            if occ >= cap:
+                mask[idx] = False
 
         # 3) 우선순위 규칙에 따른 마스킹
         if not deadlock_queue:
