@@ -65,7 +65,7 @@ class ENV():
 
         self.completed_path_integrities: list[float] = []
 
-        self._sig_hist = deque(maxlen=12)  # 전역 시그니처 히스토리
+        self._sig_hist = deque(maxlen=22)  # 전역 시그니처 히스토리
         self._stg_idle_win = 20             # 정지 판단 윈도우(최근 10스텝 모두 동일)
         self._stg_osc_win  = 20             # 진동 판단 윈도우(최근 10스텝이 ABABAB)
         self._stg_min_time = 20            # 초반 전이 구간 보호(20스텝 이전엔 감지 안 함)
