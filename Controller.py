@@ -256,7 +256,12 @@ class controller():
         for (x, y) in white_cells:
             if 0 <= x < width and 0 <= y < height:
                 self.grid[y][x] = 1
-        
+
+        symbol_map = {0: "@", 1: "."}
+
+        for row in self.grid:
+            print("".join(symbol_map[val] for val in row))
+
         return self.grid
     
 # D* Lite Algorithm
