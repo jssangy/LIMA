@@ -1,6 +1,8 @@
 import os
 import json
 import math
+import time
+import torch
 import numpy as np
 from typing import Dict
 from collections import deque
@@ -70,8 +72,8 @@ class ENV():
         self._stg_idle_win = 20             # 정지 판단 윈도우(최근 10스텝 모두 동일)
         self._stg_osc_win  = 20             # 진동 판단 윈도우(최근 10스텝이 ABABAB)
         self._stg_min_time = 20            # 초반 전이 구간 보호(20스텝 이전엔 감지 안 함)
-        self._stg_enabled  = True          # 필요 시 끄고 켤 수 있음
-        self._stg_reason   = None          # 디버그용(‘idle’/‘osc’)
+
+        self.times_ms = []
 
     def reset(self):        
         self.time = 0
@@ -97,7 +99,8 @@ class ENV():
         self.completed_path_integrities.clear()
 
         self._sig_hist.clear()
-        self._stg_reason = None
+
+        self.time_ms.clear()
 
         return obs, info
 
@@ -112,7 +115,7 @@ class ENV():
             terminated = True
 
         if self._update_and_check_stagnation():
-            print(f"[EarlyStop] stagnation detected ({self._stg_reason}) at t={self.time}, "
+            print(f"[EarlyStop] stagnation detected at t={self.time}, "
                 f"AGVs={len(self.agv_list)}")
             return False  # 테스트 루프에서 break
         
@@ -140,7 +143,14 @@ class ENV():
                 # 데드락이 활성화된 교차로에 대해서만 RL 정책 적용
                 if meta.get("deadlock_active", False) and self.intersections[iid].center_agv and iid not in act_to_apply:
                     action_mask = meta.get("action_mask")
+                    torch.cuda_synchronize()
+                    t0 = time.perf_counter_ns()
+
                     rl_action = int(self.rl_policy(obs_now[iid], action_mask))
+                    torch.cuda_synchronize()
+                    dt_ms = (time.perf_counter_ns() - t0) / 1e6
+                    self.times_ms.append(dt_ms)
+
                     act_to_apply[iid] = rl_action
         
         if self.use_rl and self.rl_policy:
@@ -665,8 +675,6 @@ class ENV():
         최근 전역 위치 시그니처를 바탕으로 정지/진동을 감지.
         True면 조기 종료해야 함.
         """
-        if not self._stg_enabled:
-            return False
         if self.time < self._stg_min_time:
             self._sig_hist.clear()
             return False
@@ -693,7 +701,6 @@ class ENV():
                 osc = all(lastM[i] == lastM[i % 2] for i in range(w))
 
         if idle or osc:
-            self._stg_reason = 'idle' if idle else 'osc'
             return True
 
         return False
@@ -734,6 +741,8 @@ class ENV():
         all_pi = self.completed_path_integrities + active_pi
         avg_pi = float(np.mean(all_pi)) if all_pi else 0.0
 
+        avg_ms = float(np.mean(self.times_ms)) if self.times_ms else 0.0
+
         # --- 3. 현재 활성화된 AGV들의 상세 정보 수집 ---
         active_agv_details = {}
         for agv_id, agv_obj in self.agv_list.items():
@@ -749,4 +758,5 @@ class ENV():
             "avg_action_count": avg_action_count,
             "active_agvs": active_agv_details,
             "avg_path_integrity": avg_pi,
+            "avg_inference_time": avg_ms,
         }
