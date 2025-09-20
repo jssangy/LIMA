@@ -73,7 +73,7 @@ class ENV():
         self._stg_osc_win  = 20             # 진동 판단 윈도우(최근 10스텝이 ABABAB)
         self._stg_min_time = 20            # 초반 전이 구간 보호(20스텝 이전엔 감지 안 함)
 
-        self.times_ms = []
+        self.time_ms = []
 
     def reset(self):        
         self.time = 0
@@ -143,13 +143,17 @@ class ENV():
                 # 데드락이 활성화된 교차로에 대해서만 RL 정책 적용
                 if meta.get("deadlock_active", False) and self.intersections[iid].center_agv and iid not in act_to_apply:
                     action_mask = meta.get("action_mask")
-                    torch.cuda_synchronize()
-                    t0 = time.perf_counter_ns()
+
+                    if self.time >= 5:
+                        torch.cuda.synchronize()
+                        t0 = time.perf_counter_ns()
 
                     rl_action = int(self.rl_policy(obs_now[iid], action_mask))
-                    torch.cuda_synchronize()
-                    dt_ms = (time.perf_counter_ns() - t0) / 1e6
-                    self.times_ms.append(dt_ms)
+
+                    if self.time >= 5:
+                        torch.cuda.synchronize()
+                        dt_ms = (time.perf_counter_ns() - t0) / 1e6
+                        self.time_ms.append(dt_ms)
 
                     act_to_apply[iid] = rl_action
         
@@ -741,7 +745,10 @@ class ENV():
         all_pi = self.completed_path_integrities + active_pi
         avg_pi = float(np.mean(all_pi)) if all_pi else 0.0
 
-        avg_ms = float(np.mean(self.times_ms)) if self.times_ms else 0.0
+        if self.rl_policy and self.use_rl:
+            avg_ms = float(np.mean(self.time_ms)) if self.time_ms else 0.0
+        else:
+            avg_ms = float(np.mean(self.controller.time_ms)) if self.controller.time_ms else 0.0
 
         # --- 3. 현재 활성화된 AGV들의 상세 정보 수집 ---
         active_agv_details = {}

@@ -1,3 +1,4 @@
+import time
 import copy
 import numpy as np
 from collections import defaultdict
@@ -35,6 +36,8 @@ class controller():
         self.cbs_plan_generated = False
         self.cbs_planned_agents = set()  # [추가] 마지막으로 계획을 세운 AGV 목록
 
+        self.time_ms = []
+
 
     def reset(self):
         self.agv_pos.clear()
@@ -56,6 +59,8 @@ class controller():
 
         self.cbs_plan_generated = False
         self.cbs_planned_agents.clear() # [추가] 리셋 시 초기화
+
+        self.time_ms.clear()
 
     def add_agv(self, agv_num, start_pos, goal_pos):
         """AGV를 컨트롤러에 동적으로 추가"""
@@ -111,7 +116,7 @@ class controller():
         elif self.running_opt == 2:            # D*
             self.dstar_rout()
         elif self.running_opt == 3:            # PIBT
-            self.pibt_rout(use_dstar_hint=True, on_conflict=False)
+            self.pibt_rout()
         elif self.running_opt == 4:            # CBS
             current_agents = set(self.agv_nums)
             # if current_agents != self.cbs_planned_agents:
@@ -148,7 +153,7 @@ class controller():
             self.next_buffer[num] = (dx, dy)
             self.control_buffer[num] = (dx, dy)
 
-    def pibt_rout(self, use_dstar_hint: bool = True, on_conflict: bool = False):
+    def pibt_rout(self, use_dstar_hint: bool = True):
         """
         PIBT로 한 스텝 제어 벡터를 채운다.
         - use_dstar_hint=True: D*의 다음 칸을 후보 최우선 힌트로 사용
@@ -190,53 +195,14 @@ class controller():
             nx = path[1] if path and len(path) > 1 else p
             dstar_next[a] = nx
             dstar_hint[a] = (nx if (use_dstar_hint and nx != p) else None)
+        
+        # 전체를 PIBT로 한 스텝 결정 (D* 힌트는 후보 우선)
+        t0 = time.perf_counter_ns()
 
-        # 2) on_conflict 옵션: 충돌 예상 그룹만 PIBT 적용
-        def _detect_conflict_set(pos_dict, nxt_dict):
-            agents = list(nxt_dict.keys())
-            bad = set()
-            for i in range(len(agents)):
-                a = agents[i]
-                for j in range(i+1, len(agents)):
-                    b = agents[j]
-                    va, vb = nxt_dict[a], nxt_dict[b]
-                    ua, ub = pos_dict[a], pos_dict[b]
-                    # 1) 정점 충돌
-                    if va == vb:
-                        bad.update([a, b]); continue
-                    # 2) 에지(스왑) 충돌
-                    if va == ub and vb == ua:
-                        bad.update([a, b]); continue
-            return bad
+        final_next = self.pibt.plan_one_step(pos=pos, goals=goals, dstar_hint=dstar_hint)
 
-        if on_conflict:
-            group = _detect_conflict_set(pos, dstar_next)
-            if not group:
-                # 충돌 없으면 D* 제안대로 진행
-                for a in self.agv_nums:
-                    nx = dstar_next[a]
-                    dx, dy = nx[0] - pos[a][0], nx[1] - pos[a][1]
-                    self.next_buffer[a] = (dx, dy)
-                    self.control_buffer[a] = (dx, dy)
-                return
-            # 그룹 밖은 고정 점유/엣지로 취급해 그룹만 PIBT 재결정
-            non_group = set(self.agv_nums) - set(group)
-            fixed_vertices = {dstar_next[b] for b in non_group}
-            fixed_edges = {(pos[b], dstar_next[b]) for b in non_group}
-            group_next = self.pibt.plan_one_step(
-                pos=pos, goals=goals,
-                dstar_hint={a: dstar_hint[a] for a in group},
-                subset=group,
-                fixed_vertices=fixed_vertices,
-                fixed_edges=fixed_edges,
-            )
-            final_next = dict(dstar_next)
-            final_next.update(group_next)
-        else:
-            # 전체를 PIBT로 한 스텝 결정 (D* 힌트는 후보 우선)
-            final_next = self.pibt.plan_one_step(
-                pos=pos, goals=goals, dstar_hint=dstar_hint
-            )
+        dt_ms = (time.perf_counter_ns() - t0) / 1e6 / len(self.agv_nums)
+        self.time_ms.append(dt_ms)
 
         # 3) 제어 벡터 적용
         for a in self.agv_nums:
@@ -259,6 +225,8 @@ class controller():
 
             # 맵 복사 및 다른 AGV를 장애물로 표시
             # self.map이 numpy 배열 또는 2D 리스트라고 가정
+            t0 = time.perf_counter_ns()
+
             if hasattr(self.map, 'copy'):
                 dynamic_map = self.map.copy()
             else:
@@ -285,6 +253,9 @@ class controller():
             self.planners[num].compute_shortest_path()
             path = self.planners[num].extract_path()
             self.agv_path[num] = path
+
+            dt_ms = (time.perf_counter_ns() - t0) / 1e6
+            self.time_ms.append(dt_ms)
 
             if path and len(path) >= 2:
                 next_pos = path[1]
