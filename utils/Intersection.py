@@ -364,7 +364,17 @@ class Intersection:
         팔 d에서 인접한 두 AMR이 서로 자리로 이동하려는지(A→Bpos & B→Apos).
         감지되면 True.
         """
+        # ★ 존재하는 팔만 검사
+        present = getattr(self, "present_dirs", set(self.lane_coords.keys()))
+        if d not in present:
+            return False
+
         cells = self.lane_coords.get(d, [])
+        # 체인 길이가 2 미만이면 스왑 불가능
+        chain_ids = self._collect_chain_near_to_far(d)
+        if len(chain_ids) < 2:
+            return False
+
         pos2agv = {a.pos: a for a in self.agvs_in_lanes.get(d, [])}
         for i in range(len(cells) - 1):
             p, q = cells[i], cells[i + 1]  # p가 center에 더 가까움
@@ -381,7 +391,10 @@ class Intersection:
         return False
 
     def resolve_arm_swaps_all(self):
-        dirs = ['N', 'E', 'S', 'W']
+        # ★ 존재하는 팔만 검사 (고정 순서를 유지하고 싶으면 아래처럼 필터)
+        present = getattr(self, "present_dirs", set(self.lane_coords.keys()))
+        dirs = [d for d in ['N','E','S','W'] if d in present]
+
         dir_rank = {'N':0, 'E':1, 'S':2, 'W':3}
         cx, cy = self.center_x, self.center_y
 
@@ -392,6 +405,7 @@ class Intersection:
         PR_PULL = 50  # 끌어오기 우선순위(밀어내기보다 낮게)
 
         for d in hit:
+            print(f"[pull] {self.id} dir={d}")
             chain = self._collect_chain_near_to_far(d)  # [head,...,tail]
             if not chain:
                 continue
@@ -403,9 +417,9 @@ class Intersection:
                 if pos is None:
                     continue
                 dist = abs(pos[0]-cx) + abs(pos[1]-cy)
-                # head -> tail 순서가 먼저 움직이도록 order_key 구성
                 order_key = (dist, dir_rank[d], k)
                 self._plan_add(agv_id, move_in, PR_PULL, order_key)
+
 
 
     # Intersection에 유틸 3개 추가

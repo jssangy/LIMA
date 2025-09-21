@@ -22,6 +22,7 @@ class ENV():
         with open(prob_path, 'r') as f:
             data = json.load(f)
         map_path = os.path.join(base_dir, data['mapFile'])
+        self.goal = set()
 
         self.time = 0
         
@@ -53,7 +54,7 @@ class ENV():
         self.deadlock_queue = []
 
         # TrafficGenerator
-        self.traffic_generator = TaskSetGenerator(self.map, num_tasks=num_amrs)
+        self.traffic_generator = TaskSetGenerator(self.map, num_tasks=num_amrs, goal_positions=self.goal)
 
         # Color mapping
         self.color_map = Funct.Color_dict(6).dic
@@ -68,9 +69,9 @@ class ENV():
 
         self.completed_path_integrities: list[float] = []
 
-        self._sig_hist = deque(maxlen=22)  # 전역 시그니처 히스토리
-        self._stg_idle_win = 20             # 정지 판단 윈도우(최근 10스텝 모두 동일)
-        self._stg_osc_win  = 20             # 진동 판단 윈도우(최근 10스텝이 ABABAB)
+        self._sig_hist = deque(maxlen=25)  # 전역 시그니처 히스토리
+        self._stg_idle_win = 20             # 정지 판단 윈도우(최근 20스텝 모두 동일)
+        self._stg_osc_win  = 20             # 진동 판단 윈도우(최근 20스텝이 ABABAB)
         self._stg_min_time = 20            # 초반 전이 구간 보호(20스텝 이전엔 감지 안 함)
 
         self.time_ms = []
@@ -156,7 +157,9 @@ class ENV():
                         self.time_ms.append(dt_ms)
 
                     act_to_apply[iid] = rl_action
-        
+
+        self._print_top_intersection_debug(obs_now, info_now, act_to_apply)
+
         if self.use_rl and self.rl_policy:
             sorted_iids = sorted(self.intersections.keys(), key=self._inter_rank, reverse=True)
 
@@ -383,68 +386,90 @@ class ENV():
         except ValueError:
             return math.inf
 
-    def _is_valid_move(self, current_agv, control_signal):
-
-        if self.controller.running_opt in [3, 4]: # PIBT 충돌 시
+    def _is_valid_move(self, current_agv, control_signal,
+                    dbg_iid=None, dbg_ids=None, dbg_edge_swap=True):
+        """
+        dbg_iid: 이 교차로(iid)만 찍기(없으면 무시)
+        dbg_ids: 이 집합(AGV id)만 찍기(없으면 무시)
+        dbg_edge_swap: 에지 스왑 차단/로그 여부
+        """
+        # PIBT/CBS 모드는 그대로 통과
+        if self.controller.running_opt in [3, 4]:
             return True
 
         nx = current_agv.pos[0] + control_signal[0]
         ny = current_agv.pos[1] + control_signal[1]
         next_pos = (nx, ny)
+        gid = current_agv.id
+
+        def _belongs_to_dbg_iid():
+            if dbg_iid is None:
+                return True
+            # 현재 AGV가 속한 교차로 id 중 하나가 dbg_iid와 일치하면 True
+            for I in self.intersections.values():
+                if current_agv.pos in I.all_lane_coords:
+                    return I.id == dbg_iid
+            return False
+
+        def dlog(msg):
+            if (dbg_ids is not None and gid not in dbg_ids):
+                return
+            if not _belongs_to_dbg_iid():
+                return
+            print(f"[mvchk t={self.time}] iid={dbg_iid} id={gid} "
+                f"pos={current_agv.pos} sig={control_signal} -> {msg}")
 
         # 0) 경계/지형
         if not (0 <= nx < self.map.shape[1] and 0 <= ny < self.map.shape[0]):
+            dlog("block: OOB")
             return False
         if self.map[ny][nx] == 1:
+            dlog("block: wall")
             return False
-        
-        # 2) 동일 칸 점유 충돌
+
+        # 1) 동일 칸 점유 충돌
         for other in self.agv_list.values():
             if other is not current_agv and next_pos == other.pos:
+                dlog(f"block: same-cell with id={other.id} at {other.pos}")
                 return False
-                
-        # 3) 교차로 우선순위 규칙 (강화학습 활성화 시 적용)
+
+        # 2) 에지 스왑 금지(옵션)
+        if dbg_edge_swap:
+            for other_id, other in self.agv_list.items():
+                if other is current_agv:
+                    continue
+                odx, ody = self.controller.control_buffer.get(other_id, (0, 0))
+                other_next = (other.pos[0] + odx, other.pos[1] + ody)
+                if next_pos == other.pos and other_next == current_agv.pos:
+                    dlog(f"block: edge-swap with id={other_id}")
+                    return False
+
+        # 3) 교차로 우선순위 규칙(센터에서만)
         if self.rl_policy and self.use_rl:
-            # --- 유틸: pos가 속한 교차로들(겹침 포함) ---
             def owners(pos):
                 res = []
                 for I in self.intersections.values():
-                    if pos in I.all_lane_coords:   # all_lane_coords는 set이면 더 빠름
+                    if pos in I.all_lane_coords:
                         res.append(I)
                 return res
 
-            here_inters  = owners(current_agv.pos)
+            here_inters = owners(current_agv.pos)
             target_inters = owners(next_pos)
-
-            # 현재 위치 타입 분류
-            cur_is_center  = any(current_agv.pos == (I.center_x, I.center_y) for I in here_inters)
-            # 팔(arm)이라면 cur_is_center 둘 다 False
-
-            # --- 우선순위 비교는 center에서만 수행 ---
+            cur_is_center = any(current_agv.pos == (I.center_x, I.center_y) for I in here_inters)
             if cur_is_center:
-                # 현재 위치의 랭크(겹침이면 최소 랭크), 없으면 inf
-                cur_rank = min(
-                    (self._inter_rank(getattr(I, "id", "")) for I in here_inters),
-                    default=math.inf
-                )
-
-                # 다음 위치의 교차로(겹치면 현재 위치 교차로 제외)
-                if here_inters:
-                    here_ids = {getattr(I, "id", None) for I in here_inters}
-                    candidates = [J for J in target_inters if getattr(J, "id", None) not in here_ids]
-                else:
-                    candidates = list(target_inters)
-
-                # 다음 위치가 교차로가 아니면 우선순위 비교 스킵(허용)
+                cur_rank = min((self._inter_rank(getattr(I, "id", "")) for I in here_inters),
+                            default=math.inf)
+                here_ids = {getattr(I, "id", None) for I in here_inters}
+                candidates = [J for J in target_inters if getattr(J, "id", None) not in here_ids] if here_inters else list(target_inters)
                 if candidates:
                     next_rank = min(self._inter_rank(getattr(J, "id", "")) for J in candidates)
-
-                    # 네 규칙: next_rank < cur_rank -> 이동 불가
                     if next_rank < cur_rank:
+                        dlog(f"block: inter-priority cur={cur_rank} -> next={next_rank}")
                         return False
-                # candidates가 비면 교차로가 아닌 칸으로 이동 → 비교 없이 통과
 
+        dlog("ok")
         return True
+
     
     def _update_intersections_state(self):
         for I in self.intersections.values():
@@ -536,7 +561,10 @@ class ENV():
             row = []
             for c in line.strip():
                 if c in ['@', 'T']: row.append(1)
-                elif c in ['.', 'E', 'S']: row.append(0)
+                elif c in ['.', 'E', 'S']: 
+                    row.append(0)
+                    if c == "S":
+                        self.goal.add((len(row)-1, len(map_data)))  # (x,y)
                 else: raise ValueError(f"Invalid character in map file: {c}")
             if row: map_data.append(row)
         return np.array(map_data)
@@ -582,6 +610,7 @@ class ENV():
 
         # 윈도우 좌표 → 중심 좌표(슬라이딩 오프셋 +1)
         centers = (np.argwhere(match_any) + 1).tolist()
+        print(len(centers), "intersections found.")
         return centers
         
     def _ray_len(self, r, c, dr, dc, max_len=None):
@@ -592,11 +621,11 @@ class ENV():
             if dr != 0:
                 left_wall  = (cc - 1 < 0) or (self.map[rr][cc - 1] == 1)
                 right_wall = (cc + 1 >= W) or (self.map[rr][cc + 1] == 1)
-                if not (left_wall or right_wall): break
+                if not (left_wall and right_wall): break
             else:
                 up_wall   = (rr - 1 < 0) or (self.map[rr - 1][cc] == 1)
                 down_wall = (rr + 1 >= H) or (self.map[rr + 1][cc] == 1)
-                if not (up_wall or down_wall): break
+                if not (up_wall and down_wall): break
 
             length += 1
             if max_len is not None and length >= max_len:
@@ -767,3 +796,79 @@ class ENV():
             "avg_path_integrity": avg_pi,
             "avg_inference_time": avg_ms,
         }
+    
+    def _print_top_intersection_debug(self, obs_now, info_now, act_to_apply):
+        """deadlock_queue 기준 최우선 교차로의 액션/마스크 + 교차로/AGV 체인 전체 디버그 출력"""
+        if not self.deadlock_queue:
+            print(f"[TopInter][t={self.time}] deadlock_queue is empty.")
+            return
+
+        # deadlock_queue 원소가 (iid, timestamp) 튜플일 수 있음
+        top = self.deadlock_queue[0]
+        top_iid = top[0] if isinstance(top, tuple) else top
+
+        I = self.intersections.get(top_iid)
+        meta = info_now.get(top_iid, {})
+
+        if I is None or not isinstance(meta, dict):
+            print(f"[TopInter][t={self.time}] iid={top_iid} meta unavailable.")
+            return
+
+        # 액션/마스크
+        mask = meta.get("action_mask")
+        chosen = act_to_apply.get(top_iid, None)
+        allowed = None
+        mask_list = None
+        try:
+            import numpy as np
+            if mask is not None:
+                allowed = np.flatnonzero(mask).tolist()
+                mask_list = mask.astype(int).tolist()
+        except Exception:
+            if isinstance(mask, (list, tuple)):
+                allowed = [i for i,v in enumerate(mask) if v]
+                mask_list = [int(bool(v)) for v in mask]
+
+        # 교차로/데드락 요약
+        present = sorted(getattr(I, "present_dirs", list(I.lane_coords.keys())))
+        neighbors = getattr(I, "neighbors", {})
+        center_flag = bool(I.center_agv)
+        center_dl = bool(I.center_deadlock)
+        any_dl = bool(I.is_deadlock)
+
+        # 센터 AGV 정보
+        if I.center_agv:
+            cid = I.center_agv.id
+            cpos = I.center_agv.pos
+            cprev = getattr(I.center_agv, "prev_pos", None)
+            cnext = self.controller.next_buffer.get(cid, (0,0))
+            ccont = self.controller.control_buffer.get(cid, (0,0))
+            center_info = f"id={cid}, pos={cpos}, prev={cprev}, next={cnext}, cont={ccont}"
+        else:
+            center_info = "None"
+
+        # 출력 헤더
+        print(f"[TopInter][t={self.time}] iid={top_iid} | action={chosen} | allowed={allowed} | mask={mask_list}")
+        print(f"  deadlock: center={center_dl}, any={any_dl} | present={present} | neighbors={neighbors}")
+        print(f"  center: {center_info}")
+
+        # 각 방향 체인 전체 출력 (near→far)
+        for d in ['N','E','S','W']:
+            if d not in present:
+                continue
+            try:
+                chain_ids = I._collect_chain_near_to_far(d)  # [head,...,tail]
+            except Exception:
+                chain_ids = []
+            ing = 1 if I.ingoing.get(d, False) else 0
+            out = 1 if I.outgoing.get(d, False) else 0
+
+            elems = []
+            for aid in chain_ids:
+                pos = self.controller.agv_pos.get(aid)
+                nxt = self.controller.next_buffer.get(aid, (0,0))
+                cont = self.controller.control_buffer.get(aid, (0,0))
+                elems.append(f"{aid}@{pos},next={nxt},cont={cont}")
+            chain_str = "; ".join(elems) if elems else "-"
+            print(f"  {d}: occ={len(chain_ids)}, in={ing}, out={out} | chain (near→far): [{chain_str}]")
+
