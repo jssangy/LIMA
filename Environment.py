@@ -261,7 +261,7 @@ class ENV():
             if not isinstance(meta, dict):
                 continue
 
-            curr = bool(meta.get("deadlock_active", False))
+            curr = bool(meta.get("is_deadlock", False))
             prev = self.prev_deadlock_map.get(iid, False)
 
             # 기본 보상 스킴(예시): 지속 -0.05, 해소 +1.0
