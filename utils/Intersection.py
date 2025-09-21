@@ -405,7 +405,6 @@ class Intersection:
         PR_PULL = 50  # 끌어오기 우선순위(밀어내기보다 낮게)
 
         for d in hit:
-            print(f"[pull] {self.id} dir={d}")
             chain = self._collect_chain_near_to_far(d)  # [head,...,tail]
             if not chain:
                 continue
