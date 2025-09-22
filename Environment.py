@@ -45,7 +45,7 @@ class ENV():
         # self.traffic_generator = TrafficGenerator12(arms12=arms12)
         # self.traffic_generator.set_arm_gate(lambda iid, d: self.is_arm_outgoing_clear(iid, d))
         self.traffic_generator = TrafficGenerator()
-        self.max_inside = 4
+        self.max_inside = 12
         iid = next(iter(self.intersections))  # 첫 교차로 id
         self.traffic_generator.set_capacity_gate(lambda d: self._spawn_gate(iid, d))
 
