@@ -1,10 +1,11 @@
 import os
 import sys
 import argparse
+import torch
+import numpy as np
+
 from GUI import GUI
 from Environment import ENV
-
-import torch, numpy as np
 from module.model import ActorCritic
 
 class RLPolicy:
@@ -44,7 +45,7 @@ def main():
     parser.add_argument("--num-amrs", type=int, default=20)
     parser.add_argument("--max-arm-h", type=int, default=5)
     parser.add_argument("--max-arm-v", type=int, default=5)
-    parser.add_argument("--max-steps", type=int, default=100)
+    parser.add_argument("--max-steps", type=int, default=10000)
     parser.add_argument("--model-path", type=str, default="checkpoint/final_mlp_policy.pt")
     args = parser.parse_args()
 
