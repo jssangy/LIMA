@@ -100,9 +100,12 @@ class Intersection:
 
             ingoing = 1.0 if self.ingoing[d] else 0.0
 
+            density = len(agvs) / len(self.lane_coords[d])
+
             state_vector.extend(goal_onehot)
             state_vector.append(distance)
             state_vector.append(ingoing)
+            state_vector.append(density)
 
         center_goal_onehot = [0, 0, 0, 0]
         if self.center_agv is not None:
