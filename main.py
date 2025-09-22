@@ -46,13 +46,22 @@ def main():
     parser.add_argument("--max-arm-h", type=int, default=5)
     parser.add_argument("--max-arm-v", type=int, default=5)
     parser.add_argument("--max-steps", type=int, default=10000)
-    parser.add_argument("--model-path", type=str, default="checkpoint/final_mlp_policy.pt")
+    parser.add_argument("--traffic-mode", type=str, default="task", choices=["traffic","task"])
+    parser.add_argument("--model-path", type=str, default="checkpoint/final_policy.pt")
     args = parser.parse_args()
 
     prob_path = f"problems/cross/{args.prob}.json"
 
     # ENV 생성자에는 max_steps 없음 → 생성 후 속성으로 지정
-    env = ENV(prob_path, max_arm_len_h=args.max_arm_h, max_arm_len_v=args.max_arm_v, num_amrs=args.num_amrs, max_steps=args.max_steps, running_opt=args.algo)
+    env = ENV(
+        prob_path, 
+        max_arm_len_h=args.max_arm_h, 
+        max_arm_len_v=args.max_arm_v, 
+        num_amrs=args.num_amrs, 
+        max_steps=args.max_steps, 
+        running_opt=args.algo, 
+        traffic_mode=args.traffic_mode
+    )        
 
     # RL 정책 로드 & 연결
     state_dim = int(np.asarray(next(iter(env.intersections.values())).get_state()).shape[-1])

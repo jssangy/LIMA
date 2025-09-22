@@ -10,12 +10,12 @@ from collections import deque
 from utils.AGV import agv
 from utils.Intersection import Intersection
 from utils import Funct
-from utils.traffic_generator import TaskSetGenerator
+from utils.traffic_generator import TaskSetGenerator, discover_border_arms_NxM, TrafficGenerator
 from utils.Controller import controller
 
 
 class ENV():
-    def __init__(self, prob_path, max_arm_len_h=5, max_arm_len_v=5, num_amrs=500, max_steps=1000, running_opt=0):
+    def __init__(self, prob_path, max_arm_len_h=5, max_arm_len_v=5, num_amrs=500, max_steps=1024, running_opt=0, traffic_mode='task'):
         super().__init__()
         """환경 초기화"""
         base_dir = os.path.dirname(prob_path)
@@ -53,8 +53,17 @@ class ENV():
 
         self.deadlock_queue = []
 
-        # TrafficGenerator
-        self.traffic_generator = TaskSetGenerator(self.map, num_tasks=num_amrs, goal_positions=self.goal)
+        self.traffic_mode = traffic_mode
+
+        # TaskGenerator
+        if self.traffic_mode == 'task':
+            self.task_generator = TaskSetGenerator(self.map, num_tasks=num_amrs, goal_positions=self.goal)
+
+        # Traffic Generator
+        elif self.traffic_mode == 'traffic':
+            arms = discover_border_arms_NxM(self.intersections)
+            self.traffic_generator = TrafficGenerator(arms)
+            self.traffic_generator.set_arm_gate(lambda iid, d: self.is_arm_outgoing_clear(iid, d))
 
         # Color mapping
         self.color_map = Funct.Color_dict(6).dic
@@ -80,7 +89,11 @@ class ENV():
         self.time = 0
         self.tau_map: dict[str, int] = {}
         self.agv_list.clear()
-        self.traffic_generator.start_new_episode()
+        
+        if self.traffic_mode == 'task':
+            self.task_generator.start_new_episode()
+        elif self.traffic_mode == 'traffic':
+            self.traffic_generator.start_new_episode()
 
         # 컨트롤러와 모든 교차로의 내부 상태 초기화
         self.controller.reset()
@@ -88,7 +101,10 @@ class ENV():
             I.reset()
         self.deadlock_queue = []
 
-        self._spawn_amrs_from_task_gen()
+        if self.traffic_mode == 'task':
+            self._spawn_amrs_from_task_gen()
+        elif self.traffic_mode == 'traffic':
+            self._spawn_amrs_from_stream_gen()
 
         # 리셋 시에는 초기 관찰 상태만 반환
         obs, info = self.generate_observation()
@@ -112,17 +128,20 @@ class ENV():
         """
         # --- 에피소드 종료 조건 확인 ---
         terminated = False
-        if self.traffic_generator.is_episode_done():
+        if self.traffic_mode == 'task' and self.task_generator.is_episode_done():
             terminated = True
 
         if self._update_and_check_stagnation():
-            print(f"[EarlyStop] stagnation detected at t={self.time}, "
-                f"AGVs={len(self.agv_list)}")
-            return False  # 테스트 루프에서 break
+            if train:
+                terminated = True
+            else:
+                print(f"[EarlyStop] stagnation detected at t={self.time}, "f"AGVs={len(self.agv_list)}")
+                return False  # 테스트 루프에서 break
         
         # 공통 종료 조건: 최대 스텝 도달
         if self.time >= self.max_steps or terminated:
-            return False
+            if not train:
+                return False
         
         if actions is None:
             actions = {}
@@ -158,7 +177,7 @@ class ENV():
 
                     act_to_apply[iid] = rl_action
 
-        self._print_top_intersection_debug(obs_now, info_now, act_to_apply)
+        # self._print_top_intersection_debug(obs_now, info_now, act_to_apply)
 
         if self.use_rl and self.rl_policy:
             sorted_iids = sorted(self.intersections.keys(), key=self._inter_rank, reverse=True)
@@ -240,7 +259,10 @@ class ENV():
         # 4) 환경 변화 처리
         self._check_amr_completion()
 
-        self._spawn_amrs_from_task_gen()
+        if self.traffic_mode == 'task':
+            self._spawn_amrs_from_task_gen()
+        elif self.traffic_mode == 'traffic':
+            self._spawn_amrs_from_stream_gen()
 
         if self.controller.pibt_bump:
             for aid, inc in list(self.controller.pibt_bump.items()):
@@ -268,11 +290,8 @@ class ENV():
             r = 0.0
             if curr:
                 r -= 0.05
-                self.tau_map[iid] = self.tau_map.get(iid, 0) + 1
             if prev and not curr:
                 r += 1.0
-                meta["tau"] = self.tau_map.get(iid, 0)
-                self.tau_map[iid] = 0
 
             # 교차로별 이벤트 플래그/invalid_action 기록
             meta["event_start"] = (not prev) and curr
@@ -283,7 +302,6 @@ class ENV():
             reward_map[iid] = r
 
         # 종료/트렁케이트: 전역 상태만 간단 요약(합산 지표는 넣지 않음)
-        terminated = False
         truncated = (self.time >= self.max_steps)
         info_next["_summary"] = {
             "terminated": terminated,
@@ -401,7 +419,7 @@ class ENV():
         ny = current_agv.pos[1] + control_signal[1]
         next_pos = (nx, ny)
         gid = current_agv.id
-
+        """
         def _belongs_to_dbg_iid():
             if dbg_iid is None:
                 return True
@@ -426,11 +444,12 @@ class ENV():
         if self.map[ny][nx] == 1:
             dlog("block: wall")
             return False
+        """
 
         # 1) 동일 칸 점유 충돌
         for other in self.agv_list.values():
             if other is not current_agv and next_pos == other.pos:
-                dlog(f"block: same-cell with id={other.id} at {other.pos}")
+                # dlog(f"block: same-cell with id={other.id} at {other.pos}")
                 return False
 
         # 2) 에지 스왑 금지(옵션)
@@ -441,7 +460,7 @@ class ENV():
                 odx, ody = self.controller.control_buffer.get(other_id, (0, 0))
                 other_next = (other.pos[0] + odx, other.pos[1] + ody)
                 if next_pos == other.pos and other_next == current_agv.pos:
-                    dlog(f"block: edge-swap with id={other_id}")
+                    # dlog(f"block: edge-swap with id={other_id}")
                     return False
 
         # 3) 교차로 우선순위 규칙(센터에서만)
@@ -464,10 +483,10 @@ class ENV():
                 if candidates:
                     next_rank = min(self._inter_rank(getattr(J, "id", "")) for J in candidates)
                     if next_rank < cur_rank:
-                        dlog(f"block: inter-priority cur={cur_rank} -> next={next_rank}")
+                        # dlog(f"block: inter-priority cur={cur_rank} -> next={next_rank}")
                         return False
 
-        dlog("ok")
+        # dlog("ok")
         return True
 
     
@@ -489,7 +508,7 @@ class ENV():
         [이름 변경 및 Task 모드 전용]
         TaskSetGenerator로부터 새로운 AMR을 받아 환경에 추가.
         """
-        gen = self.traffic_generator
+        gen = self.task_generator
         if not gen or not gen.should_spawn_next():
             return
 
@@ -518,9 +537,43 @@ class ENV():
                 self.completed_path_integrities.append(pi_pct)
                 self.completed_agv_steps.append(agv_obj.steps)
                 self.completed_agv_actions.append(agv_obj.action_count)
-            self.traffic_generator.complete_task(agv_id)
+            if self.traffic_mode == 'task':
+                self.task_generator.complete_task(agv_id)
+            elif self.traffic_mode == 'traffic':
+                self.traffic_generator.complete_task(agv_id)
             del self.agv_list[agv_id]
             self.controller.remove_agv(agv_id)
+
+    def _spawn_amrs_from_stream_gen(self):
+        """
+        [새로 추가된 함수 - Traffic 모드 전용]
+        TrafficGenerator12로부터 새로운 AMR을 받아 환경에 추가.
+        """
+        gen = self.traffic_generator
+        if not gen or not gen.should_spawn_next():
+            return
+        
+        # TrafficGenerator12는 current_time 인자가 없음
+        new_tasks = gen.get_next_task_pair()
+
+        for task in new_tasks:
+            agv_id = task['id']
+            start_iid = task['intersection_id']
+            start_dir = task['start_direction']
+            goal_iid = task['goal_intersection_id']
+            goal_dir = task['goal_direction']
+
+            start_pos = self._direction_to_coords(start_dir, start_iid)
+            goal_pos = self._direction_to_coords(goal_dir, goal_iid)
+
+            if start_pos is None or goal_pos is None:
+                print(f"Warning: Could not get start/goal position for AGV {agv_id}. Skipping.")
+                continue
+            
+            # AGV 생성 및 등록 (agv 생성자 인자 순서 수정)
+            new_agv = agv(start_pos, agv_id, self.color_map[agv_id % 6])
+            self.agv_list[agv_id] = new_agv
+            self.controller.add_agv(agv_id, start_pos, goal_pos)
 
     def _direction_to_coords(self, direction, intersection_ref):
         """
@@ -753,7 +806,10 @@ class ENV():
         'task' 모드와 'traffic' 모드를 명시적으로 구분하여 처리합니다.
         """
         # --- 2. 모드에 따라 통계 정보 계산 ---
-        progress = self.traffic_generator.get_progress()
+        if self.traffic_mode == 'traffic':
+            progress = self.traffic_generator.get_progress()
+        elif self.traffic_mode == 'task':
+            progress = self.task_generator.get_progress()
         completed_tasks = progress.get('completed_total', 0)
         total_tasks = progress.get('spawned_total', 0)
 

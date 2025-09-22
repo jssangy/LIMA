@@ -19,20 +19,18 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--value_coef", type=float, default=0.5)
     parser.add_argument("--max_grad_norm", type=float, default=0.5)
-    parser.add_argument("--total_steps", type=int, default=100_000)
-    parser.add_argument("--steps_per_update", type=int, default=4096)
+    parser.add_argument("--total_steps", type=int, default=500_000)
+    parser.add_argument("--steps_per_update", type=int, default=256)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--out_model", type=str, default="checkpoints/policy_final.pt")
     args = parser.parse_args()
 
     # 1) env를 여기서 생성해 의존성 주입
-    env = ENV(args.prob_path)
+    env = ENV(args.prob_path, 5, 5, 12, 1024, 0, 'traffic')  # max_arm_len_h, max_arm_len_v, num_amrs, max_steps, running_opt, traffic_mode
 
     # 2) 학습 설정 (env 경로는 Config에 넣지 않음)
     cfg = TrainConfig(
-        total_updates=args.updates,
-        events_per_update=args.events_per_update,
         epochs=args.epochs,
         minibatch_size=args.minibatch,
         gamma=args.gamma,

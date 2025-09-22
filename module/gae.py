@@ -1,8 +1,7 @@
-from typing import Dict
 import torch
 
 @torch.no_grad()
-def compute_smdp_gae(batch, gamma=0.99, lam=0.95):
+def compute_gae(batch, gamma=0.99, lam=0.95):
     """
     SMDP-GAE: 이벤트 단위 전이(batch)에서 γ^τ, (γλ)^τ를 사용해 A_k와 return을 계산.
 
