@@ -254,7 +254,7 @@ class TrafficGenerator:
     def __init__(
         self,
         arms: List[Tuple[str, str]],
-        lam: float = 0.05,
+        lam: float = 0.2,
         lambda_per_arm: Optional[Dict[Tuple[str, str], float]] = None,
         arm_gate: Optional[Callable[[str, str], bool]] = None,
         debug: bool = False,

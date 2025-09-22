@@ -742,19 +742,47 @@ class ENV():
     
     def is_arm_outgoing_clear(self, iid: str, d: str) -> bool:
         I = self.intersections[iid]
-        
-        # 1. 해당 팔에 나가는 AGV가 있으면 생성 금지
+
+        # (선택) 삼거리 대응: 존재하지 않는 팔은 금지
+        present = getattr(I, "present_dirs", set(I.lane_coords.keys()))
+        if d not in present:
+            return False
+
+        # 1) 해당 팔에 '바깥으로 나가려는 흐름'이 있으면 금지
         has_outgoing = bool(getattr(I, "outgoing", {}).get(d, False))
         if has_outgoing:
             return False
-            
-        # 2. 해당 교차로가 데드락 상태이면 생성 금지
-        is_deadlocked = iid in self.deadlock_queue
-        if is_deadlocked:
+
+        # 2) 교차로 데드락인 경우 금지  ← deadlock_queue 정규화
+        dq = self.deadlock_queue or []
+        if dq and isinstance(dq[0], tuple):
+            dead_iids = {x for (x, _) in dq}
+        else:
+            dead_iids = set(dq)
+        if iid in dead_iids:
             return False
-            
-        # 두 조건 모두 통과하면 생성 허용
+
+        # (권장) 3) 팔 팁(outer entry)이 도로이고 비어있는지 확인
+        if hasattr(I, "outer_entry_cells") and d in I.outer_entry_cells:
+            tip = I.outer_entry_cells[d]
+        else:
+            cx, cy = I.center_x, I.center_y
+            if   d == "N": tip = (cx, cy - I.len_N - 1)
+            elif d == "E": tip = (cx + I.len_E + 1, cy)
+            elif d == "S": tip = (cx, cy + I.len_S + 1)
+            else:          tip = (cx - I.len_W - 1, cy)
+
+        H, W = self.map.shape
+        tx, ty = tip
+        if not (0 <= tx < W and 0 <= ty < H):
+            return False
+        if self.map[ty][tx] == 1:
+            return False
+        if any(a.pos == tip for a in self.agv_list.values()):
+            return False
+
         return True
+
     
     def _update_and_check_stagnation(self) -> bool:
         """
@@ -876,7 +904,6 @@ class ENV():
         allowed = None
         mask_list = None
         try:
-            import numpy as np
             if mask is not None:
                 allowed = np.flatnonzero(mask).tolist()
                 mask_list = mask.astype(int).tolist()

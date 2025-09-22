@@ -89,7 +89,7 @@ class Intersection:
 
         for d in ['N', 'E', 'S', 'W']:
             if d not in self.present_dirs:
-                state_vector.extend([0, 0, 0, 0, 0, 0, 0])  # goal_onehot(4), distance(1), ingoing(1), density(1)
+                state_vector.extend([0, 0, 0, 0, 0, 0])  # goal_onehot(4), distance(1), ingoing(1)
                 continue
 
             agvs = self.agvs_in_lanes[d]  # [AGV,...]
@@ -112,12 +112,9 @@ class Intersection:
 
             ingoing = 1.0 if self.ingoing[d] else 0.0
 
-            density = len(agvs) / len(self.lane_coords[d]) if self.lane_coords[d] else 0.0
-
             state_vector.extend(goal_onehot)
             state_vector.append(distance)
             state_vector.append(ingoing)
-            state_vector.append(density)
 
         center_goal_onehot = [0, 0, 0, 0]
         if self.center_agv is not None:
