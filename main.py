@@ -47,7 +47,7 @@ def main():
     parser.add_argument("--max-arm-v", type=int, default=5)
     parser.add_argument("--max-steps", type=int, default=10000)
     parser.add_argument("--traffic-mode", type=str, default="task", choices=["traffic","task"])
-    parser.add_argument("--model-path", type=str, default="checkpoint/final_mlp_policy.pt")
+    parser.add_argument("--model-path", type=str, default="checkpoint/final_policy.pt")
     args = parser.parse_args()
 
     prob_path = f"problems/cross/{args.prob}.json"

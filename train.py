@@ -27,7 +27,7 @@ def main():
     args = parser.parse_args()
 
     # 1) env를 여기서 생성해 의존성 주입
-    env = ENV(args.prob_path, 5, 5, 12, 1024, 0, 'traffic')  # max_arm_len_h, max_arm_len_v, num_amrs, max_steps, running_opt, traffic_mode
+    env = ENV(args.prob_path, 6, 6, 4, 1024, 0, 'traffic')  # max_arm_len_h, max_arm_len_v, num_amrs, max_steps, running_opt, traffic_mode
 
     # 2) 학습 설정 (env 경로는 Config에 넣지 않음)
     cfg = TrainConfig(

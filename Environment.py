@@ -147,7 +147,8 @@ class ENV():
             actions = {}
 
         # 0) 현재 스냅샷
-        obs_now, info_now = self.generate_observation()
+        if self.use_rl and self.rl_policy:
+            obs_now, info_now = self.generate_observation()
 
         # 1) 액션 결정 (데드락인 동안 매 스텝 RL 보충)
         act_to_apply: dict[str, int] = dict(actions)
@@ -161,7 +162,7 @@ class ENV():
                     continue
                 
                 # 데드락이 활성화된 교차로에 대해서만 RL 정책 적용
-                if meta.get("deadlock_active", False) and self.intersections[iid].center_agv and iid not in act_to_apply:
+                if meta.get("center_deadlock", False) and self.intersections[iid].center_agv and iid not in act_to_apply:
                     action_mask = meta.get("action_mask")
 
                     if self.time >= 5:
@@ -179,7 +180,7 @@ class ENV():
 
         # self._print_top_intersection_debug(obs_now, info_now, act_to_apply)
 
-        if self.use_rl and self.rl_policy:
+        if (self.use_rl and self.rl_policy) or train:
             sorted_iids = sorted(self.intersections.keys(), key=self._inter_rank, reverse=True)
 
             # 2) 교차로별 플래닝 (begin → resolve → action → finalize)
@@ -280,9 +281,6 @@ class ENV():
         # 6) 보상/이벤트 — 교차로별로 '개별 기록'
         reward_map: dict[str, float] = {}
         for iid, meta in info_next.items():
-            if not isinstance(meta, dict):
-                continue
-
             curr = bool(meta.get("is_deadlock", False))
             prev = self.prev_deadlock_map.get(iid, False)
 
@@ -352,7 +350,7 @@ class ENV():
                 "state": state,
             }
             info[iid] = {
-                "deadlock_active": I.center_deadlock,
+                "center_deadlock": I.center_deadlock,
                 "is_deadlock": I.is_deadlock,
                 "action_mask": action_mask,
             }
@@ -462,6 +460,38 @@ class ENV():
                 if next_pos == other.pos and other_next == current_agv.pos:
                     # dlog(f"block: edge-swap with id={other_id}")
                     return False
+                
+        if self.rl_policy and self.use_rl:
+            def owners(pos):
+                res = []
+                for I in self.intersections.values():
+                    if pos in I.all_lane_coords:
+                        res.append(I)
+                return res
+
+            here_inters   = owners(current_agv.pos)
+            target_inters = owners(next_pos)
+            here_ids = {getattr(I, "id", None) for I in here_inters}
+
+            # 3-1) '새 교차로'로 들어가려는 경우, 해당 교차로 AMR이 13개 이상이면 진입 금지
+            cap_limit = getattr(self, "inter_cap_limit_enter", 13)
+            for J in target_inters:
+                if getattr(J, "id", None) not in here_ids:
+                    if len(J.agvs_in_intersection) >= cap_limit:
+                        return False
+
+            # 3-2) 교차로 우선순위: 센터에서만 적용
+            cur_is_center = any(current_agv.pos == (I.center_x, I.center_y) for I in here_inters)
+            if cur_is_center:
+                cur_rank = min((self._inter_rank(getattr(I, "id", "")) for I in here_inters),
+                            default=math.inf)
+                # 다음 위치가 '새 교차로'인 후보들만 비교
+                candidates = [J for J in target_inters if getattr(J, "id", None) not in here_ids] \
+                            if here_inters else list(target_inters)
+                if candidates:
+                    next_rank = min(self._inter_rank(getattr(J, "id", "")) for J in candidates)
+                    if next_rank < cur_rank:
+                        return False
 
         # 3) 교차로 우선순위 규칙(센터에서만)
         if self.rl_policy and self.use_rl:
