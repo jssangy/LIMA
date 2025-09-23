@@ -280,11 +280,6 @@ class Intersection:
             if d not in self.present_dirs:
                 mask[idx] = False
 
-        # 1) 뒤로가기 금지 (기존 로직)
-        back_idx = self._back_action_index_from_prev()
-        if back_idx is not None and 0 <= back_idx < 4:
-            mask[back_idx] = False
-
         # 2) 용량이 가득 찬 방향으로 이동 금지
         for d, idx in DIR2IDX.items():
             if not mask[idx] or d not in self.present_dirs:
