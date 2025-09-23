@@ -139,7 +139,7 @@ class Intersection:
         a = int(actions)
 
         d = dir_map[a]
-        self._plan_push_chain(d)  # 체인 이동 계획만 추가 (버퍼 직접 X)
+        self._plan_push_chain(d)  # ★ 체인 이동 계획만 추가 (버퍼 직접 X)
 
         # 평소처럼 center 이동 의도만 기록(최종 커밋은 finalize_plan에서)
         self._plan_add(self.center_agv.id, move_map[a], prio=PR_ACTION, order_key=(2,0))  # 기본 이동(푸시 아님)
