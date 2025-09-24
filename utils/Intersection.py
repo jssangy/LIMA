@@ -56,6 +56,7 @@ class Intersection:
         self.agvs_in_lanes = {'N': [], 'E': [], 'S': [], 'W': []}
         self.center_agv = None
         self.is_deadlock = False
+        self.macro = None
 
         self.ingoing = {"N": [], "E": [], "S": [], "W": []}
         self.outgoing = {"N": [], "E": [], "S": [], "W": []}
@@ -73,6 +74,7 @@ class Intersection:
         self.ingoing = {"N": [], "E": [], "S": [], "W": []}
         self.outgoing = {"N": [], "E": [], "S": [], "W": []}
         self.is_deadlock = False
+        self.macro = None
         self._plan_moves.clear()
         self._plan_prio.clear()
         self._plan_order.clear()
@@ -141,7 +143,6 @@ class Intersection:
         if action is not None:
             src, dst = decode_action(action)  # 0~11 -> (src,dst)
             print(f"[Intersection {self.id}] Received action: {action} -> (src={src}, dst={dst})")
-        if self.macro is None:
             self.macro = {"src": src, "dst": dst, "phase": "pull"}
         self.tick_macro()
 
@@ -167,7 +168,6 @@ class Intersection:
                 break
 
         if agv_to_move is not None and phase == "pull":
-            center_pos = (self.center_x, self.center_y)
             move_vec = (-src_dir[0], -src_dir[1])  # -src 방향으로 한 칸
             self._plan_add(agv_to_move.id, move_vec, PR_PULL_CENTER, (0, 0))
             self.macro['phase'] = "push"
@@ -196,6 +196,7 @@ class Intersection:
             if occ < cap:
                 mask_dst[idx] = True
 
+            print(self.ingoing.get(d, []))
             ingoing_count = len(self.ingoing.get(d, []))
             if ingoing_count > 0:
                 mask_src[idx] = True
@@ -203,7 +204,7 @@ class Intersection:
         for i, (s, d) in enumerate(PAIRS):
             mask[i] = mask_src[s] and mask_dst[d]
 
-        print(mask)
+        print(mask_src, mask_dst)
         
         return mask
 
@@ -401,7 +402,6 @@ class Intersection:
                 # AGV가 이미 중심 앞 칸이면 당기지 않음
                 if (agv.pos[0], agv.pos[1]) == center_front:
                     self._plan_add(agv.id, (0,0), PR_PULL, (k, 0))
-                    print(f"[Intersection {self.id}] AGV {agv.id} already at center front, no pull needed.")
                     continue
 
                 self._plan_add(agv.id, in_dir, PR_PULL, order_key)

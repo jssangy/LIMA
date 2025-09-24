@@ -158,6 +158,7 @@ class ENV():
             for iid, meta in info_now.items():
                 # 유효한 교차로 정보인지 확인
                 if meta.get("macro_busy", False):
+                    print(f"[Warning] Intersection {iid} is busy with macro operation. Skipping RL action.")
                     continue                
                 # 데드락이 활성화된 교차로에 대해서만 RL 정책 적용
                 if meta.get("is_deadlock", False) and iid not in act_to_apply:
@@ -337,7 +338,7 @@ class ENV():
             state = np.asarray(I.get_state(), dtype=np.float32)
             
             action_mask = I.calculate_action_mask()
-            action_mask = np.asarray(action_mask, dtype=np.bool_) # shape (2, 4)
+            action_mask = np.asarray(action_mask, dtype=np.bool_)
 
             obs[iid] = {
                 "state": state,
@@ -480,7 +481,6 @@ class ENV():
 
         # dlog("ok")
         return True
-
     
     def _update_intersections_state(self):
         for I in self.intersections.values():
