@@ -147,8 +147,7 @@ class ENV():
             actions = {}
 
         # 0) 현재 스냅샷
-        if self.use_rl and self.rl_policy:
-            obs_now, info_now = self.generate_observation()
+        obs_now, info_now = self.generate_observation()
 
         # 1) 액션 결정 (데드락인 동안 매 스텝 RL 보충)
         act_to_apply: dict[str, int] = dict(actions)
@@ -158,12 +157,11 @@ class ENV():
         if (not train) and self.use_rl and self.rl_policy:
             for iid, meta in info_now.items():
                 # 유효한 교차로 정보인지 확인
-                if not isinstance(meta, dict):
-                    continue
-                
+                if meta.get("macro_busy", False):
+                    continue                
                 # 데드락이 활성화된 교차로에 대해서만 RL 정책 적용
-                if meta.get("center_deadlock", False) and self.intersections[iid].center_agv and iid not in act_to_apply:
-                    action_mask = meta.get("action_mask")
+                if meta.get("is_deadlock", False) and iid not in act_to_apply:
+                    action_mask = meta.get("action_mask", None)
 
                     if self.time >= 5:
                         torch.cuda.synchronize()
@@ -178,25 +176,21 @@ class ENV():
 
                     act_to_apply[iid] = rl_action
 
-        # self._print_top_intersection_debug(obs_now, info_now, act_to_apply)
-
         if (self.use_rl and self.rl_policy) or train:
             sorted_iids = sorted(self.intersections.keys(), key=self._inter_rank, reverse=True)
 
-            # 2) 교차로별 플래닝 (begin → resolve → action → finalize)
-            for I in self.intersections.values():
-                I.begin_plan()
-
+            # === 2) 교차로별 플래닝 (옵션 틱 → 액션 시작) ===
             for iid in sorted_iids:
                 I = self.intersections[iid]
+                if not I.is_deadlock:
+                    continue
 
-                # 사전 충돌 해결 로직 (예: 팔 스와핑)
+                I.begin_plan()
                 I.resolve_arm_swaps_all()
-
-                # 액션 적용
                 if iid in act_to_apply:
-                    a_idx = act_to_apply[iid]
-                    I.action_control(a_idx)
+                    I.action_control(act_to_apply[iid])
+                else:
+                    I.action_control(None)
 
             final_plan_moves = {}
             final_plan_prio = {}
@@ -282,7 +276,7 @@ class ENV():
         reward_map: dict[str, float] = {}
         for iid, meta in info_next.items():
             curr = bool(meta.get("is_deadlock", False))
-            prev = self.prev_deadlock_map.get(iid, False)
+            prev = bool(info_now.get(iid, {}).get("is_deadlock", False))
 
             # 기본 보상 스킴(예시): 지속 -0.05, 해소 +1.0
             r = 0.0
@@ -307,6 +301,8 @@ class ENV():
             "time": self.time,
         }
 
+        self.time += 1
+
         return obs_next, reward_map, info_next
 
 
@@ -329,33 +325,28 @@ class ENV():
         # 2) 교차로 최신화 (여기서만 최신화! step에서는 하지 않음)
         self._update_intersections_state()
 
+        # 3) deadlock 큐 갱신
+        temp_info_for_queue = {iid: {"is_deadlock": I.is_deadlock} for iid, I in self.intersections.items()}
+        self._update_deadlock_queue(temp_info_for_queue)
+
         # 4) 데드락/상태/마스크
         obs = {}
         info = {}
 
-        # [수정] _update_deadlock_queue를 먼저 호출하도록 순서 변경
-        temp_info_for_queue = {
-            iid: {"is_deadlock": I.is_deadlock} for iid, I in self.intersections.items()
-        }
-        self._update_deadlock_queue(temp_info_for_queue)
-
         for iid, I in self.intersections.items():
             state = np.asarray(I.get_state(), dtype=np.float32)
             
-            # [수정] deadlock_queue만 인자로 전달
-            action_mask = I.calculate_action_mask(self.deadlock_queue)
-            action_mask = np.asarray(action_mask, dtype=np.bool_)
+            action_mask = I.calculate_action_mask()
+            action_mask = np.asarray(action_mask, dtype=np.bool_) # shape (2, 4)
 
             obs[iid] = {
                 "state": state,
             }
             info[iid] = {
-                "center_deadlock": I.center_deadlock,
                 "is_deadlock": I.is_deadlock,
                 "action_mask": action_mask,
+                "macro_busy": (I.macro is not None),
             }
-        
-        self.time += 1
 
         return obs, info
     
@@ -417,37 +408,10 @@ class ENV():
         ny = current_agv.pos[1] + control_signal[1]
         next_pos = (nx, ny)
         gid = current_agv.id
-        """
-        def _belongs_to_dbg_iid():
-            if dbg_iid is None:
-                return True
-            # 현재 AGV가 속한 교차로 id 중 하나가 dbg_iid와 일치하면 True
-            for I in self.intersections.values():
-                if current_agv.pos in I.all_lane_coords:
-                    return I.id == dbg_iid
-            return False
-
-        def dlog(msg):
-            if (dbg_ids is not None and gid not in dbg_ids):
-                return
-            if not _belongs_to_dbg_iid():
-                return
-            print(f"[mvchk t={self.time}] iid={dbg_iid} id={gid} "
-                f"pos={current_agv.pos} sig={control_signal} -> {msg}")
-
-        # 0) 경계/지형
-        if not (0 <= nx < self.map.shape[1] and 0 <= ny < self.map.shape[0]):
-            dlog("block: OOB")
-            return False
-        if self.map[ny][nx] == 1:
-            dlog("block: wall")
-            return False
-        """
 
         # 1) 동일 칸 점유 충돌
         for other in self.agv_list.values():
             if other is not current_agv and next_pos == other.pos:
-                # dlog(f"block: same-cell with id={other.id} at {other.pos}")
                 return False
 
         # 2) 에지 스왑 금지(옵션)
@@ -458,7 +422,6 @@ class ENV():
                 odx, ody = self.controller.control_buffer.get(other_id, (0, 0))
                 other_next = (other.pos[0] + odx, other.pos[1] + ody)
                 if next_pos == other.pos and other_next == current_agv.pos:
-                    # dlog(f"block: edge-swap with id={other_id}")
                     return False
                 
         if self.rl_policy and self.use_rl:
@@ -513,7 +476,6 @@ class ENV():
                 if candidates:
                     next_rank = min(self._inter_rank(getattr(J, "id", "")) for J in candidates)
                     if next_rank < cur_rank:
-                        # dlog(f"block: inter-priority cur={cur_rank} -> next={next_rank}")
                         return False
 
         # dlog("ok")
@@ -910,78 +872,3 @@ class ENV():
             "avg_path_integrity": avg_pi,
             "avg_inference_time": avg_ms,
         }
-    
-    def _print_top_intersection_debug(self, obs_now, info_now, act_to_apply):
-        """deadlock_queue 기준 최우선 교차로의 액션/마스크 + 교차로/AGV 체인 전체 디버그 출력"""
-        if not self.deadlock_queue:
-            print(f"[TopInter][t={self.time}] deadlock_queue is empty.")
-            return
-
-        # deadlock_queue 원소가 (iid, timestamp) 튜플일 수 있음
-        top = self.deadlock_queue[0]
-        top_iid = top[0] if isinstance(top, tuple) else top
-
-        I = self.intersections.get(top_iid)
-        meta = info_now.get(top_iid, {})
-
-        if I is None or not isinstance(meta, dict):
-            print(f"[TopInter][t={self.time}] iid={top_iid} meta unavailable.")
-            return
-
-        # 액션/마스크
-        mask = meta.get("action_mask")
-        chosen = act_to_apply.get(top_iid, None)
-        allowed = None
-        mask_list = None
-        try:
-            if mask is not None:
-                allowed = np.flatnonzero(mask).tolist()
-                mask_list = mask.astype(int).tolist()
-        except Exception:
-            if isinstance(mask, (list, tuple)):
-                allowed = [i for i,v in enumerate(mask) if v]
-                mask_list = [int(bool(v)) for v in mask]
-
-        # 교차로/데드락 요약
-        present = sorted(getattr(I, "present_dirs", list(I.lane_coords.keys())))
-        neighbors = getattr(I, "neighbors", {})
-        center_flag = bool(I.center_agv)
-        center_dl = bool(I.center_deadlock)
-        any_dl = bool(I.is_deadlock)
-
-        # 센터 AGV 정보
-        if I.center_agv:
-            cid = I.center_agv.id
-            cpos = I.center_agv.pos
-            cprev = getattr(I.center_agv, "prev_pos", None)
-            cnext = self.controller.next_buffer.get(cid, (0,0))
-            ccont = self.controller.control_buffer.get(cid, (0,0))
-            center_info = f"id={cid}, pos={cpos}, prev={cprev}, next={cnext}, cont={ccont}"
-        else:
-            center_info = "None"
-
-        # 출력 헤더
-        print(f"[TopInter][t={self.time}] iid={top_iid} | action={chosen} | allowed={allowed} | mask={mask_list}")
-        print(f"  deadlock: center={center_dl}, any={any_dl} | present={present} | neighbors={neighbors}")
-        print(f"  center: {center_info}")
-
-        # 각 방향 체인 전체 출력 (near→far)
-        for d in ['N','E','S','W']:
-            if d not in present:
-                continue
-            try:
-                chain_ids = I._collect_chain_near_to_far(d)  # [head,...,tail]
-            except Exception:
-                chain_ids = []
-            ing = 1 if I.ingoing.get(d, False) else 0
-            out = 1 if I.outgoing.get(d, False) else 0
-
-            elems = []
-            for aid in chain_ids:
-                pos = self.controller.agv_pos.get(aid)
-                nxt = self.controller.next_buffer.get(aid, (0,0))
-                cont = self.controller.control_buffer.get(aid, (0,0))
-                elems.append(f"{aid}@{pos},next={nxt},cont={cont}")
-            chain_str = "; ".join(elems) if elems else "-"
-            print(f"  {d}: occ={len(chain_ids)}, in={ing}, out={out} | chain (near→far): [{chain_str}]")
-

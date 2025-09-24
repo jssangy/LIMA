@@ -33,7 +33,7 @@ class ActorCritic(nn.Module):
     입력 형태(ENV obs dict)를 그대로 유지:
       - inputs: {"state": [F] or [B,F], "edge_index": ... (무시됨)}
     """
-    def __init__(self, state_dim: int, action_dim: int = 4, hidden: int = 128, mlp_layers: int = 2):
+    def __init__(self, state_dim: int, action_dim: int = 12, hidden: int = 128, mlp_layers: int = 2):
         super().__init__()
         self.encoder = MLPEncoder(state_dim, hidden, layers=mlp_layers)
         self.actor   = nn.Linear(hidden, action_dim)

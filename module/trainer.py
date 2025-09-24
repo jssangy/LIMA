@@ -2,14 +2,13 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any, Tuple
 import time
 import os
-
+import wandb
 import numpy as np
 from tqdm import tqdm
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import wandb
 
 from module.model import ActorCritic
 from module.buffer import EventBuffer, EventTransition
@@ -30,22 +29,21 @@ def _slug(v):
 class TrainConfig:
     # PPO / optimization
     epochs: int = 4
-    minibatch_size: int = 256
+    minibatch_size: int = 128
     gamma: float = 0.99
     lam: float = 0.95
     clip_eps: float = 0.2
-    lr: float = 3e-4
+    lr: float = 1e-4
     entropy_coef: float = 0.01
     value_coef: float = 0.5
     max_grad_norm: float = 0.5
 
     # env / runtime
-    seed: int = 7
     device: str = "cuda"
 
     # step-based training
-    total_steps: int = 100_000
-    steps_per_update: int = 4096
+    total_steps: int = 500_000
+    events_per_update: int = 128
 
     # logging
     project: str = "MAPF"
@@ -53,14 +51,6 @@ class TrainConfig:
 
 # -------------------- trainer --------------------
 class Trainer:
-    """
-    Fixed-steps training:
-      - collect_steps(min_steps): env.step을 고정 스텝만큼 돌려 샘플 수집
-      - train_steps(total_steps, steps_per_update): 누적 스텝 기준 학습 진행
-    ENV.step(action) -> (obs_next, reward, info_next)
-      - obs: dict | None  # 데드락(의사결정) 구간에만 dict
-      - info: {deadlock_active, event_start, event_end, tau, terminated, truncated, action_mask}
-    """
     def __init__(self, cfg: TrainConfig, env):
         self.cfg = cfg
         self.device = torch.device(cfg.device)
@@ -72,7 +62,6 @@ class Trainer:
         self.iid = next(iter(self.obs_state.keys()))
 
         # 2) Model 초기화 (초기 state_dim 확보)
-        # deadlock이 없어서 obs=None일 수 있으므로 몇 스텝 굴려서 obs를 확보
         obs_i = self.obs_state.get(self.iid)
         if obs_i is None:
             for _ in range(1000):
@@ -93,7 +82,7 @@ class Trainer:
         # 3) W&B 준비
         run_base = (
             f"lr{_slug(cfg.lr)}_clip{_slug(cfg.clip_eps)}_ent{_slug(cfg.entropy_coef)}_"
-            f"ep{cfg.epochs}_mb{cfg.minibatch_size}_steps{cfg.total_steps}_roll{cfg.steps_per_update}"
+            f"ep{cfg.epochs}_mb{cfg.minibatch_size}_steps{cfg.total_steps}_roll{cfg.events_per_update}"  # 여기서 steps_per_update를 events_per_update로 변경
         )
         if wandb.run is None:
             wandb.init(project=cfg.project, config=vars(cfg), name=run_base)
@@ -104,77 +93,75 @@ class Trainer:
         self.event_on = False
         self.tau_event = 0
 
-    # --------- 수집기: 고정 스텝 단위로 버퍼 채우기 ---------
+    # --------- 수집기: 이벤트 단위로 버퍼 채우기 ---------
     @torch.no_grad()
-    def collect_steps(self, min_steps: int) -> Tuple[EventBuffer, int]:
+    def collect_macro_events(self, min_events: int) -> Tuple[EventBuffer, int]:  # min_steps -> min_events로 변경
         """
-        MDP 모드:
-        - 모든 스텝에서 전이를 저장(tau=1)
-        - 액션은 항상 샘플하되, center_deadlock=True일 때만 env에 적용
-        - 보상은 env의 reward_map을 그대로 사용 (일반 스텝은 0으로 설계)
+        - 환경에서 macro가 종료될 때까지 기다린 후 한 번만 데이터를 수집
+        - macro가 완료될 때까지 action을 반복적으로 실행하고, 종료된 시점에 reward를 저장
         """
         buf = EventBuffer(self.device)
-        steps_used = 0
+        events_collected = 0
+        steps = 0
 
-        # [수정] 멤버 변수에서 현재 상태를 가져옴
+        # [수정] 초기 상태 가져오기
         obs, info = self.obs_state, self.info_state
 
-        while steps_used < min_steps:
+        while events_collected < min_events:  # min_steps -> min_events로 변경
+            steps += 1
             obs_i = obs.get(self.iid)
             info_i = info.get(self.iid)
 
-            amask_np = info_i['action_mask']
-            amask = torch.as_tensor(amask_np, dtype=torch.bool, device=self.device).unsqueeze(0)
+            # macro가 실행 중일 경우, macro가 끝날 때까지 기다림
+            if info_i["macro_busy"]:
+                obs_next, _, info_next = self.env.step(None)
+                obs, info = obs_next, info_next
+                continue
 
-            action, logprob, value = self.model.act(obs_i, action_mask=amask)
-            act_to_env = {self.iid: int(action.item())}
+            # deadlock이 발생했을 때
+            if info_i["is_deadlock"]:
+                amask = torch.as_tensor(info_i["action_mask"], dtype=torch.bool, device=self.device)
+                action, logprob, value = self.model.act(obs_i, action_mask=amask)
+                act_to_env = {self.iid: int(action.item())}
 
-            obs_next, reward_map, info_next = self.env.step(act_to_env)
-            steps_used += 1
+                # action을 실행하고, macro가 끝날 때까지 기다림
+                obs_next, reward_map, info_next = self.env.step(act_to_env)
+                reward_i = float(reward_map.get(self.iid, 0.0))
 
-            reward_i = float(reward_map.get(self.iid, 0.0))
-            amask_saved = (amask.squeeze(0) if amask is not None else None)
+                summary = info_next.get("_summary", {})
+                done = bool(summary.get("terminated", False) or summary.get("truncated", False))
 
-            summary = info_next.get("_summary", {})
-            done = bool(summary.get("terminated", False) or summary.get("truncated", False))
+                # Event 생성
+                e = EventTransition(
+                    state=torch.as_tensor(obs_i["state"], dtype=torch.float32, device=self.device),
+                    action=action.squeeze(0),
+                    logprob=logprob.squeeze(0),
+                    value=value.squeeze(0),
+                    reward=reward_i,
+                    tau=1,
+                    done=done,
+                    terminated=bool(summary.get("terminated", False)),
+                    truncated=bool(summary.get("truncated", False)),
+                    action_mask=amask
+                )
+                buf.add(e)
+                events_collected += 1
+                obs, info = obs_next, info_next
 
-            e = EventTransition(
-                state=torch.as_tensor(obs_i["state"], dtype=torch.float32, device=self.device),
-                action=action.squeeze(0),
-                logprob=logprob.squeeze(0),
-                value=value.squeeze(0),
-                reward=reward_i,
-                tau=1,
-                done=done,
-                terminated=bool(summary.get("terminated", False)),
-                truncated=bool(summary.get("truncated", False)),
-                action_mask=amask_saved,
-            )
-            idx = buf.add(e)
-
-            # [수정] obs_next 상태 업데이트 로직 추가
-            obs_next_i = obs_next.get(self.iid)
-            if not done:
-                # obs_next_i가 None인 경우(데드락이 아닌 상태)를 대비
-                if obs_next_i is not None:
-                    _, v_next = self.model.forward(obs_next_i)
-                    buf.set_next(idx, next_state=None, next_value=v_next.squeeze(0))
-                else: # obs가 없는 경우, value 예측 불가하므로 0으로 처리
-                    buf.set_next(idx, next_state=None, next_value=torch.zeros_like(value.squeeze(0)))
+            # deadlock이 아닐 경우, 다음 상태로 이동
             else:
-                buf.set_next(idx, next_state=None, next_value=torch.zeros_like(value.squeeze(0)))
+                obs_next, _, info_next = self.env.step(None)
+                obs, info = obs_next, info_next
 
-            # [수정] 상태 업데이트 로직 변경
+            # 환경이 종료되었으면 리셋
+            done = bool(info.get("terminated", False) or info.get("truncated", False))
             if done:
                 obs, info = self.env.reset()
-            else:
-                obs, info = obs_next, info_next
-        
-        # [추가] 다음 collect_steps를 위해 최종 상태를 멤버 변수에 저장
+
         self.obs_state, self.info_state = obs, info
+        return buf, events_collected, steps
 
-        return buf, steps_used
-
+    
     # --------- PPO 업데이트 ---------
     def update(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
         cfg = self.cfg
@@ -237,9 +224,9 @@ class Trainer:
         }
 
     # --------- 전체 학습 루프 (고정 스텝) ---------
-    def train(self, total_steps: Optional[int] = None, steps_per_update: Optional[int] = None):
+    def train(self, total_steps: Optional[int] = None, events_per_update: Optional[int] = None):
         total_steps = total_steps or self.cfg.total_steps
-        steps_per_update = steps_per_update or self.cfg.steps_per_update
+        events_per_update = events_per_update or self.cfg.events_per_update
 
         os.makedirs("checkpoint", exist_ok=True)
         best = {"avgR": -float("inf"), "step": -1, "upd": -1}
@@ -247,43 +234,48 @@ class Trainer:
 
         used = 0
         upd  = 0
-        pbar = tqdm(total=total_steps, desc="steps", unit="step", ncols=0)
+        
+        # 진행 상황을 추적할 수 있는 pbar 추가
+        pbar = tqdm(total=total_steps, desc="Training Progress", unit="step", ncols=0)
 
         while used < total_steps:
             upd += 1
-            buf, steps_used = self.collect_steps(min_steps=min(steps_per_update, total_steps - used))
+
+            # 이벤트 단위로 수집하는 collect_macro_events 호출
+            buf, events_used, steps_used = self.collect_macro_events(min_events=events_per_update)
             used += steps_used
-            pbar.update(steps_used)
+            pbar.update(events_used)  # 진행상황 업데이트
 
-            batch = buf.as_tensors()
-            batch = compute_gae(batch, self.cfg.gamma, self.cfg.lam)
-            logs  = self.update(batch)
+            if events_used > 0:
+                batch = buf.as_tensors()
+                batch = compute_gae(batch, self.cfg.gamma, self.cfg.lam)
+                logs  = self.update(batch)
 
-            # 베스트(최소 loss) 저장
-            cur_loss = float(logs.get("loss", float("inf")))
-            avgR   = float(batch["rewards"].mean().cpu()) if len(buf) else 0.0
+                # 베스트(최소 loss) 저장
+                cur_loss = float(logs.get("loss", float("inf")))
+                avgR   = float(batch["rewards"].mean().cpu()) if len(buf) else 0.0
 
-            # [수정] 베스트(최대 avgR) 저장
-            if avgR > best["avgR"] + 1e-8:
-                best.update(avgR=avgR, step=used, upd=upd)
-                torch.save(self.model.state_dict(), best_path)
-                if wandb.run:
-                    wandb.summary["best/avgR"] = avgR
-                    wandb.summary["best/step"] = used
-                    wandb.summary["best/update"] = upd
+                # [수정] 베스트(최대 avgR) 저장
+                if avgR > best["avgR"] + 1e-8:
+                    best.update(avgR=avgR, step=used, upd=upd)
+                    torch.save(self.model.state_dict(), best_path)
+                    if wandb.run:
+                        wandb.summary["best/avgR"] = avgR
+                        wandb.summary["best/step"] = used
+                        wandb.summary["best/update"] = upd
 
-            # 상태바 우측에 최신 지표 표시
-            pbar.set_postfix(
-                upd=upd, loss=f"{cur_loss:.4f}", avgR=f"{avgR:+.3f}"
-            )
+                # 상태바 우측에 최신 지표 표시
+                pbar.set_postfix(
+                    upd=upd, loss=f"{cur_loss:.4f}", avgR=f"{avgR:+.3f}"
+                )
 
-            # wandb 로깅 (누적 스텝을 step으로 사용)
-            wandb.log({
-                "train/avgR_event": avgR,
-                "train/loss": logs["loss"],
-                "train/actor_loss": logs["actor_loss"],
-                "train/value_loss": logs["value_loss"],
-            }, step=used)
+                # wandb 로깅 (누적 스텝을 step으로 사용)
+                wandb.log({
+                    "train/avgR_event": avgR,
+                    "train/loss": logs["loss"],
+                    "train/actor_loss": logs["actor_loss"],
+                    "train/value_loss": logs["value_loss"],
+                }, step=used)
 
         pbar.close()
 
