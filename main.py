@@ -32,21 +32,21 @@ class RLPolicy:
             return int(a.item())
 
 def load_policy(model_path: str, state_dim: int, device="cpu", greedy=False):
-    model = ActorCritic(state_dim=state_dim, action_dim=12)
+    model = ActorCritic(state_dim=state_dim)
     sd = torch.load(model_path, map_location=device)
     model.load_state_dict(sd, strict=True)
     return RLPolicy(model, device=device, greedy=greedy)
 
 def main():
     parser = argparse.ArgumentParser(description="Run simulations and log ENV.make_info() to CSV.")
-    parser.add_argument("--prob", type=str, default="cross_1")
+    parser.add_argument("--prob", type=str, default="cross_9")
     parser.add_argument("--algo", type=int, default=0, choices=[0,1,2,3,4],
                         help="0=BFS, 1=A*, 2=D*, 3=PIBT, 4=CBS")
-    parser.add_argument("--num-amrs", type=int, default=8)
+    parser.add_argument("--num-amrs", type=int, default=40)
     parser.add_argument("--max-arm-h", type=int, default=5)
     parser.add_argument("--max-arm-v", type=int, default=5)
     parser.add_argument("--max-steps", type=int, default=10000)
-    parser.add_argument("--traffic-mode", type=str, default="traffic", choices=["traffic","task"])
+    parser.add_argument("--traffic-mode", type=str, default="task", choices=["traffic","task"])
     parser.add_argument("--model-path", type=str, default="checkpoint/final_policy.pt")
     args = parser.parse_args()
 

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, Tuple
-import time
+import types
 import os
 import wandb
 import numpy as np
@@ -13,6 +13,7 @@ import torch.optim as optim
 from module.model import ActorCritic
 from module.buffer import EventBuffer, EventTransition
 from module.gae import compute_gae
+from Environment import ENV
 
 
 # -------------------- utils --------------------
@@ -29,7 +30,7 @@ def _slug(v):
 class TrainConfig:
     # PPO / optimization
     epochs: int = 4
-    minibatch_size: int = 128
+    minibatch_size: int = 256
     gamma: float = 0.99
     lam: float = 0.95
     clip_eps: float = 0.2
@@ -43,20 +44,34 @@ class TrainConfig:
 
     # step-based training
     total_steps: int = 500_000
-    events_per_update: int = 128
+    events_per_update: int = 256
+
+    # curriculum
+    curriculum_min_tasks: int = 3
+    curriculum_max_tasks: int = 15
+    solves_per_stage: int = 100          # 각 N에서 100회 완전 해결하면 다음 스테이지로
 
     # logging
     project: str = "MAPF"
 
+    # env parameters (for creating ENV inside Trainer)
+    prob_path: str = "problems/cross/cross_1.json"
+    max_arm_h: int = 5
+    max_arm_v: int = 5
+    num_amrs: int = 3
+    max_steps: int = 1024
+    running_opt: int = 0  # 0=BFS, 1=A*, 2=D*, 3=PIBT, 4=CBS
+    traffic_mode: str = "task"  # "traffic" or "task"
+
 
 # -------------------- trainer --------------------
 class Trainer:
-    def __init__(self, cfg: TrainConfig, env):
+    def __init__(self, cfg: TrainConfig):
         self.cfg = cfg
         self.device = torch.device(cfg.device)
 
         # 1) Env
-        self.env = env
+        self.env = ENV(cfg.prob_path, cfg.max_arm_h, cfg.max_arm_v, cfg.num_amrs, cfg.max_steps, cfg.running_opt, cfg.traffic_mode)
         self.obs_state, self.info_state = self.env.reset()
 
         self.iid = next(iter(self.obs_state.keys()))
@@ -90,48 +105,35 @@ class Trainer:
             wandb.run.name = run_base
         self._save_name = f"{run_base}.pt"
 
-        self.event_on = False
-        self.tau_event = 0
+        self.solved_count = 0
 
     # --------- 수집기: 이벤트 단위로 버퍼 채우기 ---------
     @torch.no_grad()
-    def collect_macro_events(self, min_events: int) -> Tuple[EventBuffer, int]:  # min_steps -> min_events로 변경
-        """
-        - 환경에서 macro가 종료될 때까지 기다린 후 한 번만 데이터를 수집
-        - macro가 완료될 때까지 action을 반복적으로 실행하고, 종료된 시점에 reward를 저장
-        """
+    def collect_macro_events(self, min_events: int) -> Tuple[EventBuffer, int]:
         buf = EventBuffer(self.device)
         events_collected = 0
-        steps = 0
 
-        # [수정] 초기 상태 가져오기
         obs, info = self.obs_state, self.info_state
+        episodes_seen = 0  # 이번 수집 싸이클 동안 지나간 에피소드 수
 
-        while events_collected < min_events:  # min_steps -> min_events로 변경
-            steps += 1
-            obs_i = obs.get(self.iid)
+        while events_collected < min_events:
+            obs_i  = obs.get(self.iid)
             info_i = info.get(self.iid)
 
-            # macro가 실행 중일 경우, macro가 끝날 때까지 기다림
-            if info_i["macro_busy"]:
-                obs_next, _, info_next = self.env.step(None)
-                obs, info = obs_next, info_next
-                continue
+            # 매크로 동작 중이면 tick만
+            if info_i.get("macro_busy", False):
+                obs, _, info = self.env.step(None)
 
-            # deadlock이 발생했을 때
-            if info_i["is_deadlock"]:
+            # 데드락이면 의사결정 + 이벤트 기록
+            elif info_i.get("is_deadlock", False):
                 amask = torch.as_tensor(info_i["action_mask"], dtype=torch.bool, device=self.device)
                 action, logprob, value = self.model.act(obs_i, action_mask=amask)
-                act_to_env = {self.iid: int(action.item())}
-
-                # action을 실행하고, macro가 끝날 때까지 기다림
-                obs_next, reward_map, info_next = self.env.step(act_to_env)
+                obs, reward_map, info = self.env.step({self.iid: int(action.item())})
                 reward_i = float(reward_map.get(self.iid, 0.0))
 
-                summary = info_next.get("_summary", {})
+                summary = info.get("_summary", {})
                 done = bool(summary.get("terminated", False) or summary.get("truncated", False))
 
-                # Event 생성
                 e = EventTransition(
                     state=torch.as_tensor(obs_i["state"], dtype=torch.float32, device=self.device),
                     action=action.squeeze(0),
@@ -146,20 +148,35 @@ class Trainer:
                 )
                 buf.add(e)
                 events_collected += 1
-                obs, info = obs_next, info_next
 
-            # deadlock이 아닐 경우, 다음 상태로 이동
+            # 그 외에는 환경만 진행
             else:
-                obs_next, _, info_next = self.env.step(None)
-                obs, info = obs_next, info_next
+                obs, _, info = self.env.step(None)
 
-            # 환경이 종료되었으면 리셋
-            done = bool(info.get("terminated", False) or info.get("truncated", False))
+            # --- 에피소드 경계 처리 (여기가 핵심 수정) ---
+            summary = info.get("_summary", {})
+            done = bool(summary.get("terminated", False) or summary.get("truncated", False))
             if done:
+                # 성공 판정: spawned_total == completed_total (>0)
+                solved = False
+                if getattr(self.env, "traffic_mode", "") == "task" and hasattr(self.env, "task_generator"):
+                    prog = self.env.task_generator.get_progress()
+                    spawned   = int(prog.get("spawned_total", 0))
+                    completed = int(prog.get("completed_total", 0))
+                    solved = (spawned > 0 and spawned == completed)
+                if solved:
+                    self.solved_count += 1
+
                 obs, info = self.env.reset()
+                episodes_seen += 1
+
+                # 이번 수집 싸이클에서 이벤트가 하나도 없었다면 즉시 반환하여 바깥 pbar가 진행되게 함
+                if events_collected == 0:
+                    break
 
         self.obs_state, self.info_state = obs, info
-        return buf, events_collected, steps
+        return buf, events_collected
+
 
     
     # --------- PPO 업데이트 ---------
@@ -223,66 +240,95 @@ class Trainer:
             "entropy_loss": avg_entropy_loss,
         }
 
-    # --------- 전체 학습 루프 (고정 스텝) ---------
-    def train(self, total_steps: Optional[int] = None, events_per_update: Optional[int] = None):
-        total_steps = total_steps or self.cfg.total_steps
-        events_per_update = events_per_update or self.cfg.events_per_update
-
+    def train(self):
+        events_per_update = self.cfg.events_per_update
         os.makedirs("checkpoint", exist_ok=True)
-        best = {"avgR": -float("inf"), "step": -1, "upd": -1}
+        best = {"avgR": -float("inf"), "upd": -1, "stage": -1}
         best_path = os.path.join("checkpoint", "best_policy.pt")
+        global_upd = 0
 
-        used = 0
-        upd  = 0
-        
-        # 진행 상황을 추적할 수 있는 pbar 추가
-        pbar = tqdm(total=total_steps, desc="Training Progress", unit="step", ncols=0)
+        for tasks_per_ep in range(self.cfg.curriculum_min_tasks, self.cfg.curriculum_max_tasks + 1):
+            self.env = ENV(
+                self.cfg.prob_path,
+                self.cfg.max_arm_h,
+                self.cfg.max_arm_v,
+                tasks_per_ep,
+                self.cfg.max_steps,
+                self.cfg.running_opt,
+                self.cfg.traffic_mode
+            )
+            self.obs_state, self.info_state = self.env.reset()
+            self.iid = next(iter(self.obs_state.keys()))
 
-        while used < total_steps:
-            upd += 1
+            stage_target = 100 if tasks_per_ep <= 16 else 15   # 16 이하일 땐 100회, 그 이상은 15회
 
-            # 이벤트 단위로 수집하는 collect_macro_events 호출
-            buf, events_used, steps_used = self.collect_macro_events(min_events=events_per_update)
-            used += steps_used
-            pbar.update(events_used)  # 진행상황 업데이트
+            self.solved_count = 0
+            prev_solved = 0
+            pbar = tqdm(
+                total=stage_target,                              # ➋ pbar 총합 변경
+                desc=f"[{tasks_per_ep} tasks] solved",
+                unit="episode",
+                ncols=0
+            )
 
-            if events_used > 0:
+            # 이 스테이지를 stage_target 회 해결할 때까지 반복
+            while self.solved_count < stage_target:             # ➌ 종료 조건 변경
+                buf, events_used = self.collect_macro_events(min_events=events_per_update)
+
+                if events_used == 0:
+                    if self.solved_count > prev_solved:
+                        pbar.update(self.solved_count - prev_solved)
+                        prev_solved = self.solved_count
+                    pbar.set_postfix(
+                        upd=global_upd,
+                        loss="—",
+                        avgR="—",
+                        solved=f"{self.solved_count}/{stage_target}"   # 표기도 stage_target 사용
+                    )
+                    continue
+
+                # PPO 업데이트 ...
                 batch = buf.as_tensors()
                 batch = compute_gae(batch, self.cfg.gamma, self.cfg.lam)
                 logs  = self.update(batch)
+                global_upd += 1
 
-                # 베스트(최소 loss) 저장
+                avgR     = float(batch["rewards"].mean().cpu()) if len(buf) else 0.0
                 cur_loss = float(logs.get("loss", float("inf")))
-                avgR   = float(batch["rewards"].mean().cpu()) if len(buf) else 0.0
 
-                # [수정] 베스트(최대 avgR) 저장
                 if avgR > best["avgR"] + 1e-8:
-                    best.update(avgR=avgR, step=used, upd=upd)
+                    best.update(avgR=avgR, upd=global_upd, stage=tasks_per_ep)
                     torch.save(self.model.state_dict(), best_path)
                     if wandb.run:
-                        wandb.summary["best/avgR"] = avgR
-                        wandb.summary["best/step"] = used
-                        wandb.summary["best/update"] = upd
+                        wandb.summary["best/avgR"]   = avgR
+                        wandb.summary["best/update"] = global_upd
+                        wandb.summary["best/stage"]  = tasks_per_ep
 
-                # 상태바 우측에 최신 지표 표시
+                if self.solved_count > prev_solved:
+                    pbar.update(self.solved_count - prev_solved)
+                    prev_solved = self.solved_count
+
                 pbar.set_postfix(
-                    upd=upd, loss=f"{cur_loss:.4f}", avgR=f"{avgR:+.3f}"
+                    upd=global_upd,
+                    loss=f"{cur_loss:.4f}",
+                    avgR=f"{avgR:+.3f}",
+                    solved=f"{self.solved_count}/{stage_target}"
                 )
 
-                # wandb 로깅 (누적 스텝을 step으로 사용)
                 wandb.log({
                     "train/avgR_event": avgR,
                     "train/loss": logs["loss"],
                     "train/actor_loss": logs["actor_loss"],
                     "train/value_loss": logs["value_loss"],
-                }, step=used)
+                    "curriculum/tasks_per_ep": tasks_per_ep,
+                    "curriculum/solved_in_stage": self.solved_count,
+                    "curriculum/stage_target": stage_target,      # 로깅도 같이
+                }, step=global_upd)
 
-        pbar.close()
+            pbar.close()
 
-        # 저장
-        os.makedirs("checkpoint", exist_ok=True)
-        out_path = os.path.join("checkpoint", 'final_policy.pt')
-        torch.save(self.model.state_dict(), out_path)
-        print(f"[Final model] saved → {out_path}")
-        print(f"[Best model] saved → {best_path} (avgR={best['avgR']:.6f}, step={best['step']}, upd={best['upd']})")
+        final_path = os.path.join("checkpoint", "final_policy.pt")
+        torch.save(self.model.state_dict(), final_path)
+        print(f"[Final model] saved → {final_path}")
+        print(f"[Best model]  saved → {best_path} (avgR={best['avgR']:.6f}, stage={best['stage']}, upd={best['upd']})")
         wandb.finish()

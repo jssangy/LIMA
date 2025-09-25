@@ -30,7 +30,7 @@ class RLPolicy:
             return int(a.item())
 
 def load_policy(model_path: str, state_dim: int, device="cpu", greedy=False):
-    model = ActorCritic(state_dim=state_dim, action_dim=4)
+    model = ActorCritic(state_dim=state_dim)
     sd = torch.load(model_path, map_location=device)
     model.load_state_dict(sd, strict=True)
     return RLPolicy(model, device=device, greedy=greedy)
@@ -56,22 +56,23 @@ def run_one_episode(env: ENV, use_rl: bool) -> dict:
         "throughput":   float(info.get("throughput", 0.0)),
         "avg_integrity": float(info.get("avg_path_integrity", 0.0)),
         "avg_agv_steps": float(compute_avg_steps(env)),
-        "avg_action_count": float(info.get("avg_action_count", 0.0)),
+        "rl_action_count": float(info.get("rl_action_count", 0.0)),
         "avg_inference_time": float(info.get("avg_inference_time", 0.0)),
+        "completed_time": float(info.get("time", 0.0)),
     }
 
 def main():
     parser = argparse.ArgumentParser(description="Run simulations and log ENV.make_info() to CSV.")
-    parser.add_argument("--prob", type=str, default="cross_9")
+    parser.add_argument("--prob", type=str, default="cross_1")
     parser.add_argument("--algo", type=int, default=0, choices=[0,1,2,3,4],
                         help="0=BFS, 1=A*, 2=D*, 3=PIBT, 4=CBS")
     parser.add_argument("--runs", type=int, default=10)
     parser.add_argument("--use-rl", action="store_true", default=False)
-    parser.add_argument("--num-amrs", type=int, default=20)
+    parser.add_argument("--num-amrs", type=int, default=3)
     parser.add_argument("--max-arm-h", type=int, default=5)
     parser.add_argument("--max-arm-v", type=int, default=5)
-    parser.add_argument("--max-steps", type=int, default=1000)
-    parser.add_argument("--model-path", type=str, default="checkpoint/final_mlp_policy.pt")
+    parser.add_argument("--max-steps", type=int, default=10000)
+    parser.add_argument("--model-path", type=str, default="checkpoint/final_policy.pt")
     args = parser.parse_args()
 
     prob_path = f"problems/cross/{args.prob}.json"
@@ -99,7 +100,7 @@ def main():
     algo_label = algo_name(args.algo)
     rl_suffix = "_RL" if args.use_rl else ""
     csv_path = f"results/{prob_base}_{algo_label}{rl_suffix}_{args.num_amrs}.csv"
-    fields = ["run", "success_rate", "throughput", "avg_integrity", "avg_inference_time", "avg_agv_steps", "avg_action_count"]
+    fields = ["run", "success_rate", "throughput", "avg_integrity", "avg_inference_time", "avg_agv_steps", "rl_action_count", "completed_time"]
 
     print(f"Problem: {args.prob}")
     print(f"Algorithm: {algo_label} (running_opt={args.algo})")
@@ -124,12 +125,14 @@ def main():
                 "avg_integrity":    f"{res['avg_integrity']:.6f}",
                 "avg_inference_time": f"{res['avg_inference_time']:.6f}",
                 "avg_agv_steps":   f"{res['avg_agv_steps']:.6f}",
-                "avg_action_count":f"{res['avg_action_count']:.6f}",
+                "rl_action_count":f"{res['rl_action_count']:.6f}",
+                "completed_time":  f"{res['completed_time']:.6f}",
             })
             f.flush()
             print(f"[{algo_label}] Run {i}/{args.runs} | SR={res['success_rate']:.2%} "
                   f"| TH={res['throughput']:.2f}/min | Steps={res['avg_agv_steps']:.2f} "
-                  f"| Act={res['avg_action_count']:.2f} | {dt:.2f}s")
+                  f"| Act={res['rl_action_count']:.2f} | {dt:.2f}s"
+                  f"| CompTime={res['completed_time']}steps")
 
     print(f"\nSaved results to: {csv_path}")
 

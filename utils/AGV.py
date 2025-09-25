@@ -43,7 +43,8 @@ class agv():
     def move(self, control_signal):
         self.prev_pos = self.pos
         self.pos = (self.pos[0] + control_signal[0], self.pos[1] + control_signal[1])
-        self.steps += 1
+        if control_signal != (0,0):
+            self.steps += 1
         # 현재 위치를 경로 잔여에서 제거 (O(1))
         if self.path_remaining:
             self.path_remaining.discard(self.pos)

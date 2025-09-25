@@ -28,9 +28,6 @@ class ENV():
         
         self.map = self._load_map(map_path)
         self.walkable_tiles = np.count_nonzero(self.map == 0)
-        print(f"Map loaded.")
-        print(f"Map width: {self.map.shape[1]}, Map height: {self.map.shape[0]}")
-        print(f"Walkable tiles (value 0): {self.walkable_tiles}")
         self.max_arm_len_h = max_arm_len_h
         self.max_arm_len_v = max_arm_len_v
         processed_intersections = self._find_intersections_and_build_graph()
@@ -74,7 +71,9 @@ class ENV():
         self.rl_policy = None
 
         self.completed_agv_steps = []
-        self.completed_agv_actions = [] # [신규] 완료된 AMR의 행동 카운트 저장 리스트
+
+        self.total_action_count = 0
+        self.rl_action_count = 0
 
         self.completed_path_integrities: list[float] = []
 
@@ -111,7 +110,9 @@ class ENV():
         self.prev_deadlock_map: dict[str, bool] = {}
 
         self.completed_agv_steps.clear()
-        self.completed_agv_actions.clear()
+
+        self.total_action_count = 0
+        self.rl_action_count = 0
 
         self.completed_path_integrities.clear()
 
@@ -126,6 +127,8 @@ class ENV():
         actions: { "x{cx}y{cy}": action_idx, ... }
         반환: obs_next, reward_map, info_next
         """
+        self.time += 1
+        
         # --- 에피소드 종료 조건 확인 ---
         terminated = False
         if self.traffic_mode == 'task' and self.task_generator.is_episode_done():
@@ -135,7 +138,6 @@ class ENV():
             if train:
                 terminated = True
             else:
-                print(f"[EarlyStop] stagnation detected at t={self.time}, "f"AGVs={len(self.agv_list)}")
                 return False  # 테스트 루프에서 break
         
         # 공통 종료 조건: 최대 스텝 도달
@@ -158,7 +160,6 @@ class ENV():
             for iid, meta in info_now.items():
                 # 유효한 교차로 정보인지 확인
                 if meta.get("macro_busy", False):
-                    print(f"[Warning] Intersection {iid} is busy with macro operation. Skipping RL action.")
                     continue                
                 # 데드락이 활성화된 교차로에 대해서만 RL 정책 적용
                 if meta.get("is_deadlock", False) and iid not in act_to_apply:
@@ -190,6 +191,8 @@ class ENV():
                 I.resolve_arm_swaps_all()
                 if iid in act_to_apply:
                     I.action_control(act_to_apply[iid])
+                    self.total_action_count += 1
+                    self.rl_action_count += 1
                 else:
                     I.action_control(None)
 
@@ -260,12 +263,6 @@ class ENV():
         elif self.traffic_mode == 'traffic':
             self._spawn_amrs_from_stream_gen()
 
-        if self.controller.pibt_bump:
-            for aid, inc in list(self.controller.pibt_bump.items()):
-                if inc and aid in self.agv_list:
-                    self.agv_list[aid].action_count += inc
-            self.controller.pibt_bump.clear()
-
         # GUI/테스트 모드: 기존 요약 반환 유지
         if not train:
             return self.make_info()
@@ -279,12 +276,25 @@ class ENV():
             curr = bool(meta.get("is_deadlock", False))
             prev = bool(info_now.get(iid, {}).get("is_deadlock", False))
 
-            # 기본 보상 스킴(예시): 지속 -0.05, 해소 +1.0
+            # 기본 보상 스킴(예시):해소 +10, 탈출 +1
             r = 0.0
-            if curr:
-                r -= 0.05
             if prev and not curr:
-                r += 1.0
+                r += 10 / self.rl_action_count if self.rl_action_count > 0 else 10
+                self.rl_action_count = 0
+
+            I = self.intersections[iid]
+            dst_idx = I.last_dst_for_reward
+
+            if dst_idx is not None and iid in obs_next:
+                state_next = np.asarray(obs_next[iid]['state'])
+                base = int(dst_idx) * 6
+                goal_vec = state_next[base:base+4]
+                ingoing = float(state_next[base+4])
+
+                if goal_vec[int(dst_idx)] == 1 and ingoing == 0:
+                    r += 1.0 / self.rl_action_count if self.rl_action_count > 0 else 1.0
+                    self.rl_action_count = 0
+                    I.last_dst_for_reward = None  # 한 번만 지급
 
             # 교차로별 이벤트 플래그/invalid_action 기록
             meta["event_start"] = (not prev) and curr
@@ -301,8 +311,6 @@ class ENV():
             "truncated": truncated,
             "time": self.time,
         }
-
-        self.time += 1
 
         return obs_next, reward_map, info_next
 
@@ -479,12 +487,11 @@ class ENV():
                     if next_rank < cur_rank:
                         return False
 
-        # dlog("ok")
         return True
     
     def _update_intersections_state(self):
         for I in self.intersections.values():
-            I.reset()
+            I.soft_reset()
 
         for agv_id, agv_obj in self.agv_list.items():
             pos = agv_obj.pos
@@ -494,6 +501,8 @@ class ENV():
 
         for I in self.intersections.values():
             I.check_deadlock()
+            if I.macro is not None and not I.is_deadlock:
+                I.macro = None
 
     def _spawn_amrs_from_task_gen(self):
         """
@@ -528,7 +537,6 @@ class ENV():
                 pi_pct = agv_obj.path_integrity_ratio()
                 self.completed_path_integrities.append(pi_pct)
                 self.completed_agv_steps.append(agv_obj.steps)
-                self.completed_agv_actions.append(agv_obj.action_count)
             if self.traffic_mode == 'task':
                 self.task_generator.complete_task(agv_id)
             elif self.traffic_mode == 'traffic':
@@ -559,7 +567,6 @@ class ENV():
             goal_pos = self._direction_to_coords(goal_dir, goal_iid)
 
             if start_pos is None or goal_pos is None:
-                print(f"Warning: Could not get start/goal position for AGV {agv_id}. Skipping.")
                 continue
             
             # AGV 생성 및 등록 (agv 생성자 인자 순서 수정)
@@ -655,7 +662,6 @@ class ENV():
 
         # 윈도우 좌표 → 중심 좌표(슬라이딩 오프셋 +1)
         centers = (np.argwhere(match_any) + 1).tolist()
-        print(len(centers), "intersections found.")
         return centers
         
     def _ray_len(self, r, c, dr, dc, max_len=None):
@@ -839,11 +845,6 @@ class ENV():
         # 스루풋 계산 (분 단위)
         throughput = (completed_tasks / self.time * 60) if self.time > 0 else 0.0
 
-        # 평균 Action Count 계산 (완료 + 현재 활성 모두 포함)
-        current_action_counts = [agv_obj.action_count for agv_obj in self.agv_list.values()]
-        all_action_counts = list(self.completed_agv_actions) + current_action_counts
-        avg_action_count = float(np.mean(all_action_counts)) if all_action_counts else 0.0
-
         active_pi = []
         for agv_obj in self.agv_list.values():
             active_pi.append(agv_obj.path_integrity_ratio())
@@ -860,15 +861,15 @@ class ENV():
         for agv_id, agv_obj in self.agv_list.items():
             active_agv_details[agv_id] = {
                 "steps": agv_obj.steps,
-                "action_count": agv_obj.action_count
             }
 
         # --- 4. 최종 정보 취합하여 반환 ---
         return {
             "success_rate": success_rate,
             "throughput": throughput,
-            "avg_action_count": avg_action_count,
+            "rl_action_count": self.rl_action_count,
             "active_agvs": active_agv_details,
             "avg_path_integrity": avg_pi,
             "avg_inference_time": avg_ms,
+            "time": self.time,
         }

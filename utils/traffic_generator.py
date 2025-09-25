@@ -42,11 +42,6 @@ class TaskSetGenerator:
         exclude_goals: Set[Tuple[int,int]] = set(self.goal_candidates)
         self.start_candidates = self._collect_start_candidates(exclude_goals=exclude_goals)
 
-        if not self.goal_candidates:
-            print("[TaskSetGenerator] Warning: no valid goal candidates.")
-        if not self.start_candidates:
-            print("[TaskSetGenerator] Warning: no valid start candidates.")
-
     # --- ENV에서 호출되는 API ---
     def start_new_episode(self, reset_ids: bool = True):
         if reset_ids:
@@ -60,7 +55,6 @@ class TaskSetGenerator:
 
         total_agvs = min(self.num_tasks, len(self.start_candidates))
         if total_agvs == 0:
-            print("[TaskSetGenerator] num_tasks is 0 or no start candidates; no AGVs generated.")
             return
 
         # 시작 좌표: 중복 없이 샘플
@@ -86,12 +80,10 @@ class TaskSetGenerator:
             self.agv_id_counter += 1
 
         self.task_set = tasks
-        print(f"Generated {len(self.task_set)} AGVs (one-shot, count-based).")
 
     def get_next_task_pair(self, current_time: int) -> List[Dict]:
         if not self.spawned_once and self.task_set:
             self.spawned_once = True
-            print(f"[Time: {current_time}] Spawning ALL {len(self.task_set)} AGVs")
             return list(self.task_set)
         return []
 
@@ -153,7 +145,6 @@ class TaskSetGenerator:
             if valid:
                 return valid
             # 입력이 모두 무효면 폴백
-            print("[TaskSetGenerator] Provided goal set is empty/invalid. Falling back.")
         # 폴백: 코너 → 테두리
         goals = self._collect_goal_corners()
         if not goals:
@@ -239,7 +230,6 @@ def discover_border_arms_NxM(intersections: Dict[str, object]) -> List[Tuple[str
         if iy == M - 1:
             border_arms.append((iid, "S"))
             
-    print(f"Discovered {len(border_arms)} border arms from a {N}x{M} grid.")
     return border_arms
 
 
@@ -285,8 +275,6 @@ class TrafficGenerator:
         for direction, arm_list in self.arms_by_direction.items():
             if arm_list:  # 해당 방향에 출발 팔이 있다면
                 opposite_dir = self.opposite_direction[direction]
-                if not self.arms_by_direction[opposite_dir]:
-                    print(f"Warning: Arms exist for direction '{direction}', but no arms found for the opposite direction '{opposite_dir}'. This may cause errors.")
 
         self._arm_gate = arm_gate
         self.debug = bool(debug)
@@ -343,8 +331,6 @@ class TrafficGenerator:
                     self.agv_id_counter += 1
                     self.spawned_total += 1
                 except ValueError as e:
-                    if self.debug:
-                        print(f"[TG12:{self.step_count}] Goal sampling error: {e}")
                     continue # 목적지를 찾을 수 없으면 해당 AGV는 생성하지 않음
 
         return tasks

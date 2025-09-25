@@ -67,6 +67,8 @@ class Intersection:
 
         self.macro = None  # 할당된 매크로 액션 (없으면 None)
 
+        self.last_dst_for_reward = None
+
     def reset(self):
         self.agvs_in_intersection.clear()
         self.agvs_in_lanes = {'N': [], 'E': [], 'S': [], 'W': []}
@@ -74,10 +76,24 @@ class Intersection:
         self.ingoing = {"N": [], "E": [], "S": [], "W": []}
         self.outgoing = {"N": [], "E": [], "S": [], "W": []}
         self.is_deadlock = False
-        self.macro = None
         self._plan_moves.clear()
         self._plan_prio.clear()
         self._plan_order.clear()
+
+        self.macro = None
+        self.last_dst_for_reward = None
+
+    def soft_reset(self):
+        self.agvs_in_intersection.clear()
+        self.agvs_in_lanes = {'N': [], 'E': [], 'S': [], 'W': []}
+        self.center_agv = None
+        self.ingoing = {"N": [], "E": [], "S": [], "W": []}
+        self.outgoing = {"N": [], "E": [], "S": [], "W": []}
+        self.is_deadlock = False
+        self._plan_moves.clear()
+        self._plan_prio.clear()
+        self._plan_order.clear()
+
 
     def add_agv(self, agv_object):
         agv_obj = agv_object
@@ -139,43 +155,47 @@ class Intersection:
         return np.array(state_vector, dtype=np.float32)
     
     def action_control(self, action: int):
-        """0~11 int 액션을 받아 매크로 시작 + tick 진행"""
+        """0~11 int 액션을 받아 매크로 시작 + tick 진행"""        
         if action is not None:
             src, dst = decode_action(action)  # 0~11 -> (src,dst)
-            print(f"[Intersection {self.id}] Received action: {action} -> (src={src}, dst={dst})")
-            self.macro = {"src": src, "dst": dst, "phase": "pull"}
+            self.macro = {"src": src, "dst": dst, "phase": "pull"}     
+            self.last_dst_for_reward = dst        
         self.tick_macro()
 
     def tick_macro(self):
-        """진행 중 옵션이 있으면 이번 스텝에 1-스텝 계획만 추가"""
         if self.macro is None:
             return
-        
-        src = self.macro['src']
-        dst = self.macro['dst']
+        if not self.is_deadlock:
+            self.macro = None
+            return
+
+        src = self.macro['src']; dst = self.macro['dst']
+        src_dir = IDX2DIR[src]; dst_dir = IDX2DIR[dst]
+        src_str = IDX2DIRC[src]; dst_str = IDX2DIRC[dst]
+        front_cell = (self.center_x + src_dir[0], self.center_y + src_dir[1])
+
         phase = self.macro['phase']
-        src_dir = IDX2DIR[src]
-        dst_dir = IDX2DIR[dst]
-        src_dir_str = IDX2DIRC[src]
-        dst_dir_str = IDX2DIRC[dst]
 
-        front_cell = (src_dir[0] + self.center_x, src_dir[1] + self.center_y)
+        if phase == "pull":
+            # 센터가 아직 비어있으면 계속 '풀'만 시도하고 push로 넘기지 않음
+            if self.center_agv is None:
+                for agv in self.agvs_in_lanes.get(src_str, []):
+                    if agv.pos == front_cell:
+                        self._plan_add(agv.id, (-src_dir[0], -src_dir[1]), PR_PULL_CENTER, (0, 0))
+                        break
+                return
+            else:
+                # 직전 스텝에서 실제로 센터가 채워졌음을 '관측'했을 때만 push로 전환
+                self.macro['phase'] = "push"
 
-        agv_to_move = None
-        for agv in self.agvs_in_lanes.get(src_dir_str, []):
-            if agv.pos == front_cell:
-                agv_to_move = agv
-                break
-
-        if agv_to_move is not None and phase == "pull":
-            move_vec = (-src_dir[0], -src_dir[1])  # -src 방향으로 한 칸
-            self._plan_add(agv_to_move.id, move_vec, PR_PULL_CENTER, (0, 0))
-            self.macro['phase'] = "push"
-
-        if self.center_agv is not None and phase == "push":
-            self._plan_push_chain(dst_dir_str)
+        if self.macro['phase'] == "push":
+            # 센터가 비어 있으면 지난 스텝에서 push가 실제로 끝난 것 → 매크로 종료
+            if self.center_agv is None:
+                self.macro = None
+                return
+            # 센터가 있으면 체인 밀기 계속 계획
+            self._plan_push_chain(dst_str)
             self._plan_add(self.center_agv.id, (dst_dir[0], dst_dir[1]), PR_ACTION, (2, 0))
-            self.macro = None  # 매크로 완료
 
     def calculate_action_mask(self):
         # macro 진행 중이면 액션 불가
@@ -196,15 +216,12 @@ class Intersection:
             if occ < cap:
                 mask_dst[idx] = True
 
-            print(self.ingoing.get(d, []))
             ingoing_count = len(self.ingoing.get(d, []))
             if ingoing_count > 0:
                 mask_src[idx] = True
 
         for i, (s, d) in enumerate(PAIRS):
             mask[i] = mask_src[s] and mask_dst[d]
-
-        print(mask_src, mask_dst)
         
         return mask
 
