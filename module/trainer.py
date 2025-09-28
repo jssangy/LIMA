@@ -260,7 +260,7 @@ class Trainer:
             self.obs_state, self.info_state = self.env.reset()
             self.iid = next(iter(self.obs_state.keys()))
 
-            stage_target = 100 if tasks_per_ep <= 16 else 15   # 16 이하일 땐 100회, 그 이상은 15회
+            stage_target = 1000 if tasks_per_ep <= 8 else 100   # 16 이하일 땐 1000회, 그 이상은 100회
 
             self.solved_count = 0
             prev_solved = 0

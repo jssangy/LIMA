@@ -194,8 +194,10 @@ class Intersection:
                 self.macro = None
                 return
             # 센터가 있으면 체인 밀기 계속 계획
-            self._plan_push_chain(dst_str)
-            self._plan_add(self.center_agv.id, (dst_dir[0], dst_dir[1]), PR_ACTION, (2, 0))
+            else:
+                self._plan_push_chain(dst_str)
+                self._plan_add(self.center_agv.id, (dst_dir[0], dst_dir[1]), PR_ACTION, (2, 0))
+                self.macro = None
 
     def calculate_action_mask(self):
         # macro 진행 중이면 액션 불가

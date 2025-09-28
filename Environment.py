@@ -361,35 +361,29 @@ class ENV():
     
     def _update_deadlock_queue(self, info):
         """
-        [수정] 데드락 큐를 새로운 우선순위 규칙에 따라 관리하고 정렬합니다.
-        1순위: 교차로 내 AGV 수 (내림차순)
-        2순위: 데드락 발생 시점 (오름차순)
+        데드락 큐(FIFO):
+        - 새로 데드락이 '처음' 관찰되면 (iid, 발생시간) 을 맨 뒤에 추가
+        - 데드락이 해소되면 해당 iid 항목을 제거
+        - 더 이상 어떤 기준으로도 정렬하지 않음 (발생 시점 순서 유지)
         """
-        queue_changed = False
-        current_iids_in_queue = {item[0] for item in self.deadlock_queue}
+        # 현재 큐에 있는 iid 집합(빠른 조회용)
+        iids_in_queue = {iid for iid, _ in self.deadlock_queue}
 
         for iid, meta in info.items():
             if not isinstance(meta, dict):
                 continue
-            
+
             is_deadlocked = bool(meta.get("is_deadlock", False))
 
-            if is_deadlocked:
-                if iid not in current_iids_in_queue:
-                    # 새로운 데드락 발생: (iid, 발생 시간) 추가
-                    self.deadlock_queue.append((iid, self.time))
-                    queue_changed = True
-            else:
-                if iid in current_iids_in_queue:
-                    # 데드락 해소: 해당 iid 제거
-                    self.deadlock_queue = [item for item in self.deadlock_queue if item[0] != iid]
-                    queue_changed = True
-        
-        # 큐에 변화가 있을 때만 정렬 수행
-        if queue_changed:
-            # 정렬 키: (-AGV 수, 발생 시간)
-            # AGV 수는 많을수록, 발생 시간은 이를수록 우선순위가 높다.
-            self.deadlock_queue.sort(key=lambda item: (-len(self.intersections[item[0]].agvs_in_intersection), item[1]))
+            # 새 데드락: 큐에 없으면 append
+            if is_deadlocked and iid not in iids_in_queue:
+                self.deadlock_queue.append((iid, self.time))
+                iids_in_queue.add(iid)
+
+            # 해소: 큐에서 제거
+            elif (not is_deadlocked) and iid in iids_in_queue:
+                self.deadlock_queue = [item for item in self.deadlock_queue if item[0] != iid]
+                iids_in_queue.discard(iid)
 
     def _inter_rank(self, iid):
         """
