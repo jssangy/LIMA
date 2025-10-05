@@ -7,15 +7,15 @@ import numpy as np
 from typing import Dict
 from collections import deque
 
-from utils.AGV import agv
+from utils.AMR import AMR
 from utils.Intersection import Intersection
 from utils import Funct
 from utils.traffic_generator import TaskSetGenerator, discover_border_arms_NxM, TrafficGenerator
-from utils.Controller import controller
+from utils.Controller import AStarPlanner, PIBTPlanner, CBSPlanner, BFSPlanner
 
 
 class ENV():
-    def __init__(self, prob_path, max_arm_len_h=5, max_arm_len_v=5, num_amrs=500, max_steps=1024, running_opt=0, traffic_mode='task'):
+    def __init__(self, prob_path, max_arm_len_h=5, max_arm_len_v=5, num_amrs=500, max_steps=1024, traffic_mode='task'):
         super().__init__()
         """환경 초기화"""
         base_dir = os.path.dirname(prob_path)
@@ -33,11 +33,11 @@ class ENV():
         processed_intersections = self._find_intersections_and_build_graph()
         
         self.time = 0
-        self.agv_list = {}
+        self.amr_list = {}
         self.l_hop = 1
         self.max_steps = max_steps
 
-        self.controller = controller(self.map, running_opt=running_opt)
+        self.planner = BFSPlanner(self.map)
 
         self.intersections: Dict[str, Intersection] = {}
         for iid, inter_info in processed_intersections.items():
@@ -65,29 +65,20 @@ class ENV():
         # Color mapping
         self.color_map = Funct.Color_dict(6).dic
 
-        self.prev_deadlock_map: dict[str, bool] = {}
+        self.use_scheduler = False
 
-        self.use_rl = False
-        self.rl_policy = None
-
-        self.completed_agv_steps = []
+        self.completed_amr_steps = []
 
         self.total_action_count = 0
         self.rl_action_count = 0
 
         self.completed_path_integrities: list[float] = []
 
-        self._sig_hist = deque(maxlen=25)  # 전역 시그니처 히스토리
-        self._stg_idle_win = 20             # 정지 판단 윈도우(최근 20스텝 모두 동일)
-        self._stg_osc_win  = 20             # 진동 판단 윈도우(최근 20스텝이 ABABAB)
-        self._stg_min_time = 20            # 초반 전이 구간 보호(20스텝 이전엔 감지 안 함)
-
         self.time_ms = []
 
     def reset(self):        
         self.time = 0
-        self.tau_map: dict[str, int] = {}
-        self.agv_list.clear()
+        self.amr_list.clear()
         
         if self.traffic_mode == 'task':
             self.task_generator.start_new_episode()
@@ -105,80 +96,28 @@ class ENV():
         elif self.traffic_mode == 'traffic':
             self._spawn_amrs_from_stream_gen()
 
-        # 리셋 시에는 초기 관찰 상태만 반환
-        obs, info = self.generate_observation()
-        self.prev_deadlock_map: dict[str, bool] = {}
+        self.use_scheduler = False
 
-        self.completed_agv_steps.clear()
-
-        self.total_action_count = 0
-        self.rl_action_count = 0
+        self.completed_amr_steps.clear()
 
         self.completed_path_integrities.clear()
 
-        self._sig_hist.clear()
-
         self.time_ms.clear()
 
-        return obs, info
+        return
 
-    def step(self, actions=None, train=True):
+    def step(self):
         """
         actions: { "x{cx}y{cy}": action_idx, ... }
         반환: obs_next, reward_map, info_next
         """
         self.time += 1
         
-        # --- 에피소드 종료 조건 확인 ---
-        terminated = False
-        if self.traffic_mode == 'task' and self.task_generator.is_episode_done():
-            terminated = True
-
-        if self._update_and_check_stagnation():
-            if train:
-                terminated = True
-            else:
-                return False  # 테스트 루프에서 break
-        
         # 공통 종료 조건: 최대 스텝 도달
-        if self.time >= self.max_steps or terminated:
-            if not train:
-                return False
-        
-        if actions is None:
-            actions = {}
+        if self.time >= self.max_steps:
+            return False
 
-        # 0) 현재 스냅샷
-        obs_now, info_now = self.generate_observation()
-
-        # 1) 액션 결정 (데드락인 동안 매 스텝 RL 보충)
-        act_to_apply: dict[str, int] = dict(actions)
-
-        # 1) 적용할 액션 결정 (RL 정책 보충)
-        act_to_apply = dict(actions)
-        if (not train) and self.use_rl and self.rl_policy:
-            for iid, meta in info_now.items():
-                # 유효한 교차로 정보인지 확인
-                if meta.get("macro_busy", False):
-                    continue                
-                # 데드락이 활성화된 교차로에 대해서만 RL 정책 적용
-                if meta.get("is_deadlock", False) and iid not in act_to_apply:
-                    action_mask = meta.get("action_mask", None)
-
-                    if self.time >= 5:
-                        torch.cuda.synchronize()
-                        t0 = time.perf_counter_ns()
-
-                    rl_action = int(self.rl_policy(obs_now[iid], action_mask))
-
-                    if self.time >= 5:
-                        torch.cuda.synchronize()
-                        dt_ms = (time.perf_counter_ns() - t0) / 1e6
-                        self.time_ms.append(dt_ms)
-
-                    act_to_apply[iid] = rl_action
-
-        if (self.use_rl and self.rl_policy) or train:
+        if self.use_scheduler:
             sorted_iids = sorted(self.intersections.keys(), key=self._inter_rank, reverse=True)
 
             # === 2) 교차로별 플래닝 (옵션 틱 → 액션 시작) ===
@@ -189,12 +128,7 @@ class ENV():
 
                 I.begin_plan()
                 I.resolve_arm_swaps_all()
-                if iid in act_to_apply:
-                    I.action_control(act_to_apply[iid])
-                    self.total_action_count += 1
-                    self.rl_action_count += 1
-                else:
-                    I.action_control(None)
+                I.action_control()
 
             final_plan_moves = {}
             final_plan_prio = {}
@@ -203,21 +137,21 @@ class ENV():
 
             for iid in sorted_iids:
                 I = self.intersections[iid]
-                for agv_id, prio in I._plan_prio.items():
-                    prev_prio = final_plan_prio.get(agv_id, -10**9)
+                for amr_id, prio in I._plan_prio.items():
+                    prev_prio = final_plan_prio.get(amr_id, -10**9)
                     if prio >= prev_prio:
-                        final_plan_prio[agv_id] = prio
-                        final_plan_moves[agv_id] = I._plan_moves[agv_id]
-                        final_plan_order[agv_id] = I._plan_order[agv_id]
-                        final_plan_owner[agv_id] = iid
+                        final_plan_prio[amr_id] = prio
+                        final_plan_moves[amr_id] = I._plan_moves[amr_id]
+                        final_plan_order[amr_id] = I._plan_order[amr_id]
+                        final_plan_owner[amr_id] = iid
 
             self.controller.control_buffer.update(final_plan_moves)
             
             items = []
-            for agv_id, (prio, *order) in final_plan_order.items():
-                owner_iid = final_plan_owner[agv_id]
+            for amr_id, (prio, *order) in final_plan_order.items():
+                owner_iid = final_plan_owner[amr_id]
                 rank = self._inter_rank(owner_iid)
-                items.append((rank, -prio, tuple(order), agv_id))
+                items.append((rank, -prio, tuple(order), amr_id))
             items.sort()
             
             seq = []
@@ -230,30 +164,30 @@ class ENV():
 
             # 3) Movement 커밋 (컨트롤러의 우선순위 큐 먼저 처리)
             moved = set()
-            for agv_id in self.controller.push_sequence:
-                agv_obj = self.agv_list.get(agv_id)
-                if agv_obj:
-                    sig = self.controller.control_buffer.get(agv_id, (0, 0))
-                    if self._is_valid_move(agv_obj, sig):
-                        agv_obj.move(sig)
-                        agv_obj.action_count += 1
-                        moved.add(agv_id)
+            for amr_id in self.controller.push_sequence:
+                amr_obj = self.amr_list.get(amr_id)
+                if amr_obj:
+                    sig = self.controller.control_buffer.get(amr_id, (0, 0))
+                    if self._is_valid_move(amr_obj, sig):
+                        amr_obj.move(sig)
+                        amr_obj.action_count += 1
+                        moved.add(amr_id)
             
-            # 나머지 AGV 이동
-            for agv_id, agv_obj in self.agv_list.items():
-                if agv_id not in moved:
-                    sig = self.controller.control_buffer.get(agv_id, (0, 0))
-                    if self._is_valid_move(agv_obj, sig):
-                        agv_obj.move(sig)
+            # 나머지 AMR 이동
+            for amr_id, amr_obj in self.amr_list.items():
+                if amr_id not in moved:
+                    sig = self.controller.control_buffer.get(amr_id, (0, 0))
+                    if self._is_valid_move(amr_obj, sig):
+                        amr_obj.move(sig)
 
             # 사용 후 정리
             self.controller.push_sequence = []
         
         else:
-            for agv_id, agv_obj in self.agv_list.items():
-                sig = self.controller.control_buffer.get(agv_id, (0, 0))
-                if self._is_valid_move(agv_obj, sig):
-                    agv_obj.move(sig)
+            for amr_id, amr_obj in self.amr_list.items():
+                sig = self.controller.control_buffer.get(amr_id, (0, 0))
+                if self._is_valid_move(amr_obj, sig):
+                    amr_obj.move(sig)
 
         # 4) 환경 변화 처리
         self._check_amr_completion()
@@ -264,55 +198,7 @@ class ENV():
             self._spawn_amrs_from_stream_gen()
 
         # GUI/테스트 모드: 기존 요약 반환 유지
-        if not train:
-            return self.make_info()
-
-        # 5) 다음 관측
-        obs_next, info_next = self.generate_observation()
-
-        # 6) 보상/이벤트 — 교차로별로 '개별 기록'
-        reward_map: dict[str, float] = {}
-        for iid, meta in info_next.items():
-            curr = bool(meta.get("is_deadlock", False))
-            prev = bool(info_now.get(iid, {}).get("is_deadlock", False))
-
-            # 기본 보상 스킴(예시):해소 +10, 탈출 +1
-            r = 0.0
-            if prev and not curr:
-                r += 10 / self.rl_action_count if self.rl_action_count > 0 else 10
-                self.rl_action_count = 0
-
-            I = self.intersections[iid]
-            dst_idx = I.last_dst_for_reward
-
-            if dst_idx is not None and iid in obs_next:
-                state_next = np.asarray(obs_next[iid]['state'])
-                base = int(dst_idx) * 6
-                goal_vec = state_next[base:base+4]
-                ingoing = float(state_next[base+4])
-
-                if goal_vec[int(dst_idx)] == 1 and ingoing == 0:
-                    r += 1.0 / self.rl_action_count if self.rl_action_count > 0 else 1.0
-                    self.rl_action_count = 0
-                    I.last_dst_for_reward = None  # 한 번만 지급
-
-            # 교차로별 이벤트 플래그/invalid_action 기록
-            meta["event_start"] = (not prev) and curr
-            meta["event_end"] = prev and (not curr)
-
-            # prev 갱신 및 보상 저장
-            self.prev_deadlock_map[iid] = curr
-            reward_map[iid] = r
-
-        # 종료/트렁케이트: 전역 상태만 간단 요약(합산 지표는 넣지 않음)
-        truncated = (self.time >= self.max_steps)
-        info_next["_summary"] = {
-            "terminated": terminated,
-            "truncated": truncated,
-            "time": self.time,
-        }
-
-        return obs_next, reward_map, info_next
+        return self.make_info()
 
 
     def generate_observation(self):
@@ -323,13 +209,13 @@ class ENV():
         - 상태/마스크/푸시아웃 플래그 계산만 수행
         """
         # 1) 센싱/컨트롤 업데이트
-        for agv_id, agv_obj in self.agv_list.items():
-            self.controller.get_sensing(agv_id, agv_obj.pos)
+        for amr_id, amr_obj in self.amr_list.items():
+            self.controller.get_sensing(amr_id, amr_obj.pos)
         self.controller.make_control()
         if self.time == 0:
-            # 리셋 직후: AGV별 초기 경로 설정
-            for agv_id, paths in self.controller.agv_path.items():
-                self.agv_list[agv_id].set_initial_path(paths)
+            # 리셋 직후: AMR별 초기 경로 설정
+            for amr_id, paths in self.controller.amr_path.items():
+                self.amr_list[amr_id].set_initial_path(paths)
 
         # 2) 교차로 최신화 (여기서만 최신화! step에서는 하지 않음)
         self._update_intersections_state()
@@ -396,35 +282,35 @@ class ENV():
         except ValueError:
             return math.inf
 
-    def _is_valid_move(self, current_agv, control_signal,
+    def _is_valid_move(self, current_amr, control_signal,
                     dbg_iid=None, dbg_ids=None, dbg_edge_swap=True):
         """
         dbg_iid: 이 교차로(iid)만 찍기(없으면 무시)
-        dbg_ids: 이 집합(AGV id)만 찍기(없으면 무시)
+        dbg_ids: 이 집합(AMR id)만 찍기(없으면 무시)
         dbg_edge_swap: 에지 스왑 차단/로그 여부
         """
         # PIBT/CBS 모드는 그대로 통과
         if self.controller.running_opt in [3, 4]:
             return True
 
-        nx = current_agv.pos[0] + control_signal[0]
-        ny = current_agv.pos[1] + control_signal[1]
+        nx = current_amr.pos[0] + control_signal[0]
+        ny = current_amr.pos[1] + control_signal[1]
         next_pos = (nx, ny)
-        gid = current_agv.id
+        gid = current_amr.id
 
         # 1) 동일 칸 점유 충돌
-        for other in self.agv_list.values():
-            if other is not current_agv and next_pos == other.pos:
+        for other in self.amr_list.values():
+            if other is not current_amr and next_pos == other.pos:
                 return False
 
         # 2) 에지 스왑 금지(옵션)
         if dbg_edge_swap:
-            for other_id, other in self.agv_list.items():
-                if other is current_agv:
+            for other_id, other in self.amr_list.items():
+                if other is current_amr:
                     continue
                 odx, ody = self.controller.control_buffer.get(other_id, (0, 0))
                 other_next = (other.pos[0] + odx, other.pos[1] + ody)
-                if next_pos == other.pos and other_next == current_agv.pos:
+                if next_pos == other.pos and other_next == current_amr.pos:
                     return False
                 
         if self.rl_policy and self.use_rl:
@@ -435,7 +321,7 @@ class ENV():
                         res.append(I)
                 return res
 
-            here_inters   = owners(current_agv.pos)
+            here_inters   = owners(current_amr.pos)
             target_inters = owners(next_pos)
             here_ids = {getattr(I, "id", None) for I in here_inters}
 
@@ -443,11 +329,11 @@ class ENV():
             cap_limit = getattr(self, "inter_cap_limit_enter", 13)
             for J in target_inters:
                 if getattr(J, "id", None) not in here_ids:
-                    if len(J.agvs_in_intersection) >= cap_limit:
+                    if len(J.amrs_in_intersection) >= cap_limit:
                         return False
 
             # 3-2) 교차로 우선순위: 센터에서만 적용
-            cur_is_center = any(current_agv.pos == (I.center_x, I.center_y) for I in here_inters)
+            cur_is_center = any(current_amr.pos == (I.center_x, I.center_y) for I in here_inters)
             if cur_is_center:
                 cur_rank = min((self._inter_rank(getattr(I, "id", "")) for I in here_inters),
                             default=math.inf)
@@ -468,9 +354,9 @@ class ENV():
                         res.append(I)
                 return res
 
-            here_inters = owners(current_agv.pos)
+            here_inters = owners(current_amr.pos)
             target_inters = owners(next_pos)
-            cur_is_center = any(current_agv.pos == (I.center_x, I.center_y) for I in here_inters)
+            cur_is_center = any(current_amr.pos == (I.center_x, I.center_y) for I in here_inters)
             if cur_is_center:
                 cur_rank = min((self._inter_rank(getattr(I, "id", "")) for I in here_inters),
                             default=math.inf)
@@ -487,11 +373,11 @@ class ENV():
         for I in self.intersections.values():
             I.soft_reset()
 
-        for agv_id, agv_obj in self.agv_list.items():
-            pos = agv_obj.pos
+        for amr_id, amr_obj in self.amr_list.items():
+            pos = amr_obj.pos
             for I in self.intersections.values():
                 if pos in I.all_lane_coords:
-                    I.add_agv(agv_obj)
+                    I.add_amr(amr_obj)
 
         for I in self.intersections.values():
             I.check_deadlock()
@@ -510,33 +396,33 @@ class ENV():
         new_tasks = gen.get_next_task_pair(current_time=self.time)
         
         for task in new_tasks:
-            agv_id = task['id']
+            amr_id = task['id']
 
             start_pos = tuple(task['start_pos'])
             goal_pos  = tuple(task['goal_pos'])
 
-            new_agv = agv(start_pos, agv_id, self.color_map[agv_id % 6])
-            self.agv_list[agv_id] = new_agv
-            self.controller.add_agv(agv_id, start_pos, goal_pos)
+            new_amr = AMR(start_pos, amr_id, self.color_map[amr_id % 6])
+            self.amr_list[amr_id] = new_amr
+            self.controller.add_amr(amr_id, start_pos, goal_pos)
 
     def _check_amr_completion(self):
-        completed_agvs = []
-        for agv_id, agv_obj in list(self.agv_list.items()):
-            if agv_obj.pos == self.controller.agv_goal.get(agv_id):
-                completed_agvs.append(agv_id)
+        completed_amrs = []
+        for amr_id, amr_obj in list(self.amr_list.items()):
+            if amr_obj.pos == self.controller.amr_goal.get(amr_id):
+                completed_amrs.append(amr_id)
 
-        for agv_id in completed_agvs:
-            agv_obj = self.agv_list[agv_id]
-            if agv_obj is not None:
-                pi_pct = agv_obj.path_integrity_ratio()
+        for amr_id in completed_amrs:
+            amr_obj = self.amr_list[amr_id]
+            if amr_obj is not None:
+                pi_pct = amr_obj.path_integrity_ratio()
                 self.completed_path_integrities.append(pi_pct)
-                self.completed_agv_steps.append(agv_obj.steps)
+                self.completed_amr_steps.append(amr_obj.steps)
             if self.traffic_mode == 'task':
-                self.task_generator.complete_task(agv_id)
+                self.task_generator.complete_task(amr_id)
             elif self.traffic_mode == 'traffic':
-                self.traffic_generator.complete_task(agv_id)
-            del self.agv_list[agv_id]
-            self.controller.remove_agv(agv_id)
+                self.traffic_generator.complete_task(amr_id)
+            del self.amr_list[amr_id]
+            self.controller.remove_amr(amr_id)
 
     def _spawn_amrs_from_stream_gen(self):
         """
@@ -551,7 +437,7 @@ class ENV():
         new_tasks = gen.get_next_task_pair()
 
         for task in new_tasks:
-            agv_id = task['id']
+            amr_id = task['id']
             start_iid = task['intersection_id']
             start_dir = task['start_direction']
             goal_iid = task['goal_intersection_id']
@@ -563,10 +449,10 @@ class ENV():
             if start_pos is None or goal_pos is None:
                 continue
             
-            # AGV 생성 및 등록 (agv 생성자 인자 순서 수정)
-            new_agv = agv(start_pos, agv_id, self.color_map[agv_id % 6])
-            self.agv_list[agv_id] = new_agv
-            self.controller.add_agv(agv_id, start_pos, goal_pos)
+            # AMR 생성 및 등록 (amr 생성자 인자 순서 수정)
+            new_amr = AMR(start_pos, amr_id, self.color_map[amr_id % 6])
+            self.amr_list[amr_id] = new_amr
+            self.controller.add_amr(amr_id, start_pos, goal_pos)
 
     def _direction_to_coords(self, direction, intersection_ref):
         """
@@ -770,7 +656,7 @@ class ENV():
             return False
         if self.map[ty][tx] == 1:
             return False
-        if any(a.pos == tip for a in self.agv_list.values()):
+        if any(a.pos == tip for a in self.amr_list.values()):
             return False
 
         return True
@@ -784,12 +670,12 @@ class ENV():
         if self.time < self._stg_min_time:
             self._sig_hist.clear()
             return False
-        if not self.agv_list:
+        if not self.amr_list:
             self._sig_hist.clear()
             return False
 
-        # 전역 시그니처: (agv_id, x, y) 튜플을 정렬한 튜플
-        sig = tuple(sorted((aid, agv.pos[0], agv.pos[1]) for aid, agv in self.agv_list.items()))
+        # 전역 시그니처: (amr_id, x, y) 튜플을 정렬한 튜플
+        sig = tuple(sorted((aid, amr.pos[0], amr.pos[1]) for aid, amr in self.amr_list.items()))
         self._sig_hist.append(sig)
 
         # 1) 정지: 최근 N개가 모두 동일
@@ -812,13 +698,13 @@ class ENV():
         return False
 
     # --- [GUI 연동을 위한 어댑터 함수들] ---
-    def Get_AGV(self):
-        """GUI가 AGV 목록을 가져갈 수 있도록 하는 함수"""
-        return self.agv_list
+    def Get_AMR(self):
+        """GUI가 AMR 목록을 가져갈 수 있도록 하는 함수"""
+        return self.amr_list
 
     def get_active_tasks(self):
-        """GUI가 AGV의 목표 지점을 가져갈 수 있도록 하는 함수"""
-        return self.controller.agv_goal
+        """GUI가 AMR의 목표 지점을 가져갈 수 있도록 하는 함수"""
+        return self.controller.amr_goal
 
     def make_info(self):
         """
@@ -840,29 +726,28 @@ class ENV():
         throughput = (completed_tasks / self.time * 60) if self.time > 0 else 0.0
 
         active_pi = []
-        for agv_obj in self.agv_list.values():
-            active_pi.append(agv_obj.path_integrity_ratio())
+        for amr_obj in self.amr_list.values():
+            active_pi.append(amr_obj.path_integrity_ratio())
         all_pi = self.completed_path_integrities + active_pi
         avg_pi = float(np.mean(all_pi)) if all_pi else 0.0
 
-        if self.rl_policy and self.use_rl:
+        if self.use_scheduler:
             avg_ms = float(np.mean(self.time_ms)) if self.time_ms else 0.0
         else:
             avg_ms = float(np.mean(self.controller.time_ms)) if self.controller.time_ms else 0.0
 
-        # --- 3. 현재 활성화된 AGV들의 상세 정보 수집 ---
-        active_agv_details = {}
-        for agv_id, agv_obj in self.agv_list.items():
-            active_agv_details[agv_id] = {
-                "steps": agv_obj.steps,
+        # --- 3. 현재 활성화된 AMR들의 상세 정보 수집 ---
+        active_amr_details = {}
+        for amr_id, amr_obj in self.amr_list.items():
+            active_amr_details[amr_id] = {
+                "steps": amr_obj.steps,
             }
 
         # --- 4. 최종 정보 취합하여 반환 ---
         return {
             "success_rate": success_rate,
             "throughput": throughput,
-            "rl_action_count": self.rl_action_count,
-            "active_agvs": active_agv_details,
+            "active_amrs": active_amr_details,
             "avg_path_integrity": avg_pi,
             "avg_inference_time": avg_ms,
             "time": self.time,

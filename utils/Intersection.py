@@ -2,37 +2,12 @@ import numpy as np
 from itertools import chain
 from typing import Dict
 
-DIR2IDX = {"N": 0, "E": 1, "S": 2, "W": 3}
-IDX2DIRC = {0: "N", 1: "E", 2: "S", 3: "W"}
-IDX2DIR = {0: (0, -1), 1: (1, 0), 2: (0, 1), 3: (-1, 0)}
-
-PAIRS = [(s, d) for s in range(4) for d in range(4) if s != d]
-# => [(0,1),(0,2),(0,3),(1,0),(1,2),(1,3),(2,0),(2,1),(2,3),(3,0),(3,1),(3,2)]
-
-IDX2PAIR = PAIRS
-PAIR2IDX = {pair: i for i, pair in enumerate(PAIRS)}
-
-def decode_action(a12: int) -> tuple[int,int]:
-    # 0..11 -> (src,dst)
-    return IDX2PAIR[int(a12)]
-
-def encode_action(src: int, dst: int) -> int:
-    # (src,dst) -> 0..11
-    assert 0 <= src < 4 and 0 <= dst < 4 and src != dst
-    return PAIR2IDX[(src, dst)]
-
-PR_PULL = 50      # Pull to Center (플래닝/실행 우선순위 가장 낮음)
-PR_PULL_CENTER = 70  # Pull to Center (센터 앞 칸에 도달한 경우)
-PR_ACTION = 90    # Center Action
-PR_PUSH = 100     # Center Action Push (플래닝/실행 우선순위 가장 높음)
 
 class Intersection:
-    def __init__(self, intersection_data, controller_ref, neighbors_map, present_dirs):
+    def __init__(self, intersection_data, neighbors_map, present_dirs):
         self.center_x, self.center_y, self.len_N, self.len_E, self.len_S, self.len_W = intersection_data
         self.id = f'x{self.center_x}y{self.center_y}'
-        self.controller = controller_ref
         self.neighbors = neighbors_map
-        self.map = self.controller.map
 
         if present_dirs is None:
             present_dirs = {d for d,L in zip("NESW",[self.len_N,self.len_E,self.len_S,self.len_W]) if L>0}
@@ -52,428 +27,579 @@ class Intersection:
         self.all_lane_coords.add((self.center_x, self.center_y))
 
         # 이벤트 기반 AGV object 추적
-        self.agvs_in_intersection = set()  # 교차로 내 AGV만 추적
-        self.agvs_in_lanes = {'N': [], 'E': [], 'S': [], 'W': []}
-        self.center_agv = None
+        self.amr_intent_map = {}            # {amr_id: {'amr_obj': amr, 'current_arm': 'N', 'exit_arm': 'S'}}
         self.is_deadlock = False
-        self.macro = None
 
-        self.ingoing = {"N": [], "E": [], "S": [], "W": []}
-        self.outgoing = {"N": [], "E": [], "S": [], "W": []}
-
-        self._plan_moves: Dict[int, tuple] = {}   # agv_id -> move (dx,dy)
-        self._plan_prio:  Dict[int, int]   = {}   # agv_id -> priority(큰 게 먼저)
-        self._plan_order: Dict[int, tuple] = {}   # agv_id -> (order tuple)
-
-        self.macro = None  # 할당된 매크로 액션 (없으면 None)
-
-        self.last_dst_for_reward = None
 
     def reset(self):
-        self.agvs_in_intersection.clear()
-        self.agvs_in_lanes = {'N': [], 'E': [], 'S': [], 'W': []}
-        self.center_agv = None
-        self.ingoing = {"N": [], "E": [], "S": [], "W": []}
-        self.outgoing = {"N": [], "E": [], "S": [], "W": []}
+        self.amr_intent_map = {}
         self.is_deadlock = False
-        self._plan_moves.clear()
-        self._plan_prio.clear()
-        self._plan_order.clear()
-
-        self.macro = None
-        self.last_dst_for_reward = None
-
-    def soft_reset(self):
-        self.agvs_in_intersection.clear()
-        self.agvs_in_lanes = {'N': [], 'E': [], 'S': [], 'W': []}
-        self.center_agv = None
-        self.ingoing = {"N": [], "E": [], "S": [], "W": []}
-        self.outgoing = {"N": [], "E": [], "S": [], "W": []}
-        self.is_deadlock = False
-        self._plan_moves.clear()
-        self._plan_prio.clear()
-        self._plan_order.clear()
 
 
-    def add_agv(self, agv_object):
-        agv_obj = agv_object
-        nxt = self.controller.next_buffer[agv_obj.id]
-        self.agvs_in_intersection.add(agv_obj)
+    def register_amr(self, amr):
+        path = amr.path
+        if not path: return
 
-        if agv_obj.pos == (self.center_x, self.center_y):
-            self.center_agv = agv_obj
-        else:        
-            cx, cy = self.center_x, self.center_y
-            for direction, coords in self.lane_coords.items():
-                if agv_obj.pos in coords:
-                    self.agvs_in_lanes[direction].append(agv_obj)
-                    curd = (np.sign(agv_obj.pos[0] - cx), np.sign(agv_obj.pos[1] - cy))
+        current_arm_direction = None
+        exit_arm_direction = None
 
-                    if curd == nxt:
-                        self.outgoing[direction].append(agv_obj)
-                    elif curd == (-nxt[0], -nxt[1]):
-                        self.ingoing[direction].append(agv_obj)
-                    break
-
-    def get_state(self):
-        state_vector = []
-
-        closest_cfg = {
-            'N': ('y',  max),  # y가 가장 큰(아래쪽)
-            'E': ('x',  min),  # x가 가장 작은(왼쪽)
-            'S': ('y',  min),  # y가 가장 작은(위쪽)
-            'W': ('x',  max),  # x가 가장 큰(오른쪽)
-        }
-        for d in ['N', 'E', 'S', 'W']:
-            if d not in self.present_dirs:
-                state_vector.extend([0, 0, 0, 0, 0, 1])  # goal_onehot(4), ingoing(1), density(1)
-                continue
-
-            agvs = self.agvs_in_lanes[d]  # [AGV,...]
-            goal_onehot = [0, 0, 0, 0]
-
-            if agvs:
-                axis, sel = closest_cfg[d]
-                key_fn = (lambda a: a.pos[1]) if axis == 'y' else (lambda a: a.pos[0])
-                closest_agv = sel(agvs, key=key_fn)
-
-                agv_id = closest_agv.id
-                if agv_id is not None and agv_id in self.controller.agv_path:
-                    path = self.controller.agv_path[agv_id]
-                    exit_dir = self._get_exit_direction(path)
-                    idx = {'N':0,'E':1,'S':2,'W':3}.get(exit_dir, None)
-                    if idx is not None: goal_onehot[idx] = 1
-
-            ingoing = 1.0 if bool(self.ingoing[d]) else 0.0
-
-            density = len(agvs) / len(self.lane_coords[d]) if self.lane_coords[d] else 1.0
-
-            state_vector.extend(goal_onehot)
-            state_vector.append(ingoing)
-            state_vector.append(density)
-
-        return np.array(state_vector, dtype=np.float32)
-    
-    def action_control(self, action: int):
-        """0~11 int 액션을 받아 매크로 시작 + tick 진행"""        
-        if action is not None:
-            src, dst = decode_action(action)  # 0~11 -> (src,dst)
-            self.macro = {"src": src, "dst": dst, "phase": "pull"}     
-            self.last_dst_for_reward = dst        
-        self.tick_macro()
-
-    def tick_macro(self):
-        if self.macro is None:
-            return
-        if not self.is_deadlock:
-            self.macro = None
-            return
-
-        src = self.macro['src']; dst = self.macro['dst']
-        src_dir = IDX2DIR[src]; dst_dir = IDX2DIR[dst]
-        src_str = IDX2DIRC[src]; dst_str = IDX2DIRC[dst]
-        front_cell = (self.center_x + src_dir[0], self.center_y + src_dir[1])
-
-        phase = self.macro['phase']
-
-        if phase == "pull":
-            # 센터가 아직 비어있으면 계속 '풀'만 시도하고 push로 넘기지 않음
-            if self.center_agv is None:
-                for agv in self.agvs_in_lanes.get(src_str, []):
-                    if agv.pos == front_cell:
-                        self._plan_add(agv.id, (-src_dir[0], -src_dir[1]), PR_PULL_CENTER, (0, 0))
-                        break
-                return
-            else:
-                # 직전 스텝에서 실제로 센터가 채워졌음을 '관측'했을 때만 push로 전환
-                self.macro['phase'] = "push"
-
-        if self.macro['phase'] == "push":
-            # 센터가 비어 있으면 지난 스텝에서 push가 실제로 끝난 것 → 매크로 종료
-            if self.center_agv is None:
-                self.macro = None
-                return
-            # 센터가 있으면 체인 밀기 계속 계획
-            else:
-                self._plan_push_chain(dst_str)
-                self._plan_add(self.center_agv.id, (dst_dir[0], dst_dir[1]), PR_ACTION, (2, 0))
-                self.macro = None
-
-    def calculate_action_mask(self):
-        # macro 진행 중이면 액션 불가
-        if self.macro is not None:
-            return np.stack([np.zeros(4, dtype=bool),
-                            np.zeros(4, dtype=bool)])
-
-        mask = np.zeros(12, dtype=bool)
-        mask_src = np.zeros(4, dtype=bool)
-        mask_dst = np.zeros(4, dtype=bool)
-
-        # macro 없음 + 데드락 발생 시, 가능한 팔 방향만 True
-        for d, idx in DIR2IDX.items():
-            if d not in self.present_dirs:
-                continue
-            cap = len(self.lane_coords.get(d, []))
-            occ = len(self.agvs_in_lanes.get(d, []))
-            if occ < cap:
-                mask_dst[idx] = True
-
-            ingoing_count = len(self.ingoing.get(d, []))
-            if ingoing_count > 0:
-                mask_src[idx] = True
-
-        for i, (s, d) in enumerate(PAIRS):
-            mask[i] = mask_src[s] and mask_dst[d]
+        for pos in path:
+            if pos == (self.center_x, self.center_y):
+                next_pos_index = path.index(pos) + 1
+                exit_cell = path[next_pos_index]
+                break
         
-        return mask
+        for direction, coords in self.lane_coords.items():
+            if amr.pos == (self.center_x, self.center_y):
+                current_arm_direction = "C"
+            if amr.pos in coords:
+                current_arm_direction = direction
+            if exit_cell in coords:
+                exit_arm_direction = direction
 
-    def check_deadlock(self):
-        """
-        데드락 판정:
-        - is_deadlock    : 교차로 내 '어떤' 쌍이라도 스와핑 데드락이면 True
-        """
-        agvs = list(self.agvs_in_intersection or [])
-        if len(agvs) < 2:
-            self.is_deadlock = False
+        if current_arm_direction and exit_arm_direction:
+            self.amr_intent_map[amr.id] = {
+                'amr_obj': amr,
+                'current_arm': current_arm_direction,
+                'exit_arm': exit_arm_direction
+            }
+
+
+    def check_cycle_deadlock(self):
+        dirs = self.present_dirs
+        adj = {d: set() for d in dirs}
+
+        pos2rec = {}
+        for rec in self.amr_intent_map.values():
+            a = rec.get('amr_obj')
+            if a: pos2rec[a.pos] = rec
+
+            cur = rec['current_arm']
+            nxt = rec['exit_arm']
+            if cur in adj and nxt in adj and cur != nxt:
+                adj[cur].add(nxt)
+
+        visited = set()
+        onstack = set()
+
+        def dfs(u: str) -> bool:
+            visited.add(u)
+            onstack.add(u)
+            for v in adj[u]:
+                if v not in visited:
+                    if dfs(v):
+                        return True
+                elif v in onstack:
+                    return True
+            onstack.remove(u)
             return False
 
-        center_id = getattr(self.center_agv, "id", None)
-
-        # (선택) 센터 먼저 검사되도록 앞으로 배치
-        if center_id is not None:
-            agvs.sort(key=lambda a: a.id != center_id)  # center가 맨 앞
-
-        n = len(agvs)
-        for i in range(n - 1):
-            ai = agvs[i]
-            for j in range(i + 1, n):
-                aj = agvs[j]
-
-                # [수정] 즉각적인 스와핑과 경로 기반 스와핑을 모두 검사
-                is_immediate_swap = self._check_immediate_swap(ai, aj)
-                is_path_conflict = self._check_swapping_path(ai, aj) or self._check_swapping_path(aj, ai)
-
-                if is_immediate_swap or is_path_conflict:
-                    self.is_deadlock = True                    
-                    return True # 데드락 발견 시 즉시 종료
-
-        # 루프를 모두 돌았는데 데드락이 없으면 상태 초기화
-        self.is_deadlock = False
-        return False
-
-    def _check_swapping_path(self, agv1, agv2):
-        """
-        A(agv1)의 경로 상에 B(agv2)의 현재 위치가 포함되어 있고,
-        [수정] A의 '다음 위치'부터 B의 '이전 위치'까지의 경로 구간 역순이 B의 경로에 서브시퀀스로 포함되면 스와핑 위험으로 판단.
-        """
-        path1 = self.controller.agv_path.get(agv1.id)
-        path2 = self.controller.agv_path.get(agv2.id)
-        if not path1 or not path2:
-            return False
-
-        pos2 = agv2.pos
-
-        # A의 경로에서 B의 현재 위치 인덱스 찾기
-        try:
-            index2_in_1 = path1.index(pos2)
-        except ValueError:
-            return False
-
-        # A의 다음 위치(인덱스 1)부터 B의 이전 위치(인덱스 index2_in_1 - 1)까지
-        # 경로 구간이 존재하려면, 최소한 A -> A+1 -> B 순서여야 함 (index2_in_1 >= 2)
-        if index2_in_1 < 2:
-            return False
-
-        # [수정] A의 경로 구간을 'A+1'부터 'B-1'까지로 변경
-        sub_path1 = path1[1:index2_in_1]
-        if not sub_path1:
-            return False
-        reversed_sub_path1 = sub_path1[::-1]
-
-        L = len(reversed_sub_path1)
-        if len(path2) < L:
-            return False
-            
-        for i in range(len(path2) - L + 1):
-            if path2[i:i + L] == reversed_sub_path1:
+        for u in adj.keys():
+            if u not in visited and dfs(u):
+                self.is_deadlock = True
                 return True
-        return False
-    
-    def _check_immediate_swap(self, agv1, agv2):
-        """
-        [추가된 함수]
-        A의 다음 위치가 B의 현재 위치이고, B의 다음 위치가 A의 현재 위치인지 확인.
-        """
-        # _planned_move를 사용하여 다음 이동 벡터를 가져옴
-        move1 = self._planned_move(agv1)
-        move2 = self._planned_move(agv2)
-
-        if move1 is None or move2 is None:
-            return False
-
-        pos1 = agv1.pos
-        pos2 = agv2.pos
-
-        next_pos1 = (pos1[0] + move1[0], pos1[1] + move1[1])
-        next_pos2 = (pos2[0] + move2[0], pos2[1] + move2[1])
-
-        # 스와핑 조건 확인
-        if next_pos1 == pos2 and next_pos2 == pos1:
-            return True
         
-        return False
-    
-    def _get_exit_direction(self, path):
-        center_node = (self.center_x, self.center_y)
-        if center_node in path:
-            center_index = path.index(center_node)
-            exit_node = path[center_index + 1]
-            return self._coords_to_direction(exit_node)
-        else:
-            return self._coords_to_direction(path[0])
-        
-    def _coords_to_direction(self, coords):
-        for direction, lane_coords in self.lane_coords.items():
-            if coords in lane_coords:
-                return direction
-
-    def _back_action_index_from_prev(self):
-        if self.center_agv is None:
-            return None
-        cur = (self.center_x, self.center_y)
-        prev = self.center_agv.prev_pos
-
-        # prev→cur로 들어왔으니, 그 반대가 '뒤로가기'
-        vx, vy = cur[0]-prev[0], cur[1]-prev[1]
-        back_vec = (-vx, -vy)
-        vec2idx = {(0,-1):0,(1,0):1,(0,1):2,(-1,0):3}
-        return vec2idx.get(back_vec)
-
-    def _dir_vec(self, d: str):
-        return {'N': (0,-1), 'E': (1,0), 'S': (0,1), 'W': (-1,0)}[d]
-
-    def _collect_chain_near_to_far(self, d: str):
-        """팔 d에서 센터에 '가장 가까운 점유칸'부터 바깥으로 연속 점유된 AGV id 목록(near→far)."""
-        cells = self.lane_coords.get(d, [])  # 반드시 center→outside 순서의 '리스트'여야 함
-        pos2id = {a.pos: a.id for a in self.agvs_in_lanes.get(d, [])}
-
-        chain = []
-        started = False
-        for p in cells:
-            if not started:
-                if p in pos2id:
-                    chain.append(pos2id[p])
-                    started = True
-                # 아직 시작 못 했으면 다음 칸으로 continue
-            else:
-                if p in pos2id:
-                    chain.append(pos2id[p])
-                else:
-                    break  # 연속 끊기면 종료
-        return chain
-
-    def _planned_move(self, agv):
-        """제어버퍼 > 경로기반으로 다음 이동 벡터 추정"""
-        mv = self.controller.next_buffer.get(agv.id)
-        if mv is not None:
-            return mv
-        path = self.controller.agv_path.get(agv.id)
-        if not path: return None
-        try:
-            i = path.index(agv.pos)
-            if i + 1 < len(path):
-                nxt = path[i + 1]
-                return (nxt[0] - agv.pos[0], nxt[1] - agv.pos[1])
-        except ValueError:
-            pass
-        return None
-
-    def resolve_arm_swaps_all(self):
-        present = getattr(self, "present_dirs", set(self.lane_coords.keys()))
-        cx, cy = self.center_x, self.center_y
-
-        for d in present:
-            agvs = self.agvs_in_lanes.get(d, [])
-            if not agvs:
+        inline_conflict = False
+        for d in dirs:
+            coords = self.lane_coords.get(d, [])
+            if not coords:
                 continue
+            # 인접 쌍 스캔
+            for i in range(len(coords) - 1):
+                front_pos = coords[i]       # center에 더 가까운 칸 (rank = i+1)
+                behind_pos = coords[i + 1]  # 그 바로 뒤칸 (rank = i+2)
 
-            ingoing_agvs = self.ingoing.get(d, [])
-            if not ingoing_agvs:
-                continue
-
-            # 가장 먼 ingoing 객체 기준
-            farthest_ingoing = max(ingoing_agvs, key=lambda a: abs(a.pos[0]-cx)+abs(a.pos[1]-cy))
-            ref_distance = abs(farthest_ingoing.pos[0]-cx) + abs(farthest_ingoing.pos[1]-cy)
-
-            # 기준 거리 안쪽에 있는 AGV만 선택
-            agvs_to_pull = [agv for agv in agvs if abs(agv.pos[0]-cx)+abs(agv.pos[1]-cy) <= ref_distance]
-            # 중심 가까운 순서로 정렬
-            agvs_to_pull.sort(key=lambda a: abs(a.pos[0]-cx)+abs(a.pos[1]-cy))
-
-            # 교차로 중심 바로 앞 칸 계산
-            out_dir = self._dir_vec(d)        # 팔 바깥 방향
-            in_dir = (-out_dir[0], -out_dir[1])  # 팔 안쪽 방향
-            center_front = (cx + out_dir[0], cy + out_dir[1])  # 교차로 중심 바로 앞 칸
-
-            for k, agv in enumerate(agvs_to_pull):
-                order_key = (k, 0)
-
-                # AGV가 이미 중심 앞 칸이면 당기지 않음
-                if (agv.pos[0], agv.pos[1]) == center_front:
-                    self._plan_add(agv.id, (0,0), PR_PULL, (k, 0))
+                rec_front = pos2rec.get(front_pos)
+                rec_behind = pos2rec.get(behind_pos)
+                if not rec_front or not rec_behind:
                     continue
 
-                self._plan_add(agv.id, in_dir, PR_PULL, order_key)
+                # 둘 다 같은 레인 d에 있어야 함
+                if rec_front.get('current_arm') != d or rec_behind.get('current_arm') != d:
+                    continue
 
+                nxt_front  = rec_front.get('exit_arm')
+                nxt_behind = rec_behind.get('exit_arm')
 
-    # Intersection에 유틸 3개 추가
-    def begin_plan(self):
-        self._plan_moves.clear()
-        self._plan_prio.clear()
-        self._plan_order.clear()
+                # 앞칸이 '바깥쪽', 뒤칸이 '안쪽(센터)' 의도면 서로 충돌
+                if nxt_front == d and nxt_behind != d:
+                    inline_conflict = True
+                    break
+            if inline_conflict:
+                break
 
-    def _plan_add(self, agv_id: int, move: tuple, prio: int, order_key: tuple):
-        """개별 AGV 이동 계획을 추가/갱신(prio 큰 쪽 우선)"""
-        prev = self._plan_prio.get(agv_id, -10**9)
-        if (prio > prev) or (prio == prev and agv_id not in self._plan_moves):
-            self._plan_moves[agv_id] = move
-            self._plan_prio[agv_id] = prio
-            self._plan_order[agv_id] = (prio, *order_key)
+        self.is_deadlock = inline_conflict
+        return self.is_deadlock
+    
+    
+    def check_center_deadlock(self):
+        # --- 준비 ---
+        vec = {'N': (0, -1), 'E': (1, 0), 'S': (0, 1), 'W': (-1, 0)}
+        center = (self.center_x, self.center_y)
+        dirs4 = ('N', 'E', 'S', 'W')
+        front_cell = {d: (self.center_x + vec[d][0], self.center_y + vec[d][1]) for d in dirs4}
 
-    def finalize_plan(self):
-        """수집된 계획을 control_buffer/push_sequence로 커밋"""
-        # 1) control_buffer 채우기
-        for agv_id, mv in self._plan_moves.items():
-            self.controller.control_buffer[agv_id] = mv
-        # 2) 우선순위 정렬: prio 내림차순 → order_key 오름차순 → agv_id
-        items = []
-        for agv_id, (prio, *order) in self._plan_order.items():
-            items.append(( -prio, tuple(order), agv_id ))  # prio 큰 게 먼저이므로 음수
-        items.sort()
-        seq = []
-        seen = set()
-        for _, _, aid in items:
-            if aid not in seen:
-                seen.add(aid)
-                seq.append(aid)
-        self.controller.push_sequence = seq
+        center_rec = None
+        center_amr = None
+        exit_dir = None
 
-    def _plan_push_chain(self, d: str):
-        """센터에서 d 방향으로 밀어내기: tail→...→head→center 순으로 한 칸"""
-        chain = self._collect_chain_near_to_far(d)  # [head,...,tail]
-        if self.center_agv is None:
-            return
-        dx, dy = self._dir_vec(d)
-        move = (dx, dy)
+        # 수집용(단일 순회로 채움)
+        exists_ingress = {d: False for d in dirs4}   # cur==d & nxt!=d 가 존재하는지
+        front_occupied = {d: False for d in dirs4}   # front 셀 점유 여부
+        front_ingressor = {}                         # front에서 센터로 들어오려는 amr (최대 1/방향)
 
-        PR_PUSH = 100  # 끌어오기보다 높은 우선순위
+        # --- 1-pass: self.amr_intent_map 단 한 번 순회 ---
+        for rec in self.amr_intent_map.values():
+            a = rec.get('amr_obj')
+            cur = rec.get('current_arm')
+            nxt = rec.get('exit_arm')
 
-        # tail -> ... -> head 순으로 order_key를 작게
-        for k, agv_id in enumerate(reversed(chain)):
-            # tail이 k=0이 되도록
-            order_key = (0, k)  # 같은 팔 내 상대순서만 있으면 충분
-            self._plan_add(agv_id, move, PR_PUSH, order_key)
+            if cur == 'C':
+                center_rec = rec
+                center_amr = a
+                exit_dir = nxt
+                continue
 
-        # center는 마지막에
-        center_order = (1, 0)
-        self._plan_add(self.center_agv.id, move, PR_PUSH, center_order)
+            if cur in dirs4 and a:
+                # cur 방향에서 '센터로 들어오려는(amr)' 존재 여부
+                if nxt != cur:
+                    exists_ingress[cur] = True
+
+                # front 셀 점유/진입자 기록
+                if a.pos == front_cell[cur]:
+                    front_occupied[cur] = True
+                    if nxt != cur and cur not in front_ingressor:
+                        front_ingressor[cur] = a
+
+        # --- 데드락 예측 조건 확인 ---
+        if not center_rec or exit_dir not in dirs4:
+            return False
+        conflict_exists = exists_ingress[exit_dir]
+        if not conflict_exists:
+            return False
+
+        # 데드락 플래그
+        self.is_deadlock = True
+
+        # --- 주입 1: 모든 front 진입자(4방향) 1틱 제자리 대기 [pos,pos]+tail ---
+        for d, amr in front_ingressor.items():
+            pos = amr.pos
+            path = amr.path
+            try:
+                j = path.index(pos)
+                tail = path[j+1:]
+            except ValueError:
+                tail = path[:]
+            new_path = [pos, pos] + tail
+            amr.set_path(new_path)
+
+        # --- 주입 2: 중앙 AMR 이동(출구 우선, 막히면 빈 front로 center→alt→center) ---
+        #   - 출구 front가 비어 있으면 주입 없이 종료
+        if not front_occupied.get(exit_dir, False):
+            return True
+
+        #   - 비어있는 다른 front로 짧게 피신
+        for d in dirs4:
+            if d == exit_dir:
+                continue
+            # 해당 방향 레인이 존재하지 않으면 skip
+            if d not in self.lane_coords:
+                continue
+            if not front_occupied.get(d, False):
+                alt_front = front_cell[d]
+                path_c = center_amr.path
+                if center in path_c:
+                    i = path_c.index(center)
+                    tail_c = path_c[i+1:]
+                else:
+                    tail_c = path_c[:]
+                new_path_c = [center, alt_front, center] + tail_c
+                center_amr.set_path(new_path_c)
+                break  # 한 방향만 주입
+
+        return True
+        
+    
+    def plan_action(self):
+        """
+        Deadlock 해소용 액션 시퀀스 계산기.
+        - 입력: self.amr_intent_map 스냅샷 (각 AMR의 current_arm, exit_arm, amr_obj.pos)
+        - 스택: 교차로 4방향(N,E,S,W) 레인을 스택으로 보고, TOP은 센터에 가장 가까운 칸
+        - 액션: (src_dir, dst_dir)  # src의 TOP을 dst의 TOP으로 옮김 (개념적 이동)
+        - 용량: 각 스택 용량은 교차로 팔 길이(len_N/E/S/W)
+        - 반환: 액션 리스트 [(N,E), (E,S), ...]
+        실제 AMR 이동은 하지 않으며, 경로 세그먼트 주입 전 “계획”만 산출.
+        """
+        actions = []
+
+        stacks, true_target = self.build_stacks_from_snapshot()
+        capacity = {'N': self.len_N, 'E': self.len_E, 'S': self.len_S, 'W': self.len_W}
+        dirs = list(stacks.keys())
+        if not dirs:
+            return []
+        
+        # ---------- 1) 초기화 및 가짜 라벨링 ----------
+        # 1.1 버퍼 그룹 선택
+        buffer_dir = sorted(((len(stacks[d]), d) for d in dirs))[0][1]
+        print(f"Buffer dir: {buffer_dir}")
+
+        # 1.2 버퍼/주요/잉여 그룹 분류
+        items_per_tgt = {d: [] for d in dirs}
+        for aid, tgt in true_target.items():
+            if tgt in items_per_tgt:
+                items_per_tgt[tgt].append(aid)
+        
+        # 주요 그룹: 버퍼가 아닌 각 색(=exit_arm) d에 대해 cap[d]까지 선발(우선: 이미 d 스택에 있는 아이템)
+        major = set()
+        for d in dirs:
+            if d == buffer_dir:
+                continue
+            want = items_per_tgt.get(d, [])
+            in_d = [aid for aid in stacks[d] if true_target.get(aid) == d]  # 현재 d에 있는 d-타깃
+            rest = [aid for aid in want if aid not in in_d]                 # d가 목표지만 d 스택엔 없는 애들
+            picked = in_d + rest
+            for aid in picked[:capacity.get(d, 0)]:
+                major.add(aid)
+
+        buffer_group = {aid for aid, t in true_target.items() if t == buffer_dir}
+        surplus = {aid for aid, t in true_target.items() if aid not in major and aid not in buffer_group}
+
+        # 1.3 가짜 목표: 주요=진짜 목표 유지, 버퍼/잉여는 버퍼 제외 가장 적게 배정된 스택 순으로 배정(용량 초과는 피함)
+        fake_target = {}
+        for aid in major:
+            fake_target[aid] = true_target[aid]
+        
+        nonbuf = [d for d in dirs if d != buffer_dir and d in stacks]
+        planned_count = {d: sum(1 for aid in major if true_target.get(aid) == d) for d in nonbuf}
+
+        for group in (buffer_group, surplus):
+            for aid in group:
+                cur = self.amr_intent_map[aid]['current_arm']
+                if cur not in stacks:
+                    continue
+                if not nonbuf:
+                    continue
+
+                # 아직 '계획상' 빈자리(capacity 여유)가 있는 비-버퍼 스택 후보들
+                selectable = [d for d in nonbuf if planned_count.get(d, 0) < capacity.get(d, 0)]
+
+                if selectable:
+                    # planned_count가 가장 작은 스택(동률이면 NESW 순) 선택
+                    d = min(selectable, key=lambda x: (planned_count.get(x, 0), 'NESW'.index(x)))
+                    fake_target[aid] = d
+                    planned_count[d] = planned_count.get(d, 0) + 1
+                else:
+                    # 모든 비-버퍼 스택이 계획상 가득 찬 경우: 폴백
+                    # - 현재 스택이 버퍼가 아니면 거기로
+                    # - 버퍼면 비-버퍼 중 planned_count 가장 작은 곳으로(동률 NESW)
+                    fallback = cur if cur != buffer_dir else min(nonbuf, key=lambda x: (planned_count.get(x, 0), 'NESW'.index(x)))
+                    fake_target[aid] = fallback
+
+        print(f"Fake target: {fake_target}")
+        print(f"True target: {true_target}")
+
+        # ---------- 2) 1차 정렬(분할, 정복) ----------
+        def move(src, dst):
+            if src not in stacks or dst not in stacks:
+                return False
+            if not stacks[src]:
+                return False
+            if len(stacks[dst]) >= capacity.get(dst, 0):
+                return False
+
+            aid = stacks[src].pop(0)        # pop top
+            stacks[dst].insert(0, aid)      # push top
+            actions.append((src, dst))
+
+            # 디버그 출력: 매 액션 직후 전체 스택 스냅샷 (TOP이 0번)
+            order = "NESW"
+            snap = " | ".join(
+                f"{d}:TOP {stacks[d]}" for d in order if d in stacks
+            )
+            print(f"[{len(actions):03d}] {src}->{dst}  buffer={buffer_dir}  ||  {snap}")
+
+            return True
+        
+        # ---------- 2.1 Divide: (fake_target) 기준 좌/우 파티션 (버퍼 제외) ----------
+        left_canon, right_canon = ('N', 'E'), ('S', 'W')
+
+        # 좌/우에 올 수 있는 방향 집합(버퍼는 제외)
+        left_dirs = tuple(d for d in left_canon if d in dirs and d != buffer_dir)
+        right_dirs = tuple(d for d in right_canon if d in dirs and d != buffer_dir)
+
+        # ---------- 2.2 Conquer-Prep: 버퍼 스택 완전 비우기 ----------
+        print("2.2 Empty buffer stack")
+        nesw_order = "NESW"
+
+        # 버퍼 TOP부터 하나씩 비우기
+        while stacks[buffer_dir]:
+            aid = stacks[buffer_dir][0]
+            goal = fake_target[aid]
+
+            # 1) 목표 스택으로 먼저 시도 (버퍼가 목표인 경우는 의미 없으니 제외)
+            if goal in dirs and goal != buffer_dir and len(stacks[goal]) < capacity.get(goal, 0):
+                print("moving to goal stack")
+                move(buffer_dir, goal)
+                continue
+
+            # 2) 목표가 없거나 가득 차 있으면, 가장 덜 찬 비-버퍼로 이동
+            candidates = [d for d in dirs if d != buffer_dir and len(stacks[d]) < capacity.get(d, 0)]
+            dst = min(candidates, key=lambda x: (len(stacks[x]), nesw_order.index(x)))
+            print("moving to least-filled non-buffer stack")
+            move(buffer_dir, dst)
+            
+        # ---------- 2.3 Conquer: 각 스택을 좌/우 두 블록으로 재배치 ----------
+        print("2.3 Reorganize stacks into two blocks")
+        # 처리 순서: NESW(버퍼 제외)
+        order_dirs = [d for d in nesw_order if d in dirs and d != buffer_dir]
+        
+        for A in order_dirs:
+            # A가 속한 그룹과 반대 그룹 정의
+            if A in left_dirs:
+                keep_group = set(left_dirs)
+                opp_group = set(right_dirs)
+            else:
+                keep_group = set(right_dirs)
+                opp_group = set(left_dirs)
+
+            # A에 남길(keep) 아이템 수
+            K = 0
+            for aid in stacks[A]:
+                if fake_target.get(aid) in keep_group:
+                    K += 1
+
+            if K == len(stacks[A]):
+                continue  # 이미 정렬된 상태
+
+            # 임시 저장용 스택 B: 반대쪽 중 '남은 용량'이 가장 큰 곳(동률 NESW)
+            opp_candidates = [d for d in opp_group if d in stacks]
+            B = max(opp_candidates, key=lambda x: (capacity.get(x, 0) - len(stacks[x]), -nesw_order.index(x)))
+
+            # B에 K개 담을 공간 확보: B -> buffer로 비우기
+            while capacity.get(B, 0) - len(stacks[B]) < K and stacks[B]:
+                print("moving to buffer to make space in B")
+                move(B, buffer_dir)
+
+            # A에서 keep 아이템을 제외한 나머지(opp 그룹)를 B로 이동
+            while stacks[A]:
+                aid_top = stacks[A][0]
+                tgt = fake_target.get(aid_top)
+
+                if tgt in keep_group:
+                    print("moving to B (keep group)")
+                    move(A, B)
+                else:
+                    print("moving to buffer (opp group)")
+                    move(A, buffer_dir)
+
+            # A 재조립: B에 임시 보관한 keep K개를 A로 되돌려 두 블록화 (keep이 A TOP에 연속 배치됨)
+            cnt = 0
+            while cnt < K and stacks[B] and len(stacks[A]) < capacity.get(A, 0):
+                print("reassembling A from B")
+                move(B, A)
+                cnt += 1
+
+            # buffer 비우기: A/B 중 그룹에 따라 복귀, A가 꽉 차면 B로, 둘 다 꽉 차면 중단
+            while stacks.get(buffer_dir, []):
+                aidb = stacks[buffer_dir][0]
+                tgt = fake_target.get(aidb)
+
+                # A/B 그룹 판단: keep_group(=A쪽), opp_group(=B쪽)
+                to_A = (tgt in keep_group)
+                to_B = (tgt in opp_group)
+
+                # 기본 우선순위: 자신의 그룹 스택으로 (A 우선 또는 B 우선)
+                if to_A:
+                    primary, secondary = A, B
+                elif to_B:
+                    primary, secondary = B, A
+
+                if len(stacks[primary]) < capacity.get(primary, 0):
+                    print("moving to primary group stack")
+                    move(buffer_dir, primary)
+                    continue
+                if len(stacks[secondary]) < capacity.get(secondary, 0):
+                    print("moving to secondary group stack")
+                    move(buffer_dir, secondary)
+                    continue
+
+        # ---------- 2.4 Recursive: 하위 그룹(N|E), (S|W)에도 정복 반복 ----------
+        print("2.4 Recursive on sub-groups")
+        # 하위 그룹 후보 만들기(버퍼 제외, 존재하는 팔만)
+        subproblems = []
+        pair_left = tuple(d for d in left_canon if d in dirs and d != buffer_dir)
+        pair_right = tuple(d for d in right_canon if d in dirs and d != buffer_dir)
+        if len(pair_left)  == 2: subproblems.append(((pair_left[0],),  (pair_left[1],)))
+        if len(pair_right) == 2: subproblems.append(((pair_right[0],), (pair_right[1],)))
+        
+        for left_sub, right_sub in subproblems:
+            sub_dirs = left_sub + right_sub
+            order_sub = [d for d in nesw_order if d in sub_dirs and d != buffer_dir]
+
+            for A in order_sub:
+                if A in left_sub:
+                    keep_group = set(left_sub)
+                    opp_group = set(right_sub)
+                else:
+                    keep_group = set(right_sub)
+                    opp_group = set(left_sub)
+
+                # A에 남길(keep) 개수
+                K = 0
+                for aid in stacks[A]:
+                    if fake_target.get(aid) in keep_group:
+                        K += 1
+
+                # 이미 원하는 그룹만 포함되어 있으면 스킵
+                if K == len(stacks[A]):
+                    continue
+                
+                # 임시 저장 B(반대쪽 단일 스택)
+                opp_list = [d for d in opp_group if d in stacks]
+                B = opp_list[0]
+
+                # B에 K개 담을 공간 확보: B -> buffer (필요 시 buffer를 A/B로 흘려서 한 칸 만들기)
+                while capacity.get(B, 0) - len(stacks[B]) < K and stacks[B]:
+                    move(B, buffer_dir)
+
+                # A 분류: TOP에서 꺼내며 keep은 B로 임시보관, 나머지는 buffer로
+                while stacks[A]:
+                    aid_top = stacks[A][0]
+                    tgt = fake_target.get(aid_top)
+
+                    if tgt in keep_group:
+                        move(A, B)
+                    else:
+                        move(A, buffer_dir)
+
+                # A 재조립: B에 임시 보관한 keep K개를 A로 되돌려, A에 keep 블록 연속 배치
+                cnt = 0
+                while cnt < K and stacks[B] and len(stacks[A]) < capacity.get(A, 0):
+                    move(B, A)
+                    cnt += 1
+
+                # buffer 비우기: A/B 중 그룹에 따라 복귀 (A 꽉 차면 B, 둘 다 꽉 차면 중단)
+                while stacks.get(buffer_dir, []):
+                    aidb = stacks[buffer_dir][0]
+                    tgt = fake_target.get(aidb)
+
+                    to_A = (tgt in keep_group)
+                    to_B = (tgt in opp_group)
+
+                    if to_A:
+                        primary, secondary = A, B
+                    elif to_B:
+                        primary, secondary = B, A
+
+                    if len(stacks[primary]) < capacity.get(primary, 0):
+                        move(buffer_dir, primary)
+                        continue
+                    if len(stacks[secondary]) < capacity.get(secondary, 0):
+                        move(buffer_dir, secondary)
+                        continue
+
+        # ---------- 3) True-target refinement: fake → true ----------
+        # 각 방향 A를 한 번씩만 처리: A에 가짜≠진짜인 아이템이 있고 TOP이 아니면
+        # 그 아이템을 TOP까지 끌어올려 true_target으로 보낸 뒤, 양보/버퍼를 A로 복구
+        print("3. True-target refinement")
+        for A in order_dirs:
+            candB = [d for d in dirs if d not in (A, buffer_dir)]
+            B = min(candB, key=lambda x: (len(stacks[x]), nesw_order.index(x)))
+
+            idx = None
+            for i, aid in enumerate(reversed(stacks[A])):
+                if true_target.get(aid) != fake_target.get(aid):
+                    idx = len(stacks[A]) - 1 - i
+                    break
+            if idx is None or idx == 0:
+                continue    # A는 이미 true_target과 일치
+            
+            # A에 남길(keep) 개수
+            K = 0
+            for aid in stacks[A]:
+                if true_target.get(aid) in keep_group:
+                    K += 1
+
+            # 이미 원하는 그룹만 포함되어 있으면 스킵
+            if K == len(stacks[A]):
+                continue
+                
+            # 임시 저장용 스택 B: 아이템 수가 가장 적은 곳(동률 NESW)
+            candB = [d for d in dirs if d not in (A, buffer_dir)]
+            B = min(candB, key=lambda x: (len(stacks[x]), nesw_order.index(x)))
+
+            # B에 K개 담을 공간 확보: B -> buffer로 비우기
+            while capacity.get(B, 0) - len(stacks[B]) < K and stacks[B]:
+                move(B, buffer_dir)
+
+            # A에서 keep 아이템을 제외한 나머지(opp 그룹)를 B로 이동
+            while stacks[A]:
+                aid_top = stacks[A][0]
+                tgt = true_target.get(aid_top)
+                if tgt == A:
+                    move(A, B)
+                else:
+                    move(A, buffer_dir)
+
+            # A 재조립: B에 임시 보관한 keep K개를 A로 되돌려 두 블록화 (keep이 A TOP에 연속 배치됨)
+            cnt = 0
+            while cnt < K and stacks[B] and len(stacks[A]) < capacity.get(A, 0):
+                move(B, A)
+                cnt += 1
+
+            # buffer 비우기: A/B 중 그룹에 따라 복귀, A가 꽉 차면 B로, 둘 다 꽉 차면 중단
+            while stacks.get(buffer_dir, []):
+                aidb = stacks[buffer_dir][0]
+                tgt = fake_target.get(aidb)
+
+                if tgt == A:
+                    primary, secondary = A, B
+                else:
+                    primary, secondary = B, A
+
+                if len(stacks[primary]) < capacity.get(primary, 0):
+                    move(buffer_dir, primary)
+                    continue
+                if len(stacks[secondary]) < capacity.get(secondary, 0): 
+                    move(buffer_dir, secondary)
+                    continue
+
+        # ---------- 3.1 Final push: buffer_group TOPs → buffer_dir ----------
+        # 잉여(surplus)는 건드리지 않음. true_target이 buffer_dir인 것만 최종 이동.
+        print("3.1 Final push to buffer dir")
+        for A in order_dirs:
+            while stacks[A]:
+                aid_top = stacks[A][0]
+                # A의 TOP이 버퍼 그룹이 아니면 다음 A로
+                if true_target.get(aid_top) != buffer_dir:
+                    break
+                move(A, buffer_dir)
+
+        return actions
+        
+    def build_stacks_from_snapshot(self):
+        """
+        return:
+            stacks  = {'N': [5, 3], 'S': [8], 'W': [2, 7]}  # 5가 N의 TOP
+            targets = {5: 'E', 3: 'E', 8: 'N', 2: 'W', 7: 'S'}
+        """
+        stacks = {d: [] for d in self.present_dirs}
+        targets = {}
+
+        pos2id = {rec['amr_obj'].pos: aid for aid, rec in self.amr_intent_map.items() if rec.get('current_arm') in stacks}
+
+        for d, coords, in self.lane_coords.items():
+            if d not in stacks:
+                continue
+            for p in coords:
+                if p in pos2id:
+                    aid = pos2id[p]
+                    stacks[d].append(aid)
+        
+        for aid, rec in self.amr_intent_map.items():
+            tgt = rec['exit_arm']
+            if tgt in stacks:
+                targets[aid] = tgt
+        
+        return stacks, targets
+    
