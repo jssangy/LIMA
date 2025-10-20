@@ -231,14 +231,14 @@ class Intersection:
 
         stacks, targets = self.build_stacks_from_snapshot()
         capacity = {'N': self.len_N, 'E': self.len_E, 'S': self.len_S, 'W': self.len_W}
-        dirs = list(stacks.keys())
+        dirs = [d for d in "NESW" if d in self.present_dirs]
 
         # === [000] 초기 스냅샷 출력 ===
         order = "NESW"
         snap_parts = []
         for d in order:
             if d in stacks:
-                row = "[" + ", ".join(targets.get(a, "?") for a in stacks[d]) + "]"
+                row = "[" + ", ".join(targets.get(a, "?") for a in reversed(stacks[d])) + "]"
                 snap_parts.append(f"{d}:TOP {row}")
         snap = " | ".join(snap_parts)
         print(f"[000] INIT ||  {snap}")
@@ -263,8 +263,8 @@ class Intersection:
                 candidates = [d for d in dirs if d != P and len(stacks[d]) < capacity[d]]
                 candidate = min(candidates, key=lambda d: len(stacks[d]), default=None)
                 if candidate:
-                    aid = stacks[P].pop(0)
-                    stacks[candidate].insert(0, aid)
+                    aid = stacks[P].pop()
+                    stacks[candidate].append(aid)
                     actions.append((P, candidate))
                     progressed = True
 
@@ -273,7 +273,7 @@ class Intersection:
                     snap_parts = []
                     for d in order:
                         if d in stacks:
-                            row = "[" + ", ".join(targets.get(a, "?") for a in stacks[d]) + "]"
+                            row = "[" + ", ".join(targets.get(a, "?") for a in reversed(stacks[d])) + "]"
                             snap_parts.append(f"{d}:TOP {row}")
                     snap = " | ".join(snap_parts)
                     print(f"[{len(actions):03d}] {P}->{candidate} ||  {snap}")
@@ -301,7 +301,7 @@ class Intersection:
             stack_src = stacks[src]
             if not stack_src:
                 continue
-            top_id = stack_src[0]
+            top_id = stack_src[-1]
             goal = targets.get(top_id)
 
             # 이미 목표에 도달했으면 스킵
@@ -314,8 +314,8 @@ class Intersection:
 
             # 목표 스택이 비어있거나 'goal' 색으로만 이루어져 있고, 여유칸이 있으면 즉시 이동
             if goal_pure and has_room:
-                stack_src.pop(0)
-                stacks[goal].insert(0, top_id)
+                stack_src.pop()
+                stacks[goal].append(top_id)
                 actions.append((src, goal))
 
 
@@ -324,7 +324,7 @@ class Intersection:
                 snap_parts = []
                 for d in order:
                     if d in stacks:
-                        row = "[" + ", ".join(targets.get(a, "?") for a in stacks[d]) + "]"
+                        row = "[" + ", ".join(targets.get(a, "?") for a in reversed(stacks[d])) + "]"
                         snap_parts.append(f"{d}:TOP {row}")
                 snap = " | ".join(snap_parts)
                 print(f"[{len(actions):03d}] {src}->{goal} ||  {snap}")
@@ -349,7 +349,7 @@ class Intersection:
         for d, coords, in self.lane_coords.items():
             if d not in stacks:
                 continue
-            for p in coords:
+            for p in reversed(coords):
                 if p in pos2id:
                     aid = pos2id[p]
                     stacks[d].append(aid)
