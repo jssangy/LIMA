@@ -1,30 +1,83 @@
 # === quick_sim_plan_action.py ===
 from copy import deepcopy
+import time
 
 # 1) 프로젝트의 Intersection import (경로는 네 프로젝트에 맞게 수정)
 # from utils.Intersection import Intersection
 from utils.Intersection import Intersection  # 예시: 같은 폴더/패키지에 있을 때
 
-# 2) 테스트용 Intersection 인스턴스 (팔 길이는 초기 스택보다 넉넉하게!)
+CAP = 5  # 모든 팔 길이 5
+
+# ------------------------------------------------------------
+# 간편 스펙 -> (init_stacks, true_target) 변환기
+# ------------------------------------------------------------
+def make_case_from_goal_spec(goal_spec, cap=CAP, start_id=1):
+    """
+    goal_spec 예:
+      {"N": ["S","E","W","N"], "E": ["N","W","E"], "S": "NW", "W": "EN"}
+    반환:
+      init_stacks: {"N":[1,2,...], ...}  # TOP=0번
+      true_target: {1:"S", 2:"E", ...}   # ID -> 목표팔
+    """
+    order = ["N","E","S","W"]
+
+    def norm(goals):
+        # 리스트/튜플: 원소들을 대문자 문자열로
+        if isinstance(goals, (list, tuple)):
+            return [str(x).strip().upper() for x in goals if str(x).strip()]
+        # 문자열: "SEWN" 또는 "S E W N" 또는 "S,E,W,N" 모두 허용
+        if isinstance(goals, str):
+            s = goals.strip().upper()
+            # 공백/콤마 기준 토큰화
+            tokens = [t for t in s.replace(",", " ").split() if t]
+            # 토큰이 하나고 길이가 2이상이면 문자 분해("SEWN" -> ["S","E","W","N"])
+            if len(tokens) == 1 and len(tokens[0]) > 1:
+                tokens = list(tokens[0])
+            return tokens
+        raise ValueError(f"Unsupported goals type: {type(goals)}")
+
+    # 유효성 및 변환
+    init_stacks = {d: [] for d in order if d in goal_spec}
+    true_target = {}
+    next_id = start_id
+
+    for arm in order:
+        if arm not in goal_spec:
+            continue
+        goals = norm(goal_spec[arm])
+        if any(g not in order for g in goals):
+            bad = [g for g in goals if g not in order]
+            raise ValueError(f"Invalid goal(s) {bad} in arm {arm}. Use only N/E/S/W.")
+        if len(goals) > cap:
+            raise ValueError(f"Arm {arm} has {len(goals)} items but cap is {cap}.")
+        # 입력 순서 그대로(=TOP이 0번)
+        for g in goals:
+            init_stacks[arm].append(next_id)
+            true_target[next_id] = g
+            next_id += 1
+
+    return init_stacks, true_target
+
+# ------------------------------------------------------------
+# 여기만 간단히 적으면 됩니다 👇
+#   - TOP은 리스트/문자열의 맨 앞입니다.
+# ------------------------------------------------------------
+goal_spec = {
+    "N": "SEW",   
+    "E": "WSNN",
+    "S": "NWEN",       
+    "W": "ENSN",
+}
+
+# 2) Intersection 인스턴스 (팔 길이 5, present_dirs는 스펙 키에서 자동)
 I = Intersection(
-    intersection_data=(10, 10, 5, 5, 5, 5),   # (cx, cy, len_N, len_E, len_S, len_W)
+    intersection_data=(10, 10, CAP, CAP, CAP, CAP),
     neighbors_map={},
-    present_dirs={'N', 'E', 'S', 'W'},
+    present_dirs=set(goal_spec.keys()),
 )
 
-# 3) 초기 스택 상태 정의: TOP이 리스트의 0번 입니다!
-#    예: N에 [1,2]면 1이 TOP(센터에서 가장 가까움), 2가 그 뒤.
-init_stacks = {
-        'N': [1, 2, 3],  # 1->N(정답), 2->E(이질), 3->N
-        'E': [4],        # -> W
-        'S': [5],        # -> N
-        'W': [6],        # -> S
-}
-
-# 4) 아이템별 '진짜 목표' 매핑
-true_target = {
-        1:'N', 2:'E', 3:'N', 4:'W', 5:'N', 6:'S'
-}
+# 3) 간편 스펙을 실제 init_stacks/true_target으로 확장
+init_stacks, true_target = make_case_from_goal_spec(goal_spec, cap=CAP)
 
 # (참고) plan_action은 우리가 아래에서 몽키패치할 build_stacks_from_snapshot()의
 # 반환값을 사용하므로 amr_intent_map을 채우지 않아도 됩니다.
@@ -74,12 +127,15 @@ def pretty(stacks):
     return " | ".join(f"{d}:{ids}" for d, ids in stacks.items())
 
 ok = True
+
+start_time = time.time()
 for (src, dst) in actions:
     if not apply_action(final_stacks, src, dst):
         ok = False
+end = time.time()
 
 # 9) 결과 출력 및 단언
-print("\n=== Simulation Result ===")
+print(f"\n=== Simulation Result (Time: {end - start_time}s) ====")
 print(f"Actions ({len(actions)} moves): {actions[:15]}{' ...' if len(actions)>15 else ''}")
 print("Final stacks:", pretty(final_stacks))
 print("Capacities :", cap)
