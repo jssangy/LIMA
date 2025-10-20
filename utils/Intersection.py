@@ -222,361 +222,119 @@ class Intersection:
     
     def plan_action(self):
         """
-        Deadlock 해소용 액션 시퀀스 계산기.
-        - 입력: self.amr_intent_map 스냅샷 (각 AMR의 current_arm, exit_arm, amr_obj.pos)
-        - 스택: 교차로 4방향(N,E,S,W) 레인을 스택으로 보고, TOP은 센터에 가장 가까운 칸
-        - 액션: (src_dir, dst_dir)  # src의 TOP을 dst의 TOP으로 옮김 (개념적 이동)
-        - 용량: 각 스택 용량은 교차로 팔 길이(len_N/E/S/W)
-        - 반환: 액션 리스트 [(N,E), (E,S), ...]
-        실제 AMR 이동은 하지 않으며, 경로 세그먼트 주입 전 “계획”만 산출.
+        Round Robin 스택 재정렬 규칙에 따라 (src, dst) 이동 시퀀스를 생성해 반환.
+        - src, dst ∈ {'N','E','S','W'}
+        - source 스택의 TOP 아이템을 destination 스택의 TOP으로 '개념적으로' 이동하는 튜플을 actions에 누적
+        - 현재 self.amr_intent_map의 상태로부터 스택을 구성하여 순수하게 계획만 세움(환경 변경 X)
         """
         actions = []
 
-        stacks, true_target = self.build_stacks_from_snapshot()
+        stacks, targets = self.build_stacks_from_snapshot()
         capacity = {'N': self.len_N, 'E': self.len_E, 'S': self.len_S, 'W': self.len_W}
         dirs = list(stacks.keys())
-        if not dirs:
-            return []
-        
-        # ---------- 1) 초기화 및 가짜 라벨링 ----------
-        # 1.1 버퍼 그룹 선택
-        buffer_dir = sorted(((len(stacks[d]), d) for d in dirs))[0][1]
-        print(f"Buffer dir: {buffer_dir}")
 
-        # 1.2 버퍼/주요/잉여 그룹 분류
-        items_per_tgt = {d: [] for d in dirs}
-        for aid, tgt in true_target.items():
-            if tgt in items_per_tgt:
-                items_per_tgt[tgt].append(aid)
-        
-        # 주요 그룹: 버퍼가 아닌 각 색(=exit_arm) d에 대해 cap[d]까지 선발(우선: 이미 d 스택에 있는 아이템)
-        major = set()
-        for d in dirs:
-            if d == buffer_dir:
-                continue
-            want = items_per_tgt.get(d, [])
-            in_d = [aid for aid in stacks[d] if true_target.get(aid) == d]  # 현재 d에 있는 d-타깃
-            rest = [aid for aid in want if aid not in in_d]                 # d가 목표지만 d 스택엔 없는 애들
-            picked = in_d + rest
-            for aid in picked[:capacity.get(d, 0)]:
-                major.add(aid)
+        # === [000] 초기 스냅샷 출력 ===
+        order = "NESW"
+        snap_parts = []
+        for d in order:
+            if d in stacks:
+                row = "[" + ", ".join(targets.get(a, "?") for a in stacks[d]) + "]"
+                snap_parts.append(f"{d}:TOP {row}")
+        snap = " | ".join(snap_parts)
+        print(f"[000] INIT ||  {snap}")
+        # ============================
 
-        buffer_group = {aid for aid, t in true_target.items() if t == buffer_dir}
-        surplus = {aid for aid, t in true_target.items() if aid not in major and aid not in buffer_group}
+        # 라운드로빈 상태
+        pivot_idx = 0
+        no_progress_count = 0
 
-        # 1.3 가짜 목표: 주요=진짜 목표 유지, 버퍼/잉여는 버퍼 제외 가장 적게 배정된 스택 순으로 배정(용량 초과는 피함)
-        fake_target = {}
-        for aid in major:
-            fake_target[aid] = true_target[aid]
-        
-        nonbuf = [d for d in dirs if d != buffer_dir and d in stacks]
-        planned_count = {d: sum(1 for aid in major if true_target.get(aid) == d) for d in nonbuf}
-
-        for group in (buffer_group, surplus):
-            for aid in group:
-                cur = self.amr_intent_map[aid]['current_arm']
-                if cur not in stacks:
-                    continue
-                if not nonbuf:
-                    continue
-
-                # 아직 '계획상' 빈자리(capacity 여유)가 있는 비-버퍼 스택 후보들
-                selectable = [d for d in nonbuf if planned_count.get(d, 0) < capacity.get(d, 0)]
-
-                if selectable:
-                    # planned_count가 가장 작은 스택(동률이면 NESW 순) 선택
-                    d = min(selectable, key=lambda x: (planned_count.get(x, 0), 'NESW'.index(x)))
-                    fake_target[aid] = d
-                    planned_count[d] = planned_count.get(d, 0) + 1
-                else:
-                    # 모든 비-버퍼 스택이 계획상 가득 찬 경우: 폴백
-                    # - 현재 스택이 버퍼가 아니면 거기로
-                    # - 버퍼면 비-버퍼 중 planned_count 가장 작은 곳으로(동률 NESW)
-                    fallback = cur if cur != buffer_dir else min(nonbuf, key=lambda x: (planned_count.get(x, 0), 'NESW'.index(x)))
-                    fake_target[aid] = fallback
-
-        print(f"Fake target: {fake_target}")
-        print(f"True target: {true_target}")
-
-        # ---------- 2) 1차 정렬(분할, 정복) ----------
-        def move(src, dst):
-            if src not in stacks or dst not in stacks:
-                return False
-            if not stacks[src]:
-                return False
-            if len(stacks[dst]) >= capacity.get(dst, 0):
-                return False
-
-            aid = stacks[src].pop(0)        # pop top
-            stacks[dst].insert(0, aid)      # push top
-            actions.append((src, dst))
-
-            # 디버그 출력: 매 액션 직후 전체 스택 스냅샷 (TOP이 0번)
-            order = "NESW"
-            snap = " | ".join(
-                f"{d}:TOP {stacks[d]}" for d in order if d in stacks
-            )
-            print(f"[{len(actions):03d}] {src}->{dst}  buffer={buffer_dir}  ||  {snap}")
-
-            return True
-        
-        # ---------- 2.1 Divide: (fake_target) 기준 좌/우 파티션 (버퍼 제외) ----------
-        left_canon, right_canon = ('N', 'E'), ('S', 'W')
-
-        # 좌/우에 올 수 있는 방향 집합(버퍼는 제외)
-        left_dirs = tuple(d for d in left_canon if d in dirs and d != buffer_dir)
-        right_dirs = tuple(d for d in right_canon if d in dirs and d != buffer_dir)
-
-        # ---------- 2.2 Conquer-Prep: 버퍼 스택 완전 비우기 ----------
-        print("2.2 Empty buffer stack")
-        nesw_order = "NESW"
-
-        # 버퍼 TOP부터 하나씩 비우기
-        while stacks[buffer_dir]:
-            aid = stacks[buffer_dir][0]
-            goal = fake_target[aid]
-
-            # 1) 목표 스택으로 먼저 시도 (버퍼가 목표인 경우는 의미 없으니 제외)
-            if goal in dirs and goal != buffer_dir and len(stacks[goal]) < capacity.get(goal, 0):
-                print("moving to goal stack")
-                move(buffer_dir, goal)
+        while True:
+            # 1) TOP 스캔 1회
+            if self.top_scan(stacks, targets, capacity, dirs, actions):
+                no_progress_count = 0
                 continue
 
-            # 2) 목표가 없거나 가득 차 있으면, 가장 덜 찬 비-버퍼로 이동
-            candidates = [d for d in dirs if d != buffer_dir and len(stacks[d]) < capacity.get(d, 0)]
-            dst = min(candidates, key=lambda x: (len(stacks[x]), nesw_order.index(x)))
-            print("moving to least-filled non-buffer stack")
-            move(buffer_dir, dst)
-            
-        # ---------- 2.3 Conquer: 각 스택을 좌/우 두 블록으로 재배치 ----------
-        print("2.3 Reorganize stacks into two blocks")
-        # 처리 순서: NESW(버퍼 제외)
-        order_dirs = [d for d in nesw_order if d in dirs and d != buffer_dir]
-        
-        for A in order_dirs:
-            # A가 속한 그룹과 반대 그룹 정의
-            if A in left_dirs:
-                keep_group = set(left_dirs)
-                opp_group = set(right_dirs)
+            # 2) 라운드 로빈: 현재 피벗 P에서 1건만 이동
+            P = dirs[pivot_idx]
+            progressed = False
+
+            if stacks[P] and not all(targets.get(aid) == P for aid in stacks[P]):
+                # TOP을 '가장 적게 찬' 스택으로 이동
+                candidates = [d for d in dirs if d != P and len(stacks[d]) < capacity[d]]
+                candidate = min(candidates, key=lambda d: len(stacks[d]), default=None)
+                if candidate:
+                    aid = stacks[P].pop(0)
+                    stacks[candidate].insert(0, aid)
+                    actions.append((P, candidate))
+                    progressed = True
+
+                    print(f"Round Robin Move (pivot {P}):")
+                    order = "NESW"
+                    snap_parts = []
+                    for d in order:
+                        if d in stacks:
+                            row = "[" + ", ".join(targets.get(a, "?") for a in stacks[d]) + "]"
+                            snap_parts.append(f"{d}:TOP {row}")
+                    snap = " | ".join(snap_parts)
+                    print(f"[{len(actions):03d}] {P}->{candidate} ||  {snap}")
+
+            # 피벗 내 아이템이 모두 피벗과 같은 목적지이거나 피벗이 비어있으면 업데이트
+            if not stacks[P] or all(targets.get(aid) == P for aid in stacks[P]):
+                pivot_idx = (pivot_idx + 1) % len(dirs)
+
+            if progressed:
+                no_progress_count = 0
             else:
-                keep_group = set(right_dirs)
-                opp_group = set(left_dirs)
-
-            # A에 남길(keep) 아이템 수
-            K = 0
-            for aid in stacks[A]:
-                if fake_target.get(aid) in keep_group:
-                    K += 1
-
-            if K == len(stacks[A]):
-                continue  # 이미 정렬된 상태
-
-            # 임시 저장용 스택 B: 반대쪽 중 '남은 용량'이 가장 큰 곳(동률 NESW)
-            opp_candidates = [d for d in opp_group if d in stacks]
-            B = max(opp_candidates, key=lambda x: (capacity.get(x, 0) - len(stacks[x]), -nesw_order.index(x)))
-
-            # B에 K개 담을 공간 확보: B -> buffer로 비우기
-            while capacity.get(B, 0) - len(stacks[B]) < K and stacks[B]:
-                print("moving to buffer to make space in B")
-                move(B, buffer_dir)
-
-            # A에서 keep 아이템을 제외한 나머지(opp 그룹)를 B로 이동
-            while stacks[A]:
-                aid_top = stacks[A][0]
-                tgt = fake_target.get(aid_top)
-
-                if tgt in keep_group:
-                    print("moving to B (keep group)")
-                    move(A, B)
-                else:
-                    print("moving to buffer (opp group)")
-                    move(A, buffer_dir)
-
-            # A 재조립: B에 임시 보관한 keep K개를 A로 되돌려 두 블록화 (keep이 A TOP에 연속 배치됨)
-            cnt = 0
-            while cnt < K and stacks[B] and len(stacks[A]) < capacity.get(A, 0):
-                print("reassembling A from B")
-                move(B, A)
-                cnt += 1
-
-            # buffer 비우기: A/B 중 그룹에 따라 복귀, A가 꽉 차면 B로, 둘 다 꽉 차면 중단
-            while stacks.get(buffer_dir, []):
-                aidb = stacks[buffer_dir][0]
-                tgt = fake_target.get(aidb)
-
-                # A/B 그룹 판단: keep_group(=A쪽), opp_group(=B쪽)
-                to_A = (tgt in keep_group)
-                to_B = (tgt in opp_group)
-
-                # 기본 우선순위: 자신의 그룹 스택으로 (A 우선 또는 B 우선)
-                if to_A:
-                    primary, secondary = A, B
-                elif to_B:
-                    primary, secondary = B, A
-
-                if len(stacks[primary]) < capacity.get(primary, 0):
-                    print("moving to primary group stack")
-                    move(buffer_dir, primary)
-                    continue
-                if len(stacks[secondary]) < capacity.get(secondary, 0):
-                    print("moving to secondary group stack")
-                    move(buffer_dir, secondary)
-                    continue
-
-        # ---------- 2.4 Recursive: 하위 그룹(N|E), (S|W)에도 정복 반복 ----------
-        print("2.4 Recursive on sub-groups")
-        # 하위 그룹 후보 만들기(버퍼 제외, 존재하는 팔만)
-        subproblems = []
-        pair_left = tuple(d for d in left_canon if d in dirs and d != buffer_dir)
-        pair_right = tuple(d for d in right_canon if d in dirs and d != buffer_dir)
-        if len(pair_left)  == 2: subproblems.append(((pair_left[0],),  (pair_left[1],)))
-        if len(pair_right) == 2: subproblems.append(((pair_right[0],), (pair_right[1],)))
-        
-        for left_sub, right_sub in subproblems:
-            sub_dirs = left_sub + right_sub
-            order_sub = [d for d in nesw_order if d in sub_dirs and d != buffer_dir]
-
-            for A in order_sub:
-                if A in left_sub:
-                    keep_group = set(left_sub)
-                    opp_group = set(right_sub)
-                else:
-                    keep_group = set(right_sub)
-                    opp_group = set(left_sub)
-
-                # A에 남길(keep) 개수
-                K = 0
-                for aid in stacks[A]:
-                    if fake_target.get(aid) in keep_group:
-                        K += 1
-
-                # 이미 원하는 그룹만 포함되어 있으면 스킵
-                if K == len(stacks[A]):
-                    continue
-                
-                # 임시 저장 B(반대쪽 단일 스택)
-                opp_list = [d for d in opp_group if d in stacks]
-                B = opp_list[0]
-
-                # B에 K개 담을 공간 확보: B -> buffer (필요 시 buffer를 A/B로 흘려서 한 칸 만들기)
-                while capacity.get(B, 0) - len(stacks[B]) < K and stacks[B]:
-                    move(B, buffer_dir)
-
-                # A 분류: TOP에서 꺼내며 keep은 B로 임시보관, 나머지는 buffer로
-                while stacks[A]:
-                    aid_top = stacks[A][0]
-                    tgt = fake_target.get(aid_top)
-
-                    if tgt in keep_group:
-                        move(A, B)
-                    else:
-                        move(A, buffer_dir)
-
-                # A 재조립: B에 임시 보관한 keep K개를 A로 되돌려, A에 keep 블록 연속 배치
-                cnt = 0
-                while cnt < K and stacks[B] and len(stacks[A]) < capacity.get(A, 0):
-                    move(B, A)
-                    cnt += 1
-
-                # buffer 비우기: A/B 중 그룹에 따라 복귀 (A 꽉 차면 B, 둘 다 꽉 차면 중단)
-                while stacks.get(buffer_dir, []):
-                    aidb = stacks[buffer_dir][0]
-                    tgt = fake_target.get(aidb)
-
-                    to_A = (tgt in keep_group)
-                    to_B = (tgt in opp_group)
-
-                    if to_A:
-                        primary, secondary = A, B
-                    elif to_B:
-                        primary, secondary = B, A
-
-                    if len(stacks[primary]) < capacity.get(primary, 0):
-                        move(buffer_dir, primary)
-                        continue
-                    if len(stacks[secondary]) < capacity.get(secondary, 0):
-                        move(buffer_dir, secondary)
-                        continue
-
-        # ---------- 3) True-target refinement: fake → true ----------
-        # 각 방향 A를 한 번씩만 처리: A에 가짜≠진짜인 아이템이 있고 TOP이 아니면
-        # 그 아이템을 TOP까지 끌어올려 true_target으로 보낸 뒤, 양보/버퍼를 A로 복구
-        print("3. True-target refinement")
-        for A in order_dirs:
-            candB = [d for d in dirs if d not in (A, buffer_dir)]
-            B = min(candB, key=lambda x: (len(stacks[x]), nesw_order.index(x)))
-
-            idx = None
-            for i, aid in enumerate(reversed(stacks[A])):
-                if true_target.get(aid) != fake_target.get(aid):
-                    idx = len(stacks[A]) - 1 - i
-                    break
-            if idx is None or idx == 0:
-                continue    # A는 이미 true_target과 일치
-            
-            # A에 남길(keep) 개수
-            K = 0
-            for aid in stacks[A]:
-                if true_target.get(aid) in keep_group:
-                    K += 1
-
-            # 이미 원하는 그룹만 포함되어 있으면 스킵
-            if K == len(stacks[A]):
-                continue
-                
-            # 임시 저장용 스택 B: 아이템 수가 가장 적은 곳(동률 NESW)
-            candB = [d for d in dirs if d not in (A, buffer_dir)]
-            B = min(candB, key=lambda x: (len(stacks[x]), nesw_order.index(x)))
-
-            # B에 K개 담을 공간 확보: B -> buffer로 비우기
-            while capacity.get(B, 0) - len(stacks[B]) < K and stacks[B]:
-                move(B, buffer_dir)
-
-            # A에서 keep 아이템을 제외한 나머지(opp 그룹)를 B로 이동
-            while stacks[A]:
-                aid_top = stacks[A][0]
-                tgt = true_target.get(aid_top)
-                if tgt == A:
-                    move(A, B)
-                else:
-                    move(A, buffer_dir)
-
-            # A 재조립: B에 임시 보관한 keep K개를 A로 되돌려 두 블록화 (keep이 A TOP에 연속 배치됨)
-            cnt = 0
-            while cnt < K and stacks[B] and len(stacks[A]) < capacity.get(A, 0):
-                move(B, A)
-                cnt += 1
-
-            # buffer 비우기: A/B 중 그룹에 따라 복귀, A가 꽉 차면 B로, 둘 다 꽉 차면 중단
-            while stacks.get(buffer_dir, []):
-                aidb = stacks[buffer_dir][0]
-                tgt = fake_target.get(aidb)
-
-                if tgt == A:
-                    primary, secondary = A, B
-                else:
-                    primary, secondary = B, A
-
-                if len(stacks[primary]) < capacity.get(primary, 0):
-                    move(buffer_dir, primary)
-                    continue
-                if len(stacks[secondary]) < capacity.get(secondary, 0): 
-                    move(buffer_dir, secondary)
-                    continue
-
-        # ---------- 3.1 Final push: buffer_group TOPs → buffer_dir ----------
-        # 잉여(surplus)는 건드리지 않음. true_target이 buffer_dir인 것만 최종 이동.
-        print("3.1 Final push to buffer dir")
-        for A in order_dirs:
-            while stacks[A]:
-                aid_top = stacks[A][0]
-                # A의 TOP이 버퍼 그룹이 아니면 다음 A로
-                if true_target.get(aid_top) != buffer_dir:
-                    break
-                move(A, buffer_dir)
+                no_progress_count += 1
+                if no_progress_count >= len(dirs):
+                    break  # 더 이상 이동할 수 없으면 종료
 
         return actions
+    
+
+    def top_scan(self, stacks, targets, capacity, dirs, actions):
+        """
+        TOP 스캔 1회 수행해 즉시 정렬 1건을 만들고 True 반환.
+        이동할 것이 없으면 False 반환.
+        """
+        for src in dirs:
+            stack_src = stacks[src]
+            if not stack_src:
+                continue
+            top_id = stack_src[0]
+            goal = targets.get(top_id)
+
+            # 이미 목표에 도달했으면 스킵
+            if goal == src:
+                continue
+            
+            gstack = stacks[goal]
+            goal_pure = (len(gstack) == 0) or all(targets.get(aid) == goal for aid in gstack)
+            has_room = len(gstack) < capacity[goal]
+
+            # 목표 스택이 비어있거나 'goal' 색으로만 이루어져 있고, 여유칸이 있으면 즉시 이동
+            if goal_pure and has_room:
+                stack_src.pop(0)
+                stacks[goal].insert(0, top_id)
+                actions.append((src, goal))
+
+
+                print("TOP Scan Move:")
+                order = "NESW"
+                snap_parts = []
+                for d in order:
+                    if d in stacks:
+                        row = "[" + ", ".join(targets.get(a, "?") for a in stacks[d]) + "]"
+                        snap_parts.append(f"{d}:TOP {row}")
+                snap = " | ".join(snap_parts)
+                print(f"[{len(actions):03d}] {src}->{goal} ||  {snap}")
+
+
+                return True  # 한 번 이동했으면 즉시 반환
         
+        return False  # 이동할 것이 없으면 False 반환
+    
+
     def build_stacks_from_snapshot(self):
         """
         return:
@@ -602,4 +360,5 @@ class Intersection:
                 targets[aid] = tgt
         
         return stacks, targets
+    
     
