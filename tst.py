@@ -57,10 +57,10 @@ def make_case_from_goal_spec(goal_spec, cap=CAP, start_id=1):
 #   - goal_spec 입력은 "맨 앞이 TOP"
 # ------------------------------------------------------------
 goal_spec = {
-    "N": "SEW",
-    "E": "WSNN",
-    "S": "NWEN",
-    "W": "ENSN",
+    "N": "SE",
+    "E": "WS",
+    "S": "NW",
+    "W": "EN",
 }
 
 # 2) Intersection 인스턴스 (팔 길이 5)

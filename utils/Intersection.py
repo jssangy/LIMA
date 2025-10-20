@@ -232,6 +232,8 @@ class Intersection:
         stacks, targets = self.build_stacks_from_snapshot()
         capacity = {'N': self.len_N, 'E': self.len_E, 'S': self.len_S, 'W': self.len_W}
         dirs = [d for d in "NESW" if d in self.present_dirs]
+        predicted_stacks = self.predicted_stacks(stacks)
+        print("Predicted Stacks:", predicted_stacks)
 
         # === [000] 초기 스냅샷 출력 ===
         order = "NESW"
@@ -258,7 +260,7 @@ class Intersection:
             P = dirs[pivot_idx]
             progressed = False
 
-            if stacks[P] and not all(targets.get(aid) == P for aid in stacks[P]):
+            if stacks[P] and self.to_letter(stacks[P], targets) != predicted_stacks.get(P, []):
                 # TOP을 '가장 적게 찬' 스택으로 이동
                 candidates = [d for d in dirs if d != P and len(stacks[d]) < capacity[d]]
                 candidate = min(candidates, key=lambda d: len(stacks[d]), default=None)
@@ -362,3 +364,62 @@ class Intersection:
         return stacks, targets
     
     
+    def predicted_stacks(self, stacks):
+        """
+        각 스택의 '정답 타깃 배열'을 만든다. (오른쪽 끝=TOP)
+        - 반환: {"N": ["N",...], "E":[...], "S":[...], "W":[...]}
+        - 각 목표 g의 prefix는 min(총개수, capacity[g])개를 자기 문자로 채움
+        - 초과분(overflow)은 '가장 적게 찬' 스택 TOP에 주차(동률이면 N→E→S→W)
+        """
+        # 사용 팔 및 용량
+        dirs = [d for d in "NESW" if d in self.present_dirs]
+        cap_all = {'N': self.len_N, 'E': self.len_E, 'S': self.len_S, 'W': self.len_W}
+        capacity = {d: cap_all[d] for d in dirs}
+
+        # 현재 포함된 모든 아이템 id 수집
+        present_ids = []
+        for d in dirs:
+            present_ids.extend(stacks.get(d, []))
+
+        # id -> goal 매핑으로 목표별 총량 집계
+        goal_counts = {d: 0 for d in dirs}
+        for aid in present_ids:
+            rec = self.amr_intent_map.get(aid)
+            if not rec:
+                continue
+            g = rec.get('exit_arm')
+            if g in goal_counts:
+                goal_counts[g] += 1
+
+        # 기본 채움(자기 팔 prefix), 초과 계산
+        fill = {g: min(goal_counts[g], capacity[g]) for g in dirs}
+        overflow = {g: goal_counts[g] - fill[g] for g in dirs}
+
+        # 예측 스택 초기화: 바닥(prefix)을 자기 문자로 채움 (오른쪽이 TOP)
+        predicted = {d: [d] * fill[d] for d in dirs}
+
+        # NESW 타이브레이크용 인덱스
+        nesw_idx = {'N': 0, 'E': 1, 'S': 2, 'W': 3}
+
+        # 초과분을 호스트 팔의 TOP에 배치
+        # g 순회도 NESW로(결정성)
+        for g in dirs:  # NESW
+            k = overflow[g]
+            while k > 0:
+                # 호스트 후보(슬랙 있는 팔만), 자기 팔 제외
+                candidates = [h for h in dirs if h != g and len(predicted[h]) < capacity[h]]
+                if not candidates:
+                    raise RuntimeError(f"predicted_stacks: overflow '{g}'를 수용할 호스트가 없습니다.")
+                # 길이 → NESW 순서로 타이브레이크
+                host = min(candidates, key=lambda h: (len(predicted[h]), nesw_idx[h]))
+                predicted[host].append(g)  # TOP에 얹음(오른쪽 append)
+                k -= 1
+
+        return predicted
+
+
+    def to_letter(self, stacks, targets):
+        out = []
+        for a in stacks:
+            out.append(targets.get(a))
+        return out
