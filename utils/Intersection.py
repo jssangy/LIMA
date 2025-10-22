@@ -1,3 +1,4 @@
+import random
 import numpy as np
 from itertools import chain
 from typing import Dict
@@ -228,23 +229,25 @@ class Intersection:
         - 현재 self.amr_intent_map의 상태로부터 스택을 구성하여 순수하게 계획만 세움(환경 변경 X)
         """
         actions = []
+        trace = []
+        locks = []
 
         stacks, targets = self.build_stacks_from_snapshot()
         capacity = {'N': self.len_N, 'E': self.len_E, 'S': self.len_S, 'W': self.len_W}
         dirs = [d for d in "NESW" if d in self.present_dirs]
-        predicted_stacks = self.predicted_stacks(stacks)
-        print("Predicted Stacks:", predicted_stacks)
 
-        # === [000] 초기 스냅샷 출력 ===
-        order = "NESW"
-        snap_parts = []
-        for d in order:
-            if d in stacks:
-                row = "[" + ", ".join(targets.get(a, "?") for a in reversed(stacks[d])) + "]"
-                snap_parts.append(f"{d}:TOP {row}")
-        snap = " | ".join(snap_parts)
-        print(f"[000] INIT ||  {snap}")
-        # ============================
+        predicted_stacks = self.predicted_stacks(stacks)
+
+        locked = {aid: False for aid in targets.keys()}
+        for d in dirs:
+            for aid in stacks[d]:
+                if targets.get(aid) == d:
+                    locked[aid] = True
+                else:
+                    break
+        
+        trace.append({d: stacks[d][:] for d in stacks})
+        locks.append(locked.copy())
 
         # 라운드로빈 상태
         pivot_idx = 0
@@ -252,7 +255,9 @@ class Intersection:
 
         while True:
             # 1) TOP 스캔 1회
-            if self.top_scan(stacks, targets, capacity, dirs, actions):
+            if self.top_scan(stacks, targets, capacity, dirs, actions, locked):
+                trace.append({d: stacks[d][:] for d in stacks})
+                locks.append(dict(locked))
                 no_progress_count = 0
                 continue
 
@@ -263,22 +268,17 @@ class Intersection:
             if stacks[P] and self.to_letter(stacks[P], targets) != predicted_stacks.get(P, []):
                 # TOP을 '가장 적게 찬' 스택으로 이동
                 candidates = [d for d in dirs if d != P and len(stacks[d]) < capacity[d]]
-                candidate = min(candidates, key=lambda d: len(stacks[d]), default=None)
+                min_len = min(len(stacks[d]) for d in candidates)
+                ties = [d for d in candidates if len(stacks[d]) == min_len]
+                candidate = random.choice(ties)  # 동률이면 랜덤 선택
                 if candidate:
                     aid = stacks[P].pop()
                     stacks[candidate].append(aid)
                     actions.append((P, candidate))
                     progressed = True
 
-                    print(f"Round Robin Move (pivot {P}):")
-                    order = "NESW"
-                    snap_parts = []
-                    for d in order:
-                        if d in stacks:
-                            row = "[" + ", ".join(targets.get(a, "?") for a in reversed(stacks[d])) + "]"
-                            snap_parts.append(f"{d}:TOP {row}")
-                    snap = " | ".join(snap_parts)
-                    print(f"[{len(actions):03d}] {P}->{candidate} ||  {snap}")
+                    trace.append({d: stacks[d][:] for d in stacks})
+                    locks.append(dict(locked))
 
             # 피벗 내 아이템이 모두 피벗과 같은 목적지이거나 피벗이 비어있으면 업데이트
             if not stacks[P] or all(targets.get(aid) == P for aid in stacks[P]):
@@ -291,10 +291,10 @@ class Intersection:
                 if no_progress_count >= len(dirs):
                     break  # 더 이상 이동할 수 없으면 종료
 
-        return actions
-    
+        return actions, trace, locks
 
-    def top_scan(self, stacks, targets, capacity, dirs, actions):
+
+    def top_scan(self, stacks, targets, capacity, dirs, actions, locked):
         """
         TOP 스캔 1회 수행해 즉시 정렬 1건을 만들고 True 반환.
         이동할 것이 없으면 False 반환.
@@ -320,17 +320,7 @@ class Intersection:
                 stacks[goal].append(top_id)
                 actions.append((src, goal))
 
-
-                print("TOP Scan Move:")
-                order = "NESW"
-                snap_parts = []
-                for d in order:
-                    if d in stacks:
-                        row = "[" + ", ".join(targets.get(a, "?") for a in reversed(stacks[d])) + "]"
-                        snap_parts.append(f"{d}:TOP {row}")
-                snap = " | ".join(snap_parts)
-                print(f"[{len(actions):03d}] {src}->{goal} ||  {snap}")
-
+                locked[top_id] = True
 
                 return True  # 한 번 이동했으면 즉시 반환
         
@@ -423,3 +413,47 @@ class Intersection:
         for a in stacks:
             out.append(targets.get(a))
         return out
+    
+
+    def trace_to_path(self, actions, trace, locks):
+        """
+        trace/locks를 AMR별 좌표 경로로 변환.
+        - trace[t]: {'N':[...], 'E':[...], 'S':[...], 'W':[...]}  # 오른쪽=TOP
+        - locks[t]: {amr_id: True/False}  # trace와 동일 길이. True되면 그 시점 이후 경로 연장 중단
+        반환: [(amr_id, path), ...]
+        """
+        cx, cy = self.center_x, self.center_y
+        center = (cx, cy)
+        dirs = [d for d in "NESW" if d in self.present_dirs]
+
+        id2pos = {aid: rec['amr_obj'].pos for aid, rec in self.amr_intent_map.items()}
+
+        # 초기 스냅샷
+        pos_prev = self.step_positions(trace[0])
+
+        # 
+
+        # 경로 누적 버퍼(처음 등장한 좌표가 시작점)
+        paths = {}
+            
+
+
+    def step_positions(self, step):
+        """
+        step: {'N':[...], 'E':[...], 'S':[...], 'W':[...]}  # 오른쪽=TOP
+        return: pos_of = {amr_id: (x,y), ...}
+        """
+        pos_of = {}
+        dirs = [d for d in "NESW" if d in self.present_dirs]
+        
+        for d in dirs:
+            ids = step.get(d, [])
+            k = len(ids)
+            coords = self.lane_coords[d]
+
+            # ids: 왼쪽=far, 오른쪽=near(TOP)
+            for idx, aid in enumerate(ids):
+                near_rank = k - 1 - idx         # 0=front(near)
+                pos_of[aid] = coords[near_rank]
+
+        return pos_of

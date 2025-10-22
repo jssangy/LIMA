@@ -2,6 +2,3 @@ numpy
 pygame
 pyglet
 pyyaml
-wandb
-tqdm
-torch

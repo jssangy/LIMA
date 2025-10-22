@@ -57,10 +57,10 @@ def make_case_from_goal_spec(goal_spec, cap=CAP, start_id=1):
 #   - goal_spec 입력은 "맨 앞이 TOP"
 # ------------------------------------------------------------
 goal_spec = {
-    "N": "SE",
-    "E": "WS",
-    "S": "NW",
-    "W": "EN",
+    "N": "ES",
+    "E": "SW",
+    "S": "WN",
+    "W": "NE",
 }
 
 # 2) Intersection 인스턴스 (팔 길이 5)
@@ -87,7 +87,7 @@ def _patched_bss():
 I.build_stacks_from_snapshot = _patched_bss
 
 # 6) plan_action 실행
-actions = I.plan_action()
+actions, trace, locks = I.plan_action()
 
 # 7) 몽키패치 복원
 I.build_stacks_from_snapshot = orig_bss
