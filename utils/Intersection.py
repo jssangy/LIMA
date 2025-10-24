@@ -219,6 +219,52 @@ class Intersection:
                 break  # 한 방향만 주입
 
         return True
+    
+    
+    def build_prestage_paths(self):
+        """
+        데드락 해소용 프리-스테이지 경로 생성/주입.
+        - 레인/센터에 있는 모든 AMR을 대상으로,
+        각 레인의 near(front)부터 빈칸 없이 압축되고 센터가 비워진 상태를 목표로 한다.
+        - 센터에 AMR이 있으면 우선 'exit_arm'의 front로 보낸다(여유 없으면
+        가장 덜 찬 팔(N→E→S→W 타이브레이크)의 front로).
+        - 모든 AMR의 경로 길이를 동일하게 맞춘다(정지 AMR은 제자리 좌표를 반복).
+        반환: {amr_id: [(x,y), ...], ...}
+        """
+        cx, cy = self.center_x, self.center_y
+        center = (cx, cy)
+        dirs = [d for d in "NESW" if d in self.present_dirs]
+        lanes = {d: [None] * len(self.lane_coords[d]) for d in dirs}  # None 채움
+
+        pos2aid = {}
+        for aid, rec in self.amr_intent_map.items():
+            pos2aid[rec.get('amr_obj').pos] = aid
+
+        for d, coords in self.lane_coords.items():
+            for i, p in enumerate(coords):
+                lanes[d][i] = pos2aid.get(p, None)
+
+        
+        host = None
+        center_id = pos2aid.get(center, None)
+        if center_id is not None:
+            center_rec = self.amr_intent_map.get(center_id)
+            exit_dir = center_rec.get('exit_arm')
+            amr_count = sum(1 for a in lanes[exit_dir] if a is not None)
+            if amr_count < len(lanes[exit_dir]):
+                host = exit_dir
+            else:
+                # 가장 덜 찬 팔(N→E→S→W 타이브레이크)
+                min_count = min(sum(1 for a in lanes[d] if a is not None) for d in dirs)
+                for d in dirs:
+                    count_d = sum(1 for a in lanes[d] if a is not None)
+                    if count_d == min_count:
+                        host = d
+                        break    
+
+            # 센터 AMR을 host 팔의 front로 이동
+                    
+        
         
     
     def plan_action(self):
@@ -431,11 +477,28 @@ class Intersection:
         # 초기 스냅샷
         pos_prev = self.step_positions(trace[0])
 
-        # 
+        # t=0 락 정보가 있으면 가져와서, 락된 AMR은 경로 연장하지 않음
+        lock0 = locks[0]
 
         # 경로 누적 버퍼(처음 등장한 좌표가 시작점)
         paths = {}
             
+        for aid, start in id2pos.items():
+            goal = pos_prev[aid]
+
+            if lock0.get(aid, False):
+                continue
+
+            seg = self.path_between(start, goal)
+
+            compact = [seg[0]]
+            for p in seg[1:]:
+                if p != compact[-1]:
+                    compact.append(p)
+
+            paths[aid] = compact
+
+
 
 
     def step_positions(self, step):
@@ -457,3 +520,4 @@ class Intersection:
                 pos_of[aid] = coords[near_rank]
 
         return pos_of
+
