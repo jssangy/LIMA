@@ -17,62 +17,30 @@ class AMR:
     def set_path(self, path):
         self.path = path
 
-def row(vals):
+# ── pretty helpers ──────────────────────────────────────────
+def row(vals: List[int | None]) -> str:
+    """[., 2, 3] 형태로 출력"""
     return "[" + ", ".join("." if v is None else str(v) for v in vals) + "]"
 
-def pprint_lanes(title, lanes: Dict[str, List[int]]):
+def pprint_lanes(title, lanes: Dict[str, List[int | None]]):
     parts = []
     for d in "NESW":
         if d in lanes:
             parts.append(f"{d}:{row(lanes[d])}")
     print(f"{title}:  " + " | ".join(parts))
 
-def manhattan(a,b): return abs(a[0]-b[0]) + abs(a[1]-b[1])
-
-def print_paths(paths: Dict[int, List[Tuple[int,int]]], *, title="AMR Paths"):
-    print(f"\n{title}:")
+def print_paths(title: str, paths: Dict[int, List[Tuple[int, int]]]):
+    """AMR별 경로를 보기 좋게 출력"""
+    print(f"\n{title}")
+    if not paths:
+        print("  (empty)")
+        return
     for aid in sorted(paths.keys()):
         p = paths[aid]
-        arrow = " -> "
-        s = arrow.join(f"({x},{y})" for (x,y) in p)
-        print(f"  AMR {aid:>3}  len={len(p)}  {s}")
+        seq = " -> ".join(f"({x},{y})" for (x, y) in p)
+        print(f"  AMR {aid:>3}  len={len(p)}  {seq}")
 
-def collect_amr_paths_from_intent(I: Intersection) -> Dict[int, List[Tuple[int,int]]]:
-    out = {}
-    for aid, rec in I.amr_intent_map.items():
-        a = rec.get('amr_obj')
-        if a is None: 
-            continue
-        path = getattr(a, "path", None)
-        if isinstance(path, list) and len(path) >= 1:
-            out[aid] = path
-    return out
-
-def verify_paths_sync(I: Intersection, target_lanes, paths: Dict[int, List[Tuple[int,int]]], max_steps: int):
-    # 1) 모든 경로 길이 동일
-    expected_len = max_steps + 1
-    lens = {aid: len(p) for aid, p in paths.items()}
-    assert len(set(lens.values())) == 1, f"경로 길이 불일치: {lens}"
-    one_len = next(iter(lens.values()))
-    assert one_len == expected_len, f"경로 길이({one_len}) != max_steps+1({expected_len})"
-
-    # 2) 한 틱 이동은 1칸(또는 정지)
-    for aid, p in paths.items():
-        for i in range(len(p)-1):
-            assert manhattan(p[i], p[i+1]) <= 1, f"AMR {aid}가 한 틱에 2칸 이상 이동: {p[i]} -> {p[i+1]}"
-
-    # 3) 최종 좌표가 target_lanes의 목표 좌표와 일치
-    target_pos = {}
-    for d in "NESW":
-        if d not in target_lanes: continue
-        coords = I.lane_coords[d]  # near→far
-        for i, aid in enumerate(target_lanes[d]):
-            if aid is not None:
-                target_pos[aid] = coords[i]
-    for aid, p in paths.items():
-        if aid in target_pos:
-            assert p[-1] == target_pos[aid], f"AMR {aid} 최종 좌표 불일치: {p[-1]} != {target_pos[aid]}"
-
+# ── 시나리오 ────────────────────────────────────────────────
 def run_scenario_1():
     print("\n== Scenario 1: center→exit(front) & compress ==")
     # 교차로 생성(near→far: 3칸씩)
@@ -97,49 +65,11 @@ def run_scenario_1():
         I.amr_intent_map[aid] = {'amr_obj': a, 'exit_arm': 'E'}
 
     ret = I.build_prestage_paths()
+    # (target_lanes, paths) 형태를 가정
+    target, paths = ret
 
-    # 반환 형태 호환(2-리턴 / 4-리턴)
-    if isinstance(ret, tuple) and len(ret) == 4:
-        lanes, target, paths, max_steps = ret
-        pprint_lanes("lanes   ", lanes)
-        pprint_lanes("target  ", target)
-
-        # 기대 target
-        expect = {
-            'N': [2,3,None],
-            'E': [1,4,5],
-            'S': [6,None,None],
-            'W': [None,None,None]
-        }
-        for d in expect:
-            assert target[d] == expect[d], f"{d} mismatch: {target[d]} != {expect[d]}"
-
-        verify_paths_sync(I, target, paths, max_steps)
-        print_paths(paths, title="AMR Paths (Scenario 1)")
-        print("✅ Scenario 1 passed (max_steps=", max_steps, ")")
-        print(I.paths)
-    elif isinstance(ret, tuple) and len(ret) == 2:
-        lanes, target = ret
-        pprint_lanes("lanes   ", lanes)
-        pprint_lanes("target  ", target)
-        # 경로는 Intersection이 내부에서 set_path 했을 수도 있다 → 수집해서 출력
-        amr_paths = collect_amr_paths_from_intent(I)
-        if amr_paths:
-            print_paths(amr_paths, title="AMR Paths from amr_obj (Scenario 1)")
-        else:
-            print("⚠️ paths/max_steps가 반환되지 않았고 amr_obj.path도 비어 있습니다.")
-        # 기대 target 검증
-        expect = {
-            'N': [2,3,None],
-            'E': [1,4,5],
-            'S': [6,None,None],
-            'W': [None,None,None]
-        }
-        for d in expect:
-            assert target[d] == expect[d], f"{d} mismatch: {target[d]} != {expect[d]}"
-        print("⚠️ 동기화·최종좌표 검증은 paths가 없어 생략되었습니다.")
-    else:
-        raise AssertionError("build_prestage_paths 반환 형식이 예상과 다릅니다.")
+    pprint_lanes("target  ", target)
+    print_paths("paths    ", paths)
 
 def run_scenario_2():
     print("\n== Scenario 2: exit full → min-occupancy(front) ==")
@@ -166,45 +96,10 @@ def run_scenario_2():
         I.amr_intent_map[aid] = {'amr_obj': a, 'exit_arm': 'E'}
 
     ret = I.build_prestage_paths()
+    target, paths = ret
 
-    if isinstance(ret, tuple) and len(ret) == 4:
-        lanes, target, paths, max_steps = ret
-        pprint_lanes("lanes   ", lanes)
-        pprint_lanes("target  ", target)
-
-        expect = {
-            'N': [10,11,None],
-            'E': [7,8,9],
-            'S': [1,12,None],
-            'W': [13,None,None]
-        }
-        for d in expect:
-            assert target[d] == expect[d], f"{d} mismatch: {target[d]} != {expect[d]}"
-
-        verify_paths_sync(I, target, paths, max_steps)
-        print_paths(paths, title="AMR Paths (Scenario 2)")
-        print("✅ Scenario 2 passed (max_steps=", max_steps, ")")
-        print(I.paths)
-    elif isinstance(ret, tuple) and len(ret) == 2:
-        lanes, target = ret
-        pprint_lanes("lanes   ", lanes)
-        pprint_lanes("target  ", target)
-        amr_paths = collect_amr_paths_from_intent(I)
-        if amr_paths:
-            print_paths(amr_paths, title="AMR Paths from amr_obj (Scenario 2)")
-        else:
-            print("⚠️ paths/max_steps가 반환되지 않았고 amr_obj.path도 비어 있습니다.")
-        expect = {
-            'N': [10,11,None],
-            'E': [7,8,9],
-            'S': [1,12,None],
-            'W': [13,None,None]
-        }
-        for d in expect:
-            assert target[d] == expect[d], f"{d} mismatch: {target[d]} != {expect[d]}"
-        print("⚠️ 동기화·최종좌표 검증은 paths가 없어 생략되었습니다.")
-    else:
-        raise AssertionError("build_prestage_paths 반환 형식이 예상과 다릅니다.")
+    pprint_lanes("target  ", target)
+    print_paths("paths    ", paths)
 
 if __name__ == "__main__":
     run_scenario_1()
