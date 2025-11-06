@@ -137,6 +137,9 @@ class Intersection:
     
     
     def check_center_deadlock(self):
+        if self.check_cycle_deadlock():
+            return True
+        
         # --- 준비 ---
         vec = {'N': (0, -1), 'E': (1, 0), 'S': (0, 1), 'W': (-1, 0)}
         center = (self.center_x, self.center_y)
@@ -144,7 +147,6 @@ class Intersection:
         front_cell = {d: (self.center_x + vec[d][0], self.center_y + vec[d][1]) for d in dirs}
 
         center_rec = None
-        center_amr = None
         exit_dir = None
 
         # 수집용(단일 순회로 채움)
@@ -160,7 +162,6 @@ class Intersection:
 
             if cur == 'C':
                 center_rec = rec
-                center_amr = a
                 exit_dir = nxt
                 continue
 
@@ -177,49 +178,15 @@ class Intersection:
 
         # --- 데드락 예측 조건 확인 ---
         if not center_rec or exit_dir not in dirs:
+            self.is_deadlock = False
             return False
         conflict_exists = exists_ingress[exit_dir]
         if not conflict_exists:
+            self.is_deadlock = False
             return False
 
         # 데드락 플래그
         self.is_deadlock = True
-
-        # --- 주입 1: 모든 front 진입자(4방향) 1틱 제자리 대기 [pos,pos]+tail ---
-        for d, amr in front_ingressor.items():
-            pos = amr.pos
-            path = amr.path
-            try:
-                j = path.index(pos)
-                tail = path[j+1:]
-            except ValueError:
-                tail = path[:]
-            new_path = [pos, pos] + tail
-            amr.set_path(new_path)
-
-        # --- 주입 2: 중앙 AMR 이동(출구 우선, 막히면 빈 front로 center→alt→center) ---
-        #   - 출구 front가 비어 있으면 주입 없이 종료
-        if not front_occupied.get(exit_dir, False):
-            return True
-
-        #   - 비어있는 다른 front로 짧게 피신
-        for d in dirs:
-            if d == exit_dir:
-                continue
-            # 해당 방향 레인이 존재하지 않으면 skip
-            if d not in self.lane_coords:
-                continue
-            if not front_occupied.get(d, False):
-                alt_front = front_cell[d]
-                path_c = center_amr.path
-                if center in path_c:
-                    i = path_c.index(center)
-                    tail_c = path_c[i+1:]
-                else:
-                    tail_c = path_c[:]
-                new_path_c = [center, alt_front, center] + tail_c
-                center_amr.set_path(new_path_c)
-                break  # 한 방향만 주입
 
         return True
     
@@ -601,7 +568,7 @@ class Intersection:
         return out
     
 
-    def actions_to_paths(self, actions, trace, locks):
+    def actions_to_paths(self):
         """
         계획된 (src,dst) 이동 시퀀스를 실제 경로 좌표로 변환.
         - actions: [(src,dst), ...]
@@ -609,29 +576,37 @@ class Intersection:
         - locks: 잠금 상태 추적 기록
         반환: {amr_id: [(x,y), ...], ...}
         """
+        actions, trace, locks = self.plan_action()
         dirs = self.dirs
         out_center = {'N': (0, -1), 'E': (1, 0), 'S': (0, 1), 'W': (-1, 0)}
         in_center = {'N': (0, 1), 'E': (-1, 0), 'S': (0, -1), 'W': (1, 0)}
         center = (self.center_x, self.center_y)
-        center_way = None  # 현재 center에 존재하는 AMR이 앞으로 움직일 팔
+        center_way = None  # 현재 center에 존재하는 AMR이 앞으로 움직일 방향
 
         for t, (src, dst) in enumerate(actions):
             stacks_snapshot = trace[t]
             locks_snapshot = locks[t]
+            applied = set()
 
-            for aid in self.paths.keys():
+            for aid in list(self.paths.keys()):
                 pos = self.paths[aid][-1]
                 if pos == center:
-                    vec = out_center[center_way]
+                    if locks_snapshot.get(aid, False):
+                        applied.add(aid)
+                        continue
+                    vec = out_center.get(center_way, (0, 0))  # None 가드
                     new_pos = (pos[0] + vec[0], pos[1] + vec[1])
                     self.paths[aid].append(new_pos)
-                    center_way = None
+                    applied.add(aid)
 
             for d in dirs:
                 for aid in stacks_snapshot[d]:
                     if locks_snapshot.get(aid, False):
                         continue
 
+                    if aid in applied:
+                        continue
+                    
                     pos = self.paths[aid][-1]
                     if d == src:                        
                         vec = in_center[src]
@@ -642,5 +617,6 @@ class Intersection:
                     
                     new_pos = (pos[0] + vec[0], pos[1] + vec[1])
                     self.paths[aid].append(new_pos)
+                    applied.add(aid)
                     
-            center_way = dst                   
+            center_way = dst
