@@ -2,7 +2,7 @@ import numpy as np
 
 # AMR Object
 class AMR():
-    def __init__(self, pos, goal, id, color):
+    def __init__(self, id, pos, goal, color):
         # 기본 정보
         self.id = id
         self.color = color

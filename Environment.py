@@ -1,11 +1,8 @@
 import os
 import json
 import math
-import time
-import torch
 import numpy as np
 from typing import Dict
-from collections import deque
 
 from utils.AMR import AMR
 from utils.Intersection import Intersection
@@ -34,7 +31,6 @@ class ENV():
         
         self.time = 0
         self.amr_list = {}
-        self.l_hop = 1
         self.max_steps = max_steps
 
         self.planner = BFSPlanner(self.map)
@@ -47,6 +43,18 @@ class ENV():
                 inter_info['neighbors'],
                 inter_info['present_dirs'],
             )
+
+        self.event_cells = set()
+        self.cell2ix = {}
+        for iid, I in self.intersections.items():
+            center = (I.center_x, I.center_y)
+            self.event_cells.add(center)
+            self.cell2ix[center] = iid
+            for d in I.dirs:
+                coords = I.lane_coords[d]
+                end_cell = coords[-1]
+                self.event_cells.add(end_cell)
+                self.cell2ix[end_cell] = iid
 
         self.deadlock_queue = []
 
@@ -69,12 +77,10 @@ class ENV():
 
         self.completed_amr_steps = []
 
-        self.total_action_count = 0
-        self.rl_action_count = 0
-
         self.completed_path_integrities: list[float] = []
 
         self.time_ms = []
+
 
     def reset(self):        
         self.time = 0
@@ -105,6 +111,7 @@ class ENV():
         self.time_ms.clear()
 
         return
+
 
     def step(self):
         """
@@ -199,6 +206,15 @@ class ENV():
 
         # GUI/테스트 모드: 기존 요약 반환 유지
         return self.make_info()
+    
+
+    def step(self):
+        self.time += 1
+
+        for amr_id, amr_obj in self.amr_list.items():
+            if amr_obj.pos in self.event_cells:
+                I = self.cell2ix[amr_obj.pos]
+                
 
 
     def generate_observation(self):
@@ -245,6 +261,7 @@ class ENV():
 
         return obs, info
     
+    
     def _update_deadlock_queue(self, info):
         """
         데드락 큐(FIFO):
@@ -269,7 +286,9 @@ class ENV():
             # 해소: 큐에서 제거
             elif (not is_deadlocked) and iid in iids_in_queue:
                 self.deadlock_queue = [item for item in self.deadlock_queue if item[0] != iid]
+
                 iids_in_queue.discard(iid)
+
 
     def _inter_rank(self, iid):
         """
@@ -281,93 +300,7 @@ class ENV():
             return iids_only.index(iid)
         except ValueError:
             return math.inf
-
-    def _is_valid_move(self, current_amr, control_signal,
-                    dbg_iid=None, dbg_ids=None, dbg_edge_swap=True):
-        """
-        dbg_iid: 이 교차로(iid)만 찍기(없으면 무시)
-        dbg_ids: 이 집합(AMR id)만 찍기(없으면 무시)
-        dbg_edge_swap: 에지 스왑 차단/로그 여부
-        """
-        # PIBT/CBS 모드는 그대로 통과
-        if self.controller.running_opt in [3, 4]:
-            return True
-
-        nx = current_amr.pos[0] + control_signal[0]
-        ny = current_amr.pos[1] + control_signal[1]
-        next_pos = (nx, ny)
-        gid = current_amr.id
-
-        # 1) 동일 칸 점유 충돌
-        for other in self.amr_list.values():
-            if other is not current_amr and next_pos == other.pos:
-                return False
-
-        # 2) 에지 스왑 금지(옵션)
-        if dbg_edge_swap:
-            for other_id, other in self.amr_list.items():
-                if other is current_amr:
-                    continue
-                odx, ody = self.controller.control_buffer.get(other_id, (0, 0))
-                other_next = (other.pos[0] + odx, other.pos[1] + ody)
-                if next_pos == other.pos and other_next == current_amr.pos:
-                    return False
-                
-        if self.rl_policy and self.use_rl:
-            def owners(pos):
-                res = []
-                for I in self.intersections.values():
-                    if pos in I.all_lane_coords:
-                        res.append(I)
-                return res
-
-            here_inters   = owners(current_amr.pos)
-            target_inters = owners(next_pos)
-            here_ids = {getattr(I, "id", None) for I in here_inters}
-
-            # 3-1) '새 교차로'로 들어가려는 경우, 해당 교차로 AMR이 13개 이상이면 진입 금지
-            cap_limit = getattr(self, "inter_cap_limit_enter", 13)
-            for J in target_inters:
-                if getattr(J, "id", None) not in here_ids:
-                    if len(J.amrs_in_intersection) >= cap_limit:
-                        return False
-
-            # 3-2) 교차로 우선순위: 센터에서만 적용
-            cur_is_center = any(current_amr.pos == (I.center_x, I.center_y) for I in here_inters)
-            if cur_is_center:
-                cur_rank = min((self._inter_rank(getattr(I, "id", "")) for I in here_inters),
-                            default=math.inf)
-                # 다음 위치가 '새 교차로'인 후보들만 비교
-                candidates = [J for J in target_inters if getattr(J, "id", None) not in here_ids] \
-                            if here_inters else list(target_inters)
-                if candidates:
-                    next_rank = min(self._inter_rank(getattr(J, "id", "")) for J in candidates)
-                    if next_rank < cur_rank:
-                        return False
-
-        # 3) 교차로 우선순위 규칙(센터에서만)
-        if self.rl_policy and self.use_rl:
-            def owners(pos):
-                res = []
-                for I in self.intersections.values():
-                    if pos in I.all_lane_coords:
-                        res.append(I)
-                return res
-
-            here_inters = owners(current_amr.pos)
-            target_inters = owners(next_pos)
-            cur_is_center = any(current_amr.pos == (I.center_x, I.center_y) for I in here_inters)
-            if cur_is_center:
-                cur_rank = min((self._inter_rank(getattr(I, "id", "")) for I in here_inters),
-                            default=math.inf)
-                here_ids = {getattr(I, "id", None) for I in here_inters}
-                candidates = [J for J in target_inters if getattr(J, "id", None) not in here_ids] if here_inters else list(target_inters)
-                if candidates:
-                    next_rank = min(self._inter_rank(getattr(J, "id", "")) for J in candidates)
-                    if next_rank < cur_rank:
-                        return False
-
-        return True
+    
     
     def _update_intersections_state(self):
         for I in self.intersections.values():
@@ -384,6 +317,7 @@ class ENV():
             if I.macro is not None and not I.is_deadlock:
                 I.macro = None
 
+
     def _spawn_amrs_from_task_gen(self):
         """
         [이름 변경 및 Task 모드 전용]
@@ -399,11 +333,13 @@ class ENV():
             amr_id = task['id']
 
             start_pos = tuple(task['start_pos'])
-            goal_pos  = tuple(task['goal_pos'])
+            goal_pos = tuple(task['goal_pos'])
 
-            new_amr = AMR(start_pos, amr_id, self.color_map[amr_id % 6])
+            new_amr = AMR(amr_id, start_pos, goal_pos, self.color_map[amr_id % 6])
             self.amr_list[amr_id] = new_amr
-            self.controller.add_amr(amr_id, start_pos, goal_pos)
+        
+        self.planner.plan_for_new_amrs(self.amr_list)
+
 
     def _check_amr_completion(self):
         completed_amrs = []
@@ -424,10 +360,11 @@ class ENV():
             del self.amr_list[amr_id]
             self.controller.remove_amr(amr_id)
 
+
     def _spawn_amrs_from_stream_gen(self):
         """
         [새로 추가된 함수 - Traffic 모드 전용]
-        TrafficGenerator12로부터 새로운 AMR을 받아 환경에 추가.
+        TrafficGenerator로부터 새로운 AMR을 받아 환경에 추가.
         """
         gen = self.traffic_generator
         if not gen or not gen.should_spawn_next():
@@ -450,9 +387,11 @@ class ENV():
                 continue
             
             # AMR 생성 및 등록 (amr 생성자 인자 순서 수정)
-            new_amr = AMR(start_pos, amr_id, self.color_map[amr_id % 6])
+            new_amr = AMR(amr_id, start_pos, goal_pos, self.color_map[amr_id % 6])
             self.amr_list[amr_id] = new_amr
-            self.controller.add_amr(amr_id, start_pos, goal_pos)
+        
+        self.planner.plan_for_new_amrs(self.amr_list)
+
 
     def _direction_to_coords(self, direction, intersection_ref):
         """
@@ -696,6 +635,7 @@ class ENV():
             return True
 
         return False
+    
 
     # --- [GUI 연동을 위한 어댑터 함수들] ---
     def Get_AMR(self):

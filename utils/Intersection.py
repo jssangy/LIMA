@@ -1,7 +1,5 @@
 import random
-import numpy as np
 from itertools import chain
-from typing import Dict
 
 
 class Intersection:
@@ -580,43 +578,28 @@ class Intersection:
         dirs = self.dirs
         out_center = {'N': (0, -1), 'E': (1, 0), 'S': (0, 1), 'W': (-1, 0)}
         in_center = {'N': (0, 1), 'E': (-1, 0), 'S': (0, -1), 'W': (1, 0)}
-        center = (self.center_x, self.center_y)
         center_way = None  # 현재 center에 존재하는 AMR이 앞으로 움직일 방향
 
         for t, (src, dst) in enumerate(actions):
             stacks_snapshot = trace[t]
             locks_snapshot = locks[t]
-            applied = set()
-
-            for aid in list(self.paths.keys()):
-                pos = self.paths[aid][-1]
-                if pos == center:
-                    if locks_snapshot.get(aid, False):
-                        applied.add(aid)
-                        continue
-                    vec = out_center.get(center_way, (0, 0))  # None 가드
-                    new_pos = (pos[0] + vec[0], pos[1] + vec[1])
-                    self.paths[aid].append(new_pos)
-                    applied.add(aid)
-
             for d in dirs:
                 for aid in stacks_snapshot[d]:
                     if locks_snapshot.get(aid, False):
                         continue
-
-                    if aid in applied:
-                        continue
                     
                     pos = self.paths[aid][-1]
-                    if d == src:                        
-                        vec = in_center[src]
-                    elif d == dst:
-                        vec = out_center[dst]
+                    if d == src:           
+                        if center_way != src:             
+                            vec = in_center[src]
+                        else:
+                            vec = (0, 0)
+                    elif d == center_way:
+                        vec = out_center[center_way]
                     else:
                         vec = (0, 0)
                     
                     new_pos = (pos[0] + vec[0], pos[1] + vec[1])
                     self.paths[aid].append(new_pos)
-                    applied.add(aid)
                     
             center_way = dst

@@ -1,21 +1,17 @@
-# tick_viewer.py
+# tick_viewer.py (업데이트)
 import curses
 from collections import defaultdict
 
 def _label(aid: int) -> str:
-    # AMR 라벨: id의 하위 2자리 (고정 폭 2)
     return f"{aid % 100:02d}"
 
-def _pad_paths(paths: dict[int, list[tuple[int,int]]]) -> tuple[dict[int, list[tuple[int,int]]], int]:
+def _pad_paths(paths: dict[int, list[tuple[int,int]]]):
     if not paths:
         return {}, 0
     T = max(len(p) for p in paths.values())
     padded = {}
     for aid, p in paths.items():
-        if not p:
-            padded[aid] = [(0,0)] * T
-            continue
-        padded[aid] = p + [p[-1]] * (T - len(p))
+        padded[aid] = p + [p[-1]] * (T - len(p)) if p else [(0,0)] * T
     return padded, T
 
 def _bbox(coords: set[tuple[int,int]]):
@@ -23,11 +19,23 @@ def _bbox(coords: set[tuple[int,int]]):
     ys = [y for _,y in coords]
     return min(xs), max(xs), min(ys), max(ys)
 
-def play_ticks_curses(I, paths: dict[int, list[tuple[int,int]]] | None = None, cell_w: int = 3):
+def play_ticks_curses(
+    I,
+    paths: dict[int, list[tuple[int,int]]] | None = None,
+    cell_w: int = 3,
+    # ▼ 숨김 옵션
+    locked_ids: set[int] | None = None,      # 잠금된 AMR id들(있다면)
+    drop_policy: str = "locked_then_center", # "none" | "on_first_center" | "on_stable_center" | "locked_only" | "locked_then_center"
+):
     """
-    I: Intersection 인스턴스 (center/lanes 사용)
-    paths: 생략 시 I.paths 사용 (actions_to_paths 실행 후)
-    cell_w: 셀 폭(문자 수). 3~4 권장
+    Space/→: 다음 틱, b/←: 이전 틱, g: 이동, h: 숨김 토글, q: 종료
+
+    drop_policy:
+      - "none"                : 숨김 없음
+      - "on_first_center"     : 첫 센터 도착 즉시 숨김
+      - "on_stable_center"    : 남은 모든 프레임이 센터일 때부터 숨김
+      - "locked_only"         : locked_ids에 한해 첫 센터 도착 즉시 숨김
+      - "locked_then_center"  : locked_ids는 첫 센터에서 숨김 + 나머지는 on_stable_center
     """
     if paths is None:
         paths = getattr(I, "paths", {})
@@ -40,16 +48,50 @@ def play_ticks_curses(I, paths: dict[int, list[tuple[int,int]]] | None = None, c
     lane_cells = set(I.all_lane_coords) | {center}
     minx, maxx, miny, maxy = _bbox(lane_cells)
 
-    # 화면에 찍을 문자열 빌드
+    # ---- 숨김 tick 계산 ----
+    drop_at: dict[int, int] = {}
+    def set_first_center(aid):
+        P = padded.get(aid)
+        if not P: return
+        for t, pos in enumerate(P):
+            if pos == center:
+                drop_at[aid] = t
+                break
+
+    if drop_policy != "none":
+        if drop_policy in ("locked_only", "locked_then_center") and locked_ids:
+            for aid in locked_ids:
+                set_first_center(aid)
+
+        if drop_policy in ("on_first_center",):
+            for aid in padded:
+                if aid in drop_at: continue
+                set_first_center(aid)
+
+        if drop_policy in ("on_stable_center", "locked_then_center"):
+            for aid, P in padded.items():
+                if aid in drop_at:  # already decided by locked rule
+                    continue
+                # 가장 이른 t부터 P[t:]가 전부 center인 시점을 찾음
+                for t in range(T):
+                    if P[t] == center and all(pos == center for pos in P[t:]):
+                        drop_at[aid] = t
+                        break
+    # 토글 가능
+    hide_enabled = (drop_policy != "none")
+
     def render_frame(t: int):
-        # 점유 맵
         occ = defaultdict(list)
-        for aid, p in padded.items():
-            occ[p[t]].append(aid)
+        hidden_now = []
+        for aid, P in padded.items():
+            # 숨김 조건 적용
+            if hide_enabled and aid in drop_at and t >= drop_at[aid]:
+                hidden_now.append(aid)
+                continue
+            occ[P[t]].append(aid)
 
         rows = []
         collisions = []
-        # 위쪽이 작은 y (화면 윗줄) — y 증가가 아래 방향
         for y in range(miny, maxy + 1):
             line = []
             for x in range(minx, maxx + 1):
@@ -60,25 +102,17 @@ def play_ticks_curses(I, paths: dict[int, list[tuple[int,int]]] | None = None, c
                         s = _label(ids[0])
                     else:
                         s = "**" if cell_w >= 2 else "*"
-                        # 충돌 리스트 기록
-                        collisions.append((pos, ids[:6]))  # 너무 길면 일부만
+                        collisions.append((pos, ids[:6]))
                 else:
-                    if pos == center:
-                        s = "C "
-                    elif pos in lane_cells:
-                        s = "· "
-                    else:
-                        s = "  "
-                # 고정 폭 셀
-                if len(s) < cell_w:
-                    s = s + " " * (cell_w - len(s))
-                elif len(s) > cell_w:
-                    s = s[:cell_w]
+                    s = "C " if pos == center else ("· " if pos in lane_cells else "  ")
+                if len(s) < cell_w: s += " " * (cell_w - len(s))
+                elif len(s) > cell_w: s = s[:cell_w]
                 line.append(s)
             rows.append("".join(line))
-        return rows, collisions
+        return rows, collisions, hidden_now
 
     def main(stdscr):
+        nonlocal hide_enabled  # ← 맨 앞에 선언!
         curses.curs_set(0)
         stdscr.nodelay(False)
         stdscr.keypad(True)
@@ -86,38 +120,37 @@ def play_ticks_curses(I, paths: dict[int, list[tuple[int,int]]] | None = None, c
 
         while True:
             stdscr.clear()
-            # 헤더
-            header = f"Tick {t}/{T-1}   [Space/→ next] [b/← prev] [g goto] [q quit]"
+            header = f"Tick {t}/{T-1}   [Space/→ next] [b/← prev] [g goto] [h hide:{'ON' if hide_enabled else 'OFF'}] [q quit]"
             stdscr.addstr(0, 0, header)
 
-            # 격자
-            rows, collisions = render_frame(t)
+            rows, collisions, hidden_now = render_frame(t)
             for i, line in enumerate(rows, start=2):
                 stdscr.addstr(i, 0, line)
 
-            # 충돌/라벨 보조정보
             row_info = 3 + len(rows)
             if collisions:
-                stdscr.addstr(row_info, 0, f"Collisions: {len(collisions)} (표시는 '**')")
+                stdscr.addstr(row_info, 0, f"Collisions: {len(collisions)} ('**')")
                 for j, (pos, ids) in enumerate(collisions[:5], start=1):
                     ids_str = ", ".join(_label(a) for a in ids)
                     stdscr.addstr(row_info + j, 0, f"  {pos}: {ids_str}")
                 row_info += min(5, len(collisions)) + 1
 
-            # 라벨 안내
-            stdscr.addstr(row_info, 0, "Label = id%100 (두 자리)  ·=lane  C=center")
+            if hide_enabled:
+                stdscr.addstr(row_info, 0, f"Hidden now: {len(hidden_now)}")
+                row_info += 1
 
-            # 입력
+            stdscr.addstr(row_info, 0, "Label=id%100  ·=lane  C=center")
+
             key = stdscr.getch()
-            if key in (ord('q'), 27):  # q or ESC
+            if key in (ord('q'), 27):
                 break
             elif key in (ord(' '), curses.KEY_RIGHT, ord('n')):
                 t = min(t + 1, T - 1)
             elif key in (ord('b'), curses.KEY_LEFT, ord('p')):
                 t = max(t - 1, 0)
-            elif key == ord('g'):  # goto
+            elif key == ord('g'):
                 curses.echo()
-                stdscr.addstr(row_info + 2, 0, "Go to tick (0..{}): ".format(T - 1))
+                stdscr.addstr(row_info + 2, 0, f"Go to tick (0..{T-1}): ")
                 try:
                     s = stdscr.getstr(row_info + 2, 22, 10).decode("utf-8")
                     tt = int(s.strip())
@@ -127,30 +160,7 @@ def play_ticks_curses(I, paths: dict[int, list[tuple[int,int]]] | None = None, c
                     pass
                 finally:
                     curses.noecho()
+            elif key == ord('h'):
+                hide_enabled = not hide_enabled  # ← nonlocal 선언 덕분에 재할당 OK
 
     curses.wrapper(main)
-
-
-# ---- 데모 ----
-if __name__ == "__main__":
-    # 데모: I.paths 가 있다고 가정하지 않으므로 간단한 가짜 paths 생성
-    class DummyI:
-        center_x = 10; center_y = 10
-        # 십자 교차로 3칸
-        lane_coords = {
-            'N': [(10,9),(10,8),(10,7)],
-            'E': [(11,10),(12,10),(13,10)],
-            'S': [(10,11),(10,12),(10,13)],
-            'W': [(9,10),(8,10),(7,10)]
-        }
-        present_dirs = {'N','E','S','W'}
-        all_lane_coords = set(sum(lane_coords.values(), [])) | {(center_x, center_y)}
-        # 예시 paths
-        paths = {
-            1: [(10,7),(10,8),(10,9),(10,10),(11,10),(11,10)],
-            2: [(12,10),(11,10),(10,10),(10,9),(10,9),(10,10)],
-            3: [(10,11),(10,11),(10,10),(9,10),(9,10),(9,10)],
-        }
-
-    I = DummyI()
-    play_ticks_curses(I)  # space로 넘겨보세요
