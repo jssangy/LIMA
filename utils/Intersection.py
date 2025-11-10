@@ -44,6 +44,7 @@ class Intersection:
 
         current_arm_direction = None
         exit_arm_direction = None
+        exit_cell = None
 
         for pos in path:
             if pos == (self.center_x, self.center_y):
@@ -65,6 +66,14 @@ class Intersection:
                 'current_arm': current_arm_direction,
                 'exit_arm': exit_arm_direction
             }
+
+
+    def check_deadlock(self):
+        if self.check_cycle_deadlock():
+            return True
+        if self.check_center_deadlock():
+            return True
+        return False
 
 
     def check_cycle_deadlock(self):
@@ -603,3 +612,5 @@ class Intersection:
                     self.paths[aid].append(new_pos)
                     
             center_way = dst
+
+        return self.paths

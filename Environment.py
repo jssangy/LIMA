@@ -3,6 +3,7 @@ import json
 import math
 import numpy as np
 from typing import Dict
+from collections import defaultdict
 
 from utils.AMR import AMR
 from utils.Intersection import Intersection
@@ -12,7 +13,7 @@ from utils.Controller import AStarPlanner, PIBTPlanner, CBSPlanner, BFSPlanner
 
 
 class ENV():
-    def __init__(self, prob_path, max_arm_len_h=5, max_arm_len_v=5, num_amrs=500, max_steps=1024, traffic_mode='task'):
+    def __init__(self, prob_path, max_arm_len_h=5, max_arm_len_v=5, num_amrs=500, max_steps=1024, running_opt=0, traffic_mode='task'):
         super().__init__()
         """환경 초기화"""
         base_dir = os.path.dirname(prob_path)
@@ -38,23 +39,32 @@ class ENV():
         self.intersections: Dict[str, Intersection] = {}
         for iid, inter_info in processed_intersections.items():
             self.intersections[iid] = Intersection(
-                inter_info['data'], 
-                self.controller, 
+                inter_info['data'],
                 inter_info['neighbors'],
                 inter_info['present_dirs'],
             )
 
+        self.cell2iids: Dict[tuple[int, int], list[str]] = defaultdict(list)
         self.event_cells = set()
-        self.cell2ix = {}
+        self.event_cells2iid = {}
         for iid, I in self.intersections.items():
             center = (I.center_x, I.center_y)
+
+            self.cell2iids[center].append(iid)
             self.event_cells.add(center)
-            self.cell2ix[center] = iid
+            self.event_cells2iid[center] = iid
+
             for d in I.dirs:
                 coords = I.lane_coords[d]
+                for cell in coords:
+                    self.cell2iids[cell].append(iid)
+
                 end_cell = coords[-1]
                 self.event_cells.add(end_cell)
-                self.cell2ix[end_cell] = iid
+                self.event_cells2iid[end_cell] = iid
+
+        self.iid_locked: set[str] = set()
+        self.iid2sched: dict[str, set[int]] = defaultdict(set)
 
         self.deadlock_queue = []
 
@@ -91,10 +101,10 @@ class ENV():
         elif self.traffic_mode == 'traffic':
             self.traffic_generator.start_new_episode()
 
-        # 컨트롤러와 모든 교차로의 내부 상태 초기화
-        self.controller.reset()
+        # 모든 교차로의 내부 상태 초기화
         for I in self.intersections.values():
             I.reset()
+
         self.deadlock_queue = []
 
         if self.traffic_mode == 'task':
@@ -111,211 +121,70 @@ class ENV():
         self.time_ms.clear()
 
         return
-
+    
 
     def step(self):
-        """
-        actions: { "x{cx}y{cy}": action_idx, ... }
-        반환: obs_next, reward_map, info_next
-        """
         self.time += 1
-        
-        # 공통 종료 조건: 최대 스텝 도달
-        if self.time >= self.max_steps:
+
+        if self.traffic_mode == 'task' and self.task_generator.is_episode_done():
             return False
 
         if self.use_scheduler:
-            sorted_iids = sorted(self.intersections.keys(), key=self._inter_rank, reverse=True)
+            check_iids = set()
+            iid2members: dict[str, list[int]] = defaultdict(list)
+            for amr_id, amr_obj in self.amr_list.items():
+                cur_ids = set(self.cell2iids.get(amr_obj.pos, ()))
+                if cur_ids:
+                    for iid in cur_ids:
+                        iid2members[iid].append(amr_id)
 
-            # === 2) 교차로별 플래닝 (옵션 틱 → 액션 시작) ===
-            for iid in sorted_iids:
+                if amr_obj.pos in self.event_cells:
+                    iid = self.event_cells2iid[amr_obj.pos]
+                    check_iids.add(iid)
+
+            for iid in list(check_iids - self.iid_locked):
                 I = self.intersections[iid]
-                if not I.is_deadlock:
+                I.amr_intent_map.clear()
+                for amr_id in iid2members[iid]:
+                    amr_obj = self.amr_list[amr_id]
+                    I.register_amr(amr_obj)
+                
+                if I.check_deadlock():
+                    self.iid_locked.add(iid)
+
+                    if iid not in self.deadlock_queue:
+                        self.deadlock_queue.append(iid)
+
+                    paths = I.actions_to_paths()
+                    for amr_id, path in paths.items():
+                        amr_obj = self.amr_list.get(amr_id)
+                        amr_obj.insert_scheduled_path(path)
+                        self.iid2sched[iid].add(amr_id)
+
+            occ = {amr.pos: amr.id for amr in self.amr_list.values()}
+
+            not_scheduled_amrs = []
+            for amr in self.amr_list.values():
+                if amr.scheduling == 0:
+                    not_scheduled_amrs.append(amr)
                     continue
+                
+                amr.move()
+                occ[amr.pos] = amr.id
 
-                I.begin_plan()
-                I.resolve_arm_swaps_all()
-                I.action_control()
-
-            final_plan_moves = {}
-            final_plan_prio = {}
-            final_plan_order = {}
-            final_plan_owner = {}
-
-            for iid in sorted_iids:
-                I = self.intersections[iid]
-                for amr_id, prio in I._plan_prio.items():
-                    prev_prio = final_plan_prio.get(amr_id, -10**9)
-                    if prio >= prev_prio:
-                        final_plan_prio[amr_id] = prio
-                        final_plan_moves[amr_id] = I._plan_moves[amr_id]
-                        final_plan_order[amr_id] = I._plan_order[amr_id]
-                        final_plan_owner[amr_id] = iid
-
-            self.controller.control_buffer.update(final_plan_moves)
-            
-            items = []
-            for amr_id, (prio, *order) in final_plan_order.items():
-                owner_iid = final_plan_owner[amr_id]
-                rank = self._inter_rank(owner_iid)
-                items.append((rank, -prio, tuple(order), amr_id))
-            items.sort()
-            
-            seq = []
-            seen = set()
-            for _, _, _, aid in items:
-                if aid not in seen:
-                    seen.add(aid)
-                    seq.append(aid)
-            self.controller.push_sequence = seq
-
-            # 3) Movement 커밋 (컨트롤러의 우선순위 큐 먼저 처리)
-            moved = set()
-            for amr_id in self.controller.push_sequence:
-                amr_obj = self.amr_list.get(amr_id)
-                if amr_obj:
-                    sig = self.controller.control_buffer.get(amr_id, (0, 0))
-                    if self._is_valid_move(amr_obj, sig):
-                        amr_obj.move(sig)
-                        amr_obj.action_count += 1
-                        moved.add(amr_id)
-            
-            # 나머지 AMR 이동
-            for amr_id, amr_obj in self.amr_list.items():
-                if amr_id not in moved:
-                    sig = self.controller.control_buffer.get(amr_id, (0, 0))
-                    if self._is_valid_move(amr_obj, sig):
-                        amr_obj.move(sig)
-
-            # 사용 후 정리
-            self.controller.push_sequence = []
-        
+            for amr in not_scheduled_amrs:
+                if amr.next_pos not in occ:
+                    amr.move()
         else:
-            for amr_id, amr_obj in self.amr_list.items():
-                sig = self.controller.control_buffer.get(amr_id, (0, 0))
-                if self._is_valid_move(amr_obj, sig):
-                    amr_obj.move(sig)
-
-        # 4) 환경 변화 처리
+            occ = {amr.pos: amr.id for amr in self.amr_list.values()}
+            for amr in self.amr_list.values():
+                if amr.next_pos not in occ:
+                    amr.move()
+                    occ[amr.pos] = amr.id
+            
         self._check_amr_completion()
 
-        if self.traffic_mode == 'task':
-            self._spawn_amrs_from_task_gen()
-        elif self.traffic_mode == 'traffic':
-            self._spawn_amrs_from_stream_gen()
-
-        # GUI/테스트 모드: 기존 요약 반환 유지
-        return self.make_info()
-    
-
-    def step(self):
-        self.time += 1
-
-        for amr_id, amr_obj in self.amr_list.items():
-            if amr_obj.pos in self.event_cells:
-                I = self.cell2ix[amr_obj.pos]
-                
-
-
-    def generate_observation(self):
-        """
-        관측 생성(부작용 없음):
-        - sensing/make_control
-        - 교차로 최신화(_update_intersections_state)
-        - 상태/마스크/푸시아웃 플래그 계산만 수행
-        """
-        # 1) 센싱/컨트롤 업데이트
-        for amr_id, amr_obj in self.amr_list.items():
-            self.controller.get_sensing(amr_id, amr_obj.pos)
-        self.controller.make_control()
-        if self.time == 0:
-            # 리셋 직후: AMR별 초기 경로 설정
-            for amr_id, paths in self.controller.amr_path.items():
-                self.amr_list[amr_id].set_initial_path(paths)
-
-        # 2) 교차로 최신화 (여기서만 최신화! step에서는 하지 않음)
-        self._update_intersections_state()
-
-        # 3) deadlock 큐 갱신
-        temp_info_for_queue = {iid: {"is_deadlock": I.is_deadlock} for iid, I in self.intersections.items()}
-        self._update_deadlock_queue(temp_info_for_queue)
-
-        # 4) 데드락/상태/마스크
-        obs = {}
-        info = {}
-
-        for iid, I in self.intersections.items():
-            state = np.asarray(I.get_state(), dtype=np.float32)
-            
-            action_mask = I.calculate_action_mask()
-            action_mask = np.asarray(action_mask, dtype=np.bool_)
-
-            obs[iid] = {
-                "state": state,
-            }
-            info[iid] = {
-                "is_deadlock": I.is_deadlock,
-                "action_mask": action_mask,
-                "macro_busy": (I.macro is not None),
-            }
-
-        return obs, info
-    
-    
-    def _update_deadlock_queue(self, info):
-        """
-        데드락 큐(FIFO):
-        - 새로 데드락이 '처음' 관찰되면 (iid, 발생시간) 을 맨 뒤에 추가
-        - 데드락이 해소되면 해당 iid 항목을 제거
-        - 더 이상 어떤 기준으로도 정렬하지 않음 (발생 시점 순서 유지)
-        """
-        # 현재 큐에 있는 iid 집합(빠른 조회용)
-        iids_in_queue = {iid for iid, _ in self.deadlock_queue}
-
-        for iid, meta in info.items():
-            if not isinstance(meta, dict):
-                continue
-
-            is_deadlocked = bool(meta.get("is_deadlock", False))
-
-            # 새 데드락: 큐에 없으면 append
-            if is_deadlocked and iid not in iids_in_queue:
-                self.deadlock_queue.append((iid, self.time))
-                iids_in_queue.add(iid)
-
-            # 해소: 큐에서 제거
-            elif (not is_deadlocked) and iid in iids_in_queue:
-                self.deadlock_queue = [item for item in self.deadlock_queue if item[0] != iid]
-
-                iids_in_queue.discard(iid)
-
-
-    def _inter_rank(self, iid):
-        """
-        [수정] 데드락 큐의 구조 변경에 맞춰 iid의 순위를 반환합니다.
-        """
-        try:
-            # 큐는 (iid, timestamp) 튜플의 리스트이므로, iid만 추출하여 인덱스를 찾음
-            iids_only = [item[0] for item in self.deadlock_queue]
-            return iids_only.index(iid)
-        except ValueError:
-            return math.inf
-    
-    
-    def _update_intersections_state(self):
-        for I in self.intersections.values():
-            I.soft_reset()
-
-        for amr_id, amr_obj in self.amr_list.items():
-            pos = amr_obj.pos
-            for I in self.intersections.values():
-                if pos in I.all_lane_coords:
-                    I.add_amr(amr_obj)
-
-        for I in self.intersections.values():
-            I.check_deadlock()
-            if I.macro is not None and not I.is_deadlock:
-                I.macro = None
+        return self.make_info()        
 
 
     def _spawn_amrs_from_task_gen(self):
@@ -344,7 +213,7 @@ class ENV():
     def _check_amr_completion(self):
         completed_amrs = []
         for amr_id, amr_obj in list(self.amr_list.items()):
-            if amr_obj.pos == self.controller.amr_goal.get(amr_id):
+            if amr_obj.pos == amr_obj.goal:
                 completed_amrs.append(amr_id)
 
         for amr_id in completed_amrs:
@@ -358,7 +227,6 @@ class ENV():
             elif self.traffic_mode == 'traffic':
                 self.traffic_generator.complete_task(amr_id)
             del self.amr_list[amr_id]
-            self.controller.remove_amr(amr_id)
 
 
     def _spawn_amrs_from_stream_gen(self):
@@ -644,7 +512,7 @@ class ENV():
 
     def get_active_tasks(self):
         """GUI가 AMR의 목표 지점을 가져갈 수 있도록 하는 함수"""
-        return self.controller.amr_goal
+        return {amr_id: amr_obj.goal for amr_id, amr_obj in self.amr_list.items()}
 
     def make_info(self):
         """
@@ -671,10 +539,7 @@ class ENV():
         all_pi = self.completed_path_integrities + active_pi
         avg_pi = float(np.mean(all_pi)) if all_pi else 0.0
 
-        if self.use_scheduler:
-            avg_ms = float(np.mean(self.time_ms)) if self.time_ms else 0.0
-        else:
-            avg_ms = float(np.mean(self.controller.time_ms)) if self.controller.time_ms else 0.0
+        avg_ms = float(np.mean(self.time_ms)) if self.time_ms else 0.0
 
         # --- 3. 현재 활성화된 AMR들의 상세 정보 수집 ---
         active_amr_details = {}

@@ -172,7 +172,7 @@ class GUI():
         self.font_renderer = lambda size: pygame.font.Font('utils/D2Coding.ttf', max(1, int(size)))
 
         self.win = pygame.display.set_mode((self.width, self.height))
-        self.redrawWindow(self.env.Get_AGV())
+        self.redrawWindow(self.env.Get_AMR())
         self.root.after(100, self.run_env())
         self.root.mainloop()
 
@@ -265,7 +265,7 @@ class GUI():
     # Run environment
     def run_env(self, event = None):
         if self.running_check:
-            run = self.env.step(train=False)
+            run = self.env.step()
             if run == False:
                 self.running_check = False
             self.make_state_info(run)
@@ -312,7 +312,7 @@ class GUI():
                 self.pan_start_pos = event.pos
 
         # 화면 다시 그리기
-        self.redrawWindow(self.env.Get_AGV())
+        self.redrawWindow(self.env.Get_AMR())
         self.root.after(self.speed_var.get(), self.run_env)
     
     # If start button is clicked
@@ -329,7 +329,7 @@ class GUI():
     def reset_env(self, event = None):
         self.running_check = False
         self.env.reset()
-        self.redrawWindow(self.env.Get_AGV())
+        self.redrawWindow(self.env.Get_AMR())
         self.make_state_info(self.env.make_info())
         self.append_log('Reset Simulation') 
     

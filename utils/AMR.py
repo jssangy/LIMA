@@ -1,4 +1,4 @@
-import numpy as np
+from typing import Tuple
 
 # AMR Object
 class AMR():
@@ -9,34 +9,29 @@ class AMR():
         self.goal = goal
         self.pos = pos
         self.prev_pos = pos
-        self.steps = 0
-        self.priority = 0       # 숫자가 클수록 우선순위가 높음 (AMR 충돌 해결용)
-        self.current_intersection_id = set() # [추가] 현재 속한 교차로 ID
-
+        self.next_pos = pos
+        self.steps = 0        
 
         # 자율 주행 및 경로 복귀를 위한 상태
         self.path = []
         self.path_cursor = 0
-        self.off_path = False
+        self.scheduling = 0
 
-        # AMR가 스스로 계산하는 다음 이동 제어 신호
-        self.next_buffer = (0, 0)
-        self.control_buffer = (0, 0)
+        self.path_remaining: set[Tuple[int, int]] = set()
+        self.path_orig_len = 0
+
 
     def reset(self):
         """
         AMR의 상태를 초기화합니다.
         """
+        self.prev_pos = self.pos
+        self.next_pos = self.pos
         self.steps = 0
-        self.priority = 0
-        self.current_intersection_id.clear()
-
         self.path = []
         self.path_cursor = 0
-        self.off_path = False
+        self.scheduling = 0
 
-        self.next_buffer = (0, 0)
-        self.control_buffer = (0, 0)
 
     def set_path(self, new_path: list):
         """
@@ -48,35 +43,51 @@ class AMR():
             self.path = new_path
 
         self.path_cursor = 0
-        self.off_path = False
+        self.next_pos = self.path[1] if len(self.path) > 1 else self.pos
+        self.path_remaining.discard(tuple(self.pos))
 
-        self.next_buffer = (self.path[1][0] - self.path[0][0], self.path[1][1] - self.path[0][1])
-        self.control_buffer = (self.path[1][0] - self.path[0][0], self.path[1][1] - self.path[0][1])
+    
+    def insert_scheduled_path(self, new_path: list):
+        if not new_path:
+            return
+        
+        cur_idx = self.path_cursor
+        prefix = self.path[:cur_idx + 1]
 
-    def move(self, final_control_signal):
+        to_insert = new_path[1:]
+
+        center_cell = to_insert[-1]
+        center_idx = None
+        for j in range(cur_idx, len(self.path)):
+            if self.path[j] == center_cell:
+                center_idx = j
+                break
+
+        suffix = self.path[center_idx + 1:]
+        self.path = prefix + to_insert + suffix
+        self.scheduling = len(to_insert)
+
+    
+    def path_integrity_ratio(self):
+        if self.path_orig_len == 0:
+            return 1.0
+        
+        return (self.path_orig_len - self.scheduling) / self.path_orig_len * 100.0
+
+
+    def move(self, freeze=False):
         """
         [수정] 이동 후, 경로상의 현재 위치를 찾아 path_cursor를 동기화합니다.
         """
-        if final_control_signal == (0, 0):
-            self.prev_pos = self.pos
-            self.priority = 0
+        if freeze:
             return
 
         self.prev_pos = self.pos
-        self.pos = (self.pos[0] + final_control_signal[0], self.pos[1] + final_control_signal[1])
+        self.path_cursor += 1
+        self.pos = self.path[self.path_cursor]
+        self.next_pos = self.path[self.path_cursor + 1] if self.path_cursor + 1 < len(self.path) else self.pos
         self.steps += 1
-        self.priority = 0                           # 우선순위는 매 스텝 초기화
-        self.current_intersection_id.clear()        # [추가] 현재 속한 교차로 ID 초기화
-
-        try:
-            # 현재 위치가 경로상의 몇 번째 인덱스에 있는지 찾음
-            current_idx_on_path = self.path.index(self.pos)
-            
-            # 성공적으로 찾았다면, path_cursor를 해당 인덱스로 업데이트하고 off_path를 해제
-            self.path_cursor = current_idx_on_path
-            self.off_path = False
-            self.next_buffer = (self.path[1][0] - self.path[0][0], self.path[1][1] - self.path[0][1])
-
-        except ValueError:
-            # 현재 위치가 경로상에 존재하지 않으면, 경로 이탈 상태로 설정
-            self.off_path = True
+        if self.scheduling > 0:
+            self.scheduling -= 1
+        if self.path_remaining:
+            self.path_remaining.discard(self.pos)
