@@ -86,17 +86,15 @@ class GUI():
         self.algorithm_box.current(0)
         self.algorithm_box.bind("<<ComboboxSelected>>", self.algorithm_changed)
 
-        # RL Agent Setting
-        self.rl_agent_var = tk.BooleanVar()
-        self.rl_agent_check = tk.Checkbutton(
+        self.scheduler_var = tk.BooleanVar()
+        self.scheduler_check = tk.Checkbutton(
             self.setting,
-            text="Intersection RL Agent",
-            variable=self.rl_agent_var,
+            text="Use Scheduler",
+            variable=self.scheduler_var,
             font=self.font_style2,
-            command=self.rl_agent_toggled
+            command=self.scheduler_toggled
         )
-        # Environment의 RL 사용 여부에 따라 초기값 설정
-        self.rl_agent_var.set(getattr(self.env, 'use_rl', False))
+        self.scheduler_var.set(getattr(self.env, 'use_scheduler', False))
 
         # Show Goal Line Setting
         self.show_goal_var = tk.BooleanVar()
@@ -150,7 +148,7 @@ class GUI():
         self.speed_scale.pack()
         self.algorithm_label.pack()
         self.algorithm_box.pack()
-        self.rl_agent_check.pack()
+        self.scheduler_check.pack()
         self.show_goal_check.pack()
         self.setting.pack_propagate(0)
         
@@ -182,68 +180,59 @@ class GUI():
         screen_y = (map_y * self.zoom_level) - self.view_offset_y
         return int(screen_x), int(screen_y)
         
-    # Update windows
+    # Update Window
     def redrawWindow(self, agv_list):
         pygame.display.set_caption('Warehouse Digital Twin')
         self.win.fill((32,32,32))
         self.drawMap()
 
-        # Draw active tasks as rectangles (with AGV color)
-        active_tasks = self.env.get_active_tasks()  # {agv_id: (row, col)}
-        for num, (row, col) in active_tasks.items():
-            color = self.env.color_map[num]
-            # [수정] 좌표 변환 함수 및 zoom_level 사용
-            sx, sy = self.map_to_screen(row, col)
+        # 목표 지점 표시(사각형)
+        active_tasks = self.env.get_active_tasks()  # {amr_id: (x,y)}
+        for agv_id, (gx, gy) in active_tasks.items():
+            color = self.env.color_map[agv_id % 6]
+            sx, sy = self.map_to_screen(gx, gy)
             pygame.draw.rect(self.win, color, (sx, sy, self.zoom_level, self.zoom_level))
 
-        # Draw AGVs as circles
-        for num, agv in agv_list.items():
-            x, y = agv.pos[0], agv.pos[1]
-            # [수정] 좌표 변환 함수 및 zoom_level 사용
+        # AGV 표시
+        for _, agv in agv_list.items():
+            x, y = agv.pos
             sx, sy = self.map_to_screen(x + 0.5, y + 0.5)
-            pygame.draw.circle(self.win, agv.color, (sx, sy), int(self.zoom_level / 2) - 2)
+            pygame.draw.circle(self.win, agv.color, (sx, sy), max(1, int(self.zoom_level / 2) - 2))
 
-        # Draw goal lines if enabled
+        # 목표 라인 (옵션)
         if self.show_goal_var.get():
             for agv_id, agv in agv_list.items():
-                goal_pos = self.env.controller.agv_goal.get(agv_id)
-                if goal_pos:
-                    # [수정] 좌표 변환 함수 사용
+                goal = active_tasks.get(agv_id)
+                if goal:
                     start_sx, start_sy = self.map_to_screen(agv.pos[0] + 0.5, agv.pos[1] + 0.5)
-                    end_sx, end_sy = self.map_to_screen(goal_pos[0] + 0.5, goal_pos[1] + 0.5)
-                    # [수정] color 인자를 agv.color로, start/end pos를 올바르게 수정
+                    end_sx,   end_sy   = self.map_to_screen(goal[0] + 0.5,    goal[1] + 0.5)
                     pygame.draw.line(self.win, agv.color, (start_sx, start_sy), (end_sx, end_sy), 2)
 
-        # [수정] 데드락 교차로에 우선순위별 색상 박스 및 우선순위 표시
-        if hasattr(self.env, 'deadlock_queue'):
-            priority_colors = [(255, 0, 0), (255, 165, 0), (255, 255, 0)]
+        # Deadlock overlay (iid 리스트 또는 (iid, ts) 지원)
+        dq = getattr(self.env, 'deadlock_queue', [])
+        if dq:
+            priority_colors = [(255, 0, 0), (255,165,0), (255,255,0)]
             default_color = (0, 0, 255)
-
-            for priority, (iid, timestamp) in reversed(list(enumerate(self.env.deadlock_queue))):
-                intersection = self.env.intersections.get(iid)
-                if not intersection: continue
-
-                x_min, x_max = intersection.center_x - intersection.len_W, intersection.center_x + intersection.len_E
-                y_min, y_max = intersection.center_y - intersection.len_N, intersection.center_y + intersection.len_S
-
-                # [수정] 좌표 변환 함수 및 zoom_level 사용
+            # 최신이 뒤에 쌓인다고 가정 → 우선순위는 뒤에서부터
+            for priority, entry in enumerate(reversed(dq)):
+                iid = entry[0] if isinstance(entry, (tuple, list)) else entry
+                I = self.env.intersections.get(iid)
+                if not I:
+                    continue
+                x_min, x_max = I.center_x - I.len_W, I.center_x + I.len_E
+                y_min, y_max = I.center_y - I.len_N, I.center_y + I.len_S
                 px, py = self.map_to_screen(x_min, y_min)
-                p_width = (x_max - x_min + 1) * self.zoom_level
+                p_width  = (x_max - x_min + 1) * self.zoom_level
                 p_height = (y_max - y_min + 1) * self.zoom_level
-
                 box_color = priority_colors[priority] if priority < len(priority_colors) else default_color
                 pygame.draw.rect(self.win, box_color, (px, py, p_width, p_height), 3)
 
-                priority_text = str(priority + 1)
-                # [수정] 폰트 크기를 zoom_level에 비례하게 동적으로 조절
                 font = self.font_renderer(self.zoom_level * 0.8)
-                text_surface = font.render(priority_text, True, (255, 255, 0))
-                
-                text_rect = text_surface.get_rect(topleft=(px + 5, py + 5))
-                self.win.blit(text_surface, text_rect)
-        
+                text_surface = font.render(str(priority + 1), True, (255,255,0))
+                self.win.blit(text_surface, (px + 5, py + 5))
+
         pygame.display.flip()
-        return
+
     
     # Draw Map
     def drawMap(self):
@@ -402,16 +391,6 @@ class GUI():
             
         return 
 
-    def rl_agent_toggled(self):
-        if self.rl_agent_var.get():
-            # RL 정책이 로드되어 있는지 확인
-            if hasattr(self.env, 'rl_policy') and self.env.rl_policy is not None:
-                self.env.use_rl = True
-                self.append_log("Intersection RL Agent ON")
-            else:
-                # 정책이 없으면 경고 메시지와 함께 체크박스 해제
-                self.append_log("Warning: No RL policy loaded!")
-                self.rl_agent_var.set(False)
-        else:
-            self.env.use_rl = False
-            self.append_log("Intersection RL Agent OFF")
+    def scheduler_toggled(self):
+        self.env.use_scheduler = bool(self.scheduler_var.get())
+        self.append_log(f"Scheduler {'ON' if self.env.use_scheduler else 'OFF'}")

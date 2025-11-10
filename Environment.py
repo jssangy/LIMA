@@ -112,7 +112,8 @@ class ENV():
         elif self.traffic_mode == 'traffic':
             self._spawn_amrs_from_stream_gen()
 
-        self.use_scheduler = False
+        self.iid_locked.clear()
+        self.iid2sched.clear()
 
         self.completed_amr_steps.clear()
 
