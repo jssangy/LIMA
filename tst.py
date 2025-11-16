@@ -1,24 +1,30 @@
-# test_actions_to_paths_integration.py
+# tst.py
 # ------------------------------------------------------------
-# Intersection 전체 흐름(등록 → plan_action → actions_to_paths) 통합 테스트
+# 여러 랜덤 케이스로 Intersection → plan_action → actions_to_paths 검증
+# tick_viewer로 매 케이스 결과를 인터랙티브 시각화
 # ------------------------------------------------------------
+import argparse
 import random
 from typing import Dict, List, Tuple
+
 from utils.Intersection import Intersection
 from tick_viewer import play_ticks_curses
 
-# --- 최소 AMR 스텁 ---
+
+# --- 최소 AMR 스텁 (Intersection.register_amr 가 요구하는 필드만) ---
 class AMR:
-    def __init__(self, aid, pos):
+    def __init__(self, aid: int, pos: Tuple[int,int]):
         self.id = aid
         self.pos = pos
-        self.path = []
-    def set_path(self, path):
+        self.path: List[Tuple[int,int]] = []
+
+    def set_path(self, path: List[Tuple[int,int]]):
         self.path = path
 
+
 # --- 헬퍼들 ---
-def build_path_through_center(I: Intersection, start_pos, exit_dir: str):
-    """register_amr가 exit_arm을 추출할 수 있도록 center를 경유하는 간단 경로 생성"""
+def build_path_through_center(I: Intersection, start_pos: Tuple[int,int], exit_dir: str) -> List[Tuple[int,int]]:
+    """register_amr가 exit_arm을 추출할 수 있도록 center를 경유시키는 경로"""
     center = (I.center_x, I.center_y)
     exit_front = I.lane_coords[exit_dir][0]
     return [start_pos, center, exit_front]
@@ -28,25 +34,25 @@ def register(I: Intersection, amr: AMR, exit_dir: str):
     I.register_amr(amr)
 
 def seed_paths_from_intent(I: Intersection):
-    """현재 위치로 self.paths 시드 (actions_to_paths가 self.paths를 사용하므로 필수)"""
+    """현재 위치로 self.paths 시드 (actions_to_paths가 self.paths를 사용)"""
     I.paths = {}
     for aid, rec in I.amr_intent_map.items():
         a = rec.get('amr_obj')
-        if a is None: 
+        if not a: 
             continue
         pos = getattr(a, "pos", None)
         if pos is None:
             continue
         I.paths[aid] = [pos]
 
-def snapshot_lanes(I: Intersection):
+def snapshot_lanes(I: Intersection) -> Dict[str, List[int|None]]:
     lanes = {}
     pos2id = {rec['amr_obj'].pos: aid for aid, rec in I.amr_intent_map.items() if rec.get('amr_obj')}
     for d, coords in I.lane_coords.items():
         lanes[d] = [pos2id.get(p) for p in coords]
     return lanes
 
-def pprint_lanes(title, lanes: Dict[str, List[int|None]]):
+def pprint_lanes(title: str, lanes: Dict[str, List[int|None]]):
     def row(vals):
         return "[" + ", ".join("." if v is None else str(v) for v in vals) + "]"
     parts = []
@@ -64,15 +70,15 @@ def all_coords_ok(I: Intersection, paths: Dict[int, List[Tuple[int,int]]]):
                 return False, (aid, xy)
     return True, None
 
-def manhattan(a,b): return abs(a[0]-b[0]) + abs(a[1]-b[1])
+def manhattan(a,b): 
+    return abs(a[0]-b[0]) + abs(a[1]-b[1])
 
-def steps_ok(paths):
+def steps_ok(paths: Dict[int, List[Tuple[int,int]]]):
     for aid, p in paths.items():
         for i in range(len(p)-1):
             if manhattan(p[i], p[i+1]) > 1:
                 return False, (aid, p[i], p[i+1])
     return True, None
-
 
 def _fmt_xy(xy, center=None):
     if xy is None:
@@ -82,117 +88,109 @@ def _fmt_xy(xy, center=None):
     x, y = xy
     return f"({x},{y})"
 
-def print_paths_tickwise(paths, *, center=None, pad="repeat"):
-    """
-    행=틱, 열=AMR ID 로 정렬 출력.
-    pad="repeat"  -> 짧은 경로는 마지막 좌표를 반복해 패딩
-    pad="dot"     -> 짧은 경로는 '.'로 패딩
-    """
+def print_paths_tickwise(paths: Dict[int, List[Tuple[int,int]]], *, center=None, pad="repeat"):
+    """행=틱, 열=AMR ID로 정렬 출력"""
     if not paths:
         print("\n[tickwise] (empty)")
         return
-
     amr_ids = sorted(paths.keys())
     max_len = max(len(p) for p in paths.values())
 
-    # 패딩 후 문자열로 변환
     table = {aid: [] for aid in amr_ids}
     for aid in amr_ids:
         p = paths[aid]
-        if not p:
-            padded = [None] * max_len
-        else:
-            if pad == "repeat":
-                padded = p + [p[-1]] * (max_len - len(p))
-            else:  # pad == "dot"
-                padded = p + [None] * (max_len - len(p))
+        padded = p + [p[-1]] * (max_len - len(p)) if (p and pad == "repeat") else (p + [None] * (max_len - len(p)))
         table[aid] = [_fmt_xy(xy, center=center) for xy in padded]
 
-    # 컬럼 너비 계산
-    col_w = max(
-        max(len(s) for aid in amr_ids for s in table[aid]),
-        max(len(str(aid)) for aid in amr_ids)
-    )
-
-    # 헤더
+    col_w = max(max(len(s) for aid in amr_ids for s in table[aid]), max(len(str(aid)) for aid in amr_ids))
     print("\n[tickwise]")
     print("tick ".ljust(6) + " ".join(f"{aid:>{col_w}}" for aid in amr_ids))
     print("-" * (6 + (col_w + 1) * len(amr_ids)))
-
-    # 본문
     for t in range(max_len):
         row = " ".join(f"{table[aid][t]:>{col_w}}" for aid in amr_ids)
         print(f"T{t:02d}  {row}")
 
 
+# --- 랜덤 케이스 러너 ---
+def run_random_case(case_idx: int, n_amrs: int, lenN: int, lenE: int, lenS: int, lenW: int, seed: int, view: bool):
+    print(f"\n== Case #{case_idx}: random actions_to_paths (seed={seed}) ==")
+    random.seed(seed)
 
-# --- 시나리오 3: 어려운 동작 ---
-def run_scenario_hard():
-    print("\n== Scenario 3: hard actions_to_paths ==")
-    random.seed(2)
-
+    # 교차로 생성 (중앙 (10,10); 팔 길이는 인자)
     I = Intersection(
-        intersection_data=(10,10,3,3,3,3),
+        intersection_data=(10, 10, lenN, lenE, lenS, lenW),
         neighbors_map={},
         present_dirs={'N','E','S','W'},
     )
 
-    # 좌표 단축
-    N0,N1,N2 = I.lane_coords['N']
-    E0,E1,E2 = I.lane_coords['E']
-    S0,S1,S2 = I.lane_coords['S']
-    W0,W1,W2 = I.lane_coords['W']
+    # 시작 위치 후보(레인 전체) 준비
+    lane_cells = []
+    for d in I.dirs:
+        lane_cells.extend(I.lane_coords[d])
+    random.shuffle(lane_cells)
 
-    # AMR 생성 & 등록 (register_amr 실제 사용)
-    a1 = AMR(1, N0)
-    a2 = AMR(2, N1) 
-    a3 = AMR(3, E0) 
-    a4 = AMR(4, E1)  
-    a5 = AMR(5, S0)  
-    a6 = AMR(6, S1) 
-    a7 = AMR(7, W0)  
-    a8 = AMR(8, W1) 
-    a9 = AMR(9, W2)
-    register(I, a1, 'S')
-    register(I, a2, 'E')
-    register(I, a3, 'W')
-    register(I, a4, 'S')
-    register(I, a5, 'N')
-    register(I, a6, 'W')
-    register(I, a7, 'E')
-    register(I, a8, 'N')
-    register(I, a9, 'S')
+    # AMR 수 제한(레인 전체 칸 수 초과 방지)
+    n_cap = min(n_amrs, len(lane_cells))
+    chosen_starts = lane_cells[:n_cap]
 
-    # 초기 self.paths 시드
+    # 무작위 AMR 생성 & 등록(출구 방향도 랜덤)
+    for idx, start in enumerate(chosen_starts, start=1):
+        exit_dir = random.choice(list(I.dirs))
+        amr = AMR(idx, start)
+        register(I, amr, exit_dir)
+
+    # paths 시드
     seed_paths_from_intent(I)
 
     print("initial lanes:")
     pprint_lanes("lanes   ", snapshot_lanes(I))
 
-    # 실행: plan_action은 actions_to_paths 내부에서 호출됨
+    # 실행
     I.actions_to_paths()
 
     # 검증
-    paths = I.paths
-    lens = {aid: len(p) for aid,p in paths.items()}
+    ok, detail = all_coords_ok(I, I.paths)
+    if not ok:
+        print(f"⚠️ invalid coord found: {detail}")
+    ok2, detail2 = steps_ok(I.paths)
+    assert ok2, f"한 틱에 2칸 이상 이동: {detail2}"
 
-    ok, detail = all_coords_ok(I, paths)
-    # assert ok, f"유효하지 않은 좌표 발견: {detail}"
+    print_paths_tickwise(I.paths, center=(I.center_x, I.center_y), pad="repeat")
 
-    ok, detail = steps_ok(paths)
-    assert ok, f"한 틱에 2칸 이상 이동: {detail}"
+    # 뷰어로 확인 (q로 종료 → 다음 케이스 진행)
+    if view:
+        play_ticks_curses(I)
 
-    center = (I.center_x, I.center_y)
-    print_paths_tickwise(I.paths, center=center, pad="repeat")
+    # 요약
+    for aid, p in sorted(I.paths.items()):
+        print(f"AMR {aid:>2} len={len(p)} tail={p[:3]} ... {p[-3:]}")
 
-    play_ticks_curses(I)
+    print("✅ case passed")
 
-    for aid, p in I.paths.items():
-        print(f"AMR {aid} path: {p}")
 
-    print("✅ basic scenario passed")
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--cases", type=int, default=1, help="몇 개의 랜덤 케이스를 돌릴지")
+    ap.add_argument("--amrs", type=int, default=15, help="케이스당 AMR 수")
+    ap.add_argument("--lenN", type=int, default=5)
+    ap.add_argument("--lenE", type=int, default=5)
+    ap.add_argument("--lenS", type=int, default=5)
+    ap.add_argument("--lenW", type=int, default=5)
+    ap.add_argument("--seed", type=int, default=0, help="전역 시드(케이스별로 +i)")
+    ap.add_argument("--no-view", action="store_true", help="tick_viewer 생략")
+    args = ap.parse_args()
+
+    for i in range(args.cases):
+        run_random_case(
+            case_idx=i+1,
+            n_amrs=args.amrs,
+            lenN=args.lenN, lenE=args.lenE, lenS=args.lenS, lenW=args.lenW,
+            seed=args.seed + i,
+            view=not args.no_view
+        )
+
+    print("\nAll random cases finished ✅")
 
 
 if __name__ == "__main__":
-    run_scenario_hard()
-    print("\nAll integration tests passed ✅")
+    main()
