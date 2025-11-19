@@ -342,11 +342,10 @@ class Intersection:
                 # 그 외(정지 패딩)
                 paths[aid].append(last)
 
-        for aid, p in paths.items():
-            self.paths[aid] = p[:]
+        self.paths = paths.copy()
 
         return target_lanes, paths
-    
+
     
     def scan_exit_possible(self, lanes):
         dirs = self.dirs
@@ -381,6 +380,7 @@ class Intersection:
 
         return possible
         
+        
     
     def plan_action(self):
         """
@@ -397,6 +397,27 @@ class Intersection:
         capacity = {'N': self.len_N, 'E': self.len_E, 'S': self.len_S, 'W': self.len_W}
         dirs = [d for d in "NESW" if d in self.present_dirs]
 
+        # --- 여기부터: 이미 스케줄링 대상에서 빠진 AMR들을 capacity에만 반영 ---
+        # 1) 이번 스케줄링에 실제로 참여하는 AMR 집합
+        ids_in_stacks = set()
+        for d in dirs:
+            ids_in_stacks.update(stacks[d])
+
+        # 2) 각 팔별로 "스케줄링에는 안 쓰지만, 팔 위에 올라가 있는" AMR 개수 카운트
+        prefilled = {d: 0 for d in dirs}
+        for aid, rec in self.amr_intent_map.items():
+            if aid in ids_in_stacks:
+                continue  # 이번 스케줄 대상이면 capacity에서 빼지 않음
+
+            cur_arm = rec.get('current_arm')
+            # 현재 어느 팔 위에 있는지만 보면 충분 (센터 'C'는 제외)
+            if cur_arm in dirs:
+                prefilled[cur_arm] += 1
+
+        # 3) 각 팔 capacity에서 prefilled 개수만큼 빼서 "스케줄 가능한 슬롯 수"로 조정
+        for d in dirs:
+            capacity[d] = max(0, capacity[d] - prefilled[d])
+
         predicted_stacks = self.predicted_stacks(stacks)
 
         locked = {aid: False for aid in targets.keys()}
@@ -406,53 +427,73 @@ class Intersection:
                     locked[aid] = True
                 else:
                     break
-        
+
         trace.append({d: stacks[d][:] for d in stacks})
         locks.append(locked.copy())
+
+        # --- 출력 헬퍼: 각 스택을 '출구방향문자 나열'로 표현 (바닥→TOP) ---
+        def _fmt_stacks_dir(st):
+            return " | ".join(f"{d}:{''.join(targets.get(a,'?') for a in st[d])}" for d in dirs)
+
+        print(f"[plan_action] START  stacks={_fmt_stacks_dir(stacks)}")
 
         # 라운드로빈 상태
         pivot_idx = 0
         no_progress_count = 0
+        it = 0
 
         while True:
+            it += 1
+            P = dirs[pivot_idx]
+            pre = _fmt_stacks_dir(stacks)
+
             # 1) TOP 스캔 1회
-            if self.top_scan(stacks, targets, capacity, dirs, actions, locked):
+            before_len = len(actions)
+            moved_top = self.top_scan(stacks, targets, capacity, dirs, actions, locked)
+            if moved_top:
+                post = _fmt_stacks_dir(stacks)
+                mv = actions[-1] if len(actions) > before_len else ("?", "?")
                 trace.append({d: stacks[d][:] for d in stacks})
                 locks.append(dict(locked))
                 no_progress_count = 0
+                print(f"[{it:04d}] P={P}  ACT=TS {mv[0]}->{mv[1]}  {pre} -> {post}")
                 continue
 
             # 2) 라운드 로빈: 현재 피벗 P에서 1건만 이동
-            P = dirs[pivot_idx]
             progressed = False
-
             if stacks[P] and self.to_letter(stacks[P], targets) != predicted_stacks.get(P, []):
-                # TOP을 '가장 적게 찬' 스택으로 이동
                 candidates = [d for d in dirs if d != P and len(stacks[d]) < capacity[d]]
-                min_len = min(len(stacks[d]) for d in candidates)
-                ties = [d for d in candidates if len(stacks[d]) == min_len]
-                candidate = random.choice(ties)  # 동률이면 랜덤 선택
-                if candidate:
+                if candidates:
+                    # 기존 로직 유지: 동률이면 랜덤 선택
+                    candidate = random.choice(candidates)
                     aid = stacks[P].pop()
                     stacks[candidate].append(aid)
                     actions.append((P, candidate))
                     progressed = True
-
+                    post = _fmt_stacks_dir(stacks)
                     trace.append({d: stacks[d][:] for d in stacks})
                     locks.append(dict(locked))
+                    print(f"[{it:04d}] P={P}  ACT=RR {P}->{candidate} dir={targets.get(aid,'?')}  {pre} -> {post}")
 
-            # 피벗 내 아이템이 모두 피벗과 같은 목적지이거나 피벗이 비어있으면 업데이트
+            # 피벗 업데이트
             if not stacks[P] or all(targets.get(aid) == P for aid in stacks[P]):
                 pivot_idx = (pivot_idx + 1) % len(dirs)
 
-            if progressed:
-                no_progress_count = 0
-            else:
+            if not progressed:
                 no_progress_count += 1
+                post = _fmt_stacks_dir(stacks)  # 변화가 없더라도 현재 상태를 출력
+                print(f"[{it:04d}] P={P}  ACT=NOP no_progress={no_progress_count}  {pre} -> {post}")
                 if no_progress_count >= len(dirs):
-                    break  # 더 이상 이동할 수 없으면 종료
+                    print(f"[plan_action] STOP no_progress={no_progress_count} >= {len(dirs)}")
+                    break
+            else:
+                no_progress_count = 0
 
+        print(f"[plan_action] END   actions={actions}")
         return actions, trace, locks
+
+
+
 
 
     def top_scan(self, stacks, targets, capacity, dirs, actions, locked):

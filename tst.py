@@ -45,21 +45,38 @@ def seed_paths_from_intent(I: Intersection):
             continue
         I.paths[aid] = [pos]
 
-def snapshot_lanes(I: Intersection) -> Dict[str, List[int|None]]:
+def snapshot_lanes(I: Intersection) -> Dict[str, List[tuple | None]]:
+    """각 레인 셀에 (amr_id, exit_dir) 또는 None 저장"""
     lanes = {}
-    pos2id = {rec['amr_obj'].pos: aid for aid, rec in I.amr_intent_map.items() if rec.get('amr_obj')}
+    pos2info = {}
+    for aid, rec in I.amr_intent_map.items():
+        amr = rec.get('amr_obj')
+        if not amr:
+            continue
+        exit_dir = rec.get('exit_arm')
+        pos2info[amr.pos] = (aid, exit_dir)
+
     for d, coords in I.lane_coords.items():
-        lanes[d] = [pos2id.get(p) for p in coords]
+        lanes[d] = [pos2info.get(p) for p in coords]
     return lanes
 
-def pprint_lanes(title: str, lanes: Dict[str, List[int|None]]):
+def pprint_lanes(title: str, lanes: Dict[str, List[tuple | None]]):
+    def cell(v):
+        if v is None:
+            return "."
+        aid, exit_dir = v
+        # 모양은 취향대로: "3N" 또는 "3(N)" 등
+        return f"{aid}{exit_dir}"
+
     def row(vals):
-        return "[" + ", ".join("." if v is None else str(v) for v in vals) + "]"
+        return "[" + ", ".join(cell(v) for v in vals) + "]"
+
     parts = []
     for d in "NESW":
         if d in lanes:
             parts.append(f"{d}:{row(lanes[d])}")
     print(f"{title}:  " + " | ".join(parts))
+
 
 def all_coords_ok(I: Intersection, paths: Dict[int, List[Tuple[int,int]]]):
     okset = set(I.all_lane_coords)
@@ -114,7 +131,8 @@ def print_paths_tickwise(paths: Dict[int, List[Tuple[int,int]]], *, center=None,
 # --- 랜덤 케이스 러너 ---
 def run_random_case(case_idx: int, n_amrs: int, lenN: int, lenE: int, lenS: int, lenW: int, seed: int, view: bool):
     print(f"\n== Case #{case_idx}: random actions_to_paths (seed={seed}) ==")
-    random.seed(seed)
+    if seed != 0:
+        random.seed(seed)
 
     # 교차로 생성 (중앙 (10,10); 팔 길이는 인자)
     I = Intersection(
@@ -163,7 +181,7 @@ def run_random_case(case_idx: int, n_amrs: int, lenN: int, lenE: int, lenS: int,
 
     # 요약
     for aid, p in sorted(I.paths.items()):
-        print(f"AMR {aid:>2} len={len(p)} tail={p[:3]} ... {p[-3:]}")
+        print(f"AMR {aid:>2} len={len(p)} tail={p}")
 
     print("✅ case passed")
 
@@ -185,7 +203,7 @@ def main():
             case_idx=i+1,
             n_amrs=args.amrs,
             lenN=args.lenN, lenE=args.lenE, lenS=args.lenS, lenW=args.lenW,
-            seed=args.seed + i,
+            seed=args.seed,
             view=not args.no_view
         )
 
