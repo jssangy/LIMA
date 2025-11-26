@@ -1,12 +1,15 @@
 import random
 from itertools import chain
+from copy import deepcopy
+
+from utils.sch import schedule
+from utils.env import StackRearrangementEnv
 
 
 class Intersection:
-    def __init__(self, intersection_data, neighbors_map, present_dirs):
+    def __init__(self, intersection_data, present_dirs):
         self.center_x, self.center_y, self.len_N, self.len_E, self.len_S, self.len_W = intersection_data
         self.id = f'x{self.center_x}y{self.center_y}'
-        self.neighbors = neighbors_map
 
         if present_dirs is None:
             present_dirs = {d for d,L in zip("NESW",[self.len_N,self.len_E,self.len_S,self.len_W]) if L>0}
@@ -30,48 +33,102 @@ class Intersection:
         self.amr_intent_map = {}            # {amr_id: {'amr_obj': amr, 'current_arm': 'N', 'exit_arm': 'S'}}
         self.is_deadlock = False
         self.paths = {}                 # {amr_id: [(x,y), ...]}
+        self.target_exits = {}          # {amr_id: (x,y)}  # 각 AMR의 "원래" 출구 tip 좌표
 
 
     def reset(self):
         self.amr_intent_map = {}
         self.is_deadlock = False
         self.paths = {}
+        self.target_exits = {}
 
-
+    
     def register_amr(self, amr):
         path = amr.path
-        if not path: return
+        if not path:
+            raise ValueError("AMR path is empty; cannot register intent.")
 
+        center = (self.center_x, self.center_y)
         current_arm_direction = None
         exit_arm_direction = None
         exit_cell = None
 
-        for pos in path:
-            if pos == (self.center_x, self.center_y):
-                next_pos_index = path.index(pos) + 1
+        for i in range(len(path)-1, -1, -1):
+            if path[i] == center:
+                next_pos_index = i + 1
                 exit_cell = path[next_pos_index]
                 break
-        
+
         for direction, coords in self.lane_coords.items():
-            if amr.pos == (self.center_x, self.center_y):
+            if amr.pos == center:
                 current_arm_direction = "C"
             if amr.pos in coords:
                 current_arm_direction = direction
-            if exit_cell in coords:
+            if exit_cell is not None and exit_cell in coords:
                 exit_arm_direction = direction
 
-        if current_arm_direction and exit_arm_direction:
-            self.amr_intent_map[amr.id] = {
-                'amr_obj': amr,
-                'current_arm': current_arm_direction,
-                'exit_arm': exit_arm_direction
-            }
+        if exit_cell is None:
+            exit_arm_direction = current_arm_direction
+
+        if current_arm_direction is None or exit_arm_direction is None:
+            raise ValueError("Could not determine current or exit arm direction for AMR.")
+
+        self.amr_intent_map[amr.id] = {
+            'amr_obj': amr,
+            'current_arm': current_arm_direction,
+            'exit_arm': exit_arm_direction
+        }
+
+
+
+    def _print_intent_table(self):
+        """
+        AMR별 current_arm / exit_arm 상태를 표로 출력.
+        행 = AMR id, 열 = current_arm, exit_arm
+        """
+        if not self.amr_intent_map:
+            print("\n[Intent Table] (empty)")
+            return
+
+        # AMR id 정렬 (키가 str일 수도 있으니 int 캐스팅 시도)
+        rows = []
+        for aid, rec in self.amr_intent_map.items():
+            try:
+                aid_int = int(aid)
+            except (TypeError, ValueError):
+                aid_int = aid  # 그대로 사용
+            cur = rec.get("current_arm", "")
+            nxt = rec.get("exit_arm", "")
+            rows.append((aid_int, str(cur), str(nxt)))
+
+        # id 기준 정렬
+        try:
+            rows.sort(key=lambda x: int(x[0]))
+        except Exception:
+            rows.sort(key=lambda x: str(x[0]))
+
+        # 컬럼 폭 계산
+        id_w   = max(len("AMR"), max(len(str(r[0])) for r in rows))
+        cur_w  = max(len("current_arm"), max(len(r[1]) for r in rows))
+        exit_w = max(len("exit_arm"),   max(len(r[2]) for r in rows))
+
+        print("\n[Intent Table]")
+        header = f"{'AMR':>{id_w}}  {'current_arm':>{cur_w}}  {'exit_arm':>{exit_w}}"
+        print(header)
+        print("-" * len(header))
+
+        for aid, cur, nxt in rows:
+            print(f"{str(aid):>{id_w}}  {cur:>{cur_w}}  {nxt:>{exit_w}}")
 
 
     def check_deadlock(self):
         if self.check_cycle_deadlock():
+            self._print_intent_table()
+            print("Deadlock detected by cycle!")
             return True
         if self.check_center_deadlock():
+            self._print_intent_table()
+            print("Deadlock detected by center ingress conflict!")
             return True
         return False
 
@@ -141,61 +198,45 @@ class Intersection:
 
         self.is_deadlock = inline_conflict
         return self.is_deadlock
-    
+
     
     def check_center_deadlock(self):
-        if self.check_cycle_deadlock():
-            return True
-        
-        # --- 준비 ---
-        vec = {'N': (0, -1), 'E': (1, 0), 'S': (0, 1), 'W': (-1, 0)}
-        center = (self.center_x, self.center_y)
-        dirs = self.dirs
-        front_cell = {d: (self.center_x + vec[d][0], self.center_y + vec[d][1]) for d in dirs}
+        """
+        중앙에 있는 AMR 기준 데드락 탐지.
 
-        center_rec = None
-        exit_dir = None
+        1) current_arm == 'C' 인 AMR이 없으면 → 데드락 아님
+        2) 있으면 해당 AMR의 exit_arm = exit_dir
+        3) 다시 amr_intent_map을 순회하면서
+        - current_arm == exit_dir 인 AMR이 존재하고
+        - 그 AMR의 exit_arm != current_arm 이면
+            → 중앙 AMR과 충돌 의도가 있으므로 데드락
+        """
+        # 1. center에 있는 AMR 찾기
+        center_exit = None
+        for aid, rec in self.amr_intent_map.items():
+            if rec.get('current_arm') == 'C':
+                center_exit = rec.get('exit_arm')
+                break
 
-        # 수집용(단일 순회로 채움)
-        exists_ingress = {d: False for d in dirs}   # cur==d & nxt!=d 가 존재하는지
-        front_occupied = {d: False for d in dirs}   # front 셀 점유 여부
-        front_ingressor = {}                         # front에서 센터로 들어오려는 amr (최대 1/방향)
+        # center 없음 또는 출구 방향 이상 → 데드락 아님
+        if center_exit not in self.dirs:
+            self.is_deadlock = False
+            return False
 
-        # --- 1-pass: self.amr_intent_map 단 한 번 순회 ---
+        # 2. 해당 출구 방향 팔 위에서, 교차로로 들어오려는 AMR이 있는지 검사
         for rec in self.amr_intent_map.values():
-            a = rec.get('amr_obj')
             cur = rec.get('current_arm')
             nxt = rec.get('exit_arm')
 
-            if cur == 'C':
-                center_rec = rec
-                exit_dir = nxt
-                continue
+            # 같은 팔(cur == center_exit)에 있고,
+            # 자기 출구 방향이 현재 팔과 다르면(=교차로 진입 의도)
+            if cur == center_exit and nxt is not None and nxt != cur:
+                self.is_deadlock = True
+                return True
 
-            if cur in dirs and a:
-                # cur 방향에서 '센터로 들어오려는(amr)' 존재 여부
-                if nxt != cur:
-                    exists_ingress[cur] = True
-
-                # front 셀 점유/진입자 기록
-                if a.pos == front_cell[cur]:
-                    front_occupied[cur] = True
-                    if nxt != cur and cur not in front_ingressor:
-                        front_ingressor[cur] = a
-
-        # --- 데드락 예측 조건 확인 ---
-        if not center_rec or exit_dir not in dirs:
-            self.is_deadlock = False
-            return False
-        conflict_exists = exists_ingress[exit_dir]
-        if not conflict_exists:
-            self.is_deadlock = False
-            return False
-
-        # 데드락 플래그
-        self.is_deadlock = True
-
-        return True
+        self.is_deadlock = False
+        return False
+   
     
 
     def build_prestage_paths(self):
@@ -224,21 +265,17 @@ class Intersection:
         for d, coords in self.lane_coords.items():
             for i, p in enumerate(coords):  # i=0: near(front)
                 lanes[d][i] = pos2aid.get(p, None)
-
-        possible_ids = self.scan_exit_possible(lanes)
         
         # --- 초기 paths: 현재 pos 1칸 입력 ---
         paths = {}
         for aid, rec in self.amr_intent_map.items():
-            if aid in possible_ids:
-                continue
             a = rec.get('amr_obj')
             paths[aid] = [a.pos]
 
         # 1) 각 팔 near→far 압축 → target_lanes
         target_lanes = {}
         for d in dirs:
-            filled = [aid for aid in lanes[d] if aid is not None and aid not in possible_ids]  # 현 순서 유지
+            filled = [aid for aid in lanes[d] if aid is not None]  # 현 순서 유지
             cap = len(lanes[d])
             target_lanes[d] = filled + [None] * (cap - len(filled))
 
@@ -345,194 +382,44 @@ class Intersection:
         self.paths = paths.copy()
 
         return target_lanes, paths
-
-    
-    def scan_exit_possible(self, lanes):
-        dirs = self.dirs
-        possible = set()
-
-        for d in dirs:
-            L = lanes[d]
-            cap = len(L)
-
-            # 각 칸의 exit 팔 미리 뽑아두기
-            ex = [None] * cap
-            for i, aid in enumerate(L):
-                if aid is None:
-                    continue
-                rec = self.amr_intent_map.get(aid)
-                ex[i] = rec.get('exit_arm')
-
-            # suffix_ok[j] = j보다 바깥쪽(>j)에 있는 모든 AMR이 None 또는 exit==d
-            suffix_ok = [True] * (cap + 1)
-            for j in range(cap - 1, -1, -1):
-                ok = suffix_ok[j + 1]
-                if L[j] is not None and ex[j] != d:
-                    ok = False
-                suffix_ok[j] = ok
-
-            # 자연 탈출 판정: ex[i] == d 이고 suffix_ok[i+1] == True
-            for i, aid in enumerate(L):
-                if aid is None:
-                    continue
-                if ex[i] == d and suffix_ok[i + 1]:
-                    possible.add(aid)
-
-        return possible
-        
         
     
     def plan_action(self):
-        """
-        Round Robin 스택 재정렬 규칙에 따라 (src, dst) 이동 시퀀스를 생성해 반환.
-        - src, dst ∈ {'N','E','S','W'}
-        - source 스택의 TOP 아이템을 destination 스택의 TOP으로 '개념적으로' 이동하는 튜플을 actions에 누적
-        - 현재 self.amr_intent_map의 상태로부터 스택을 구성하여 순수하게 계획만 세움(환경 변경 X)
-        """
-        actions = []
-        trace = []
-        locks = []
+        # 1. 현재 상태 스냅샷 (ID 기반)
+        current_stacks, targets = self.build_stacks_from_snapshot()
+        dirs = self.dirs
 
-        stacks, targets = self.build_stacks_from_snapshot()
-        capacity = {'N': self.len_N, 'E': self.len_E, 'S': self.len_S, 'W': self.len_W}
-        dirs = [d for d in "NESW" if d in self.present_dirs]
+        # 2. 데이터 변환 (AMR ID → Target Index)
+        # 방향(N, E, S, W)을 Solver용 인덱스(0, 1, 2, 3)로 변환
+        dir_to_idx = {d: i for i, d in enumerate(dirs)}
 
-        # --- 여기부터: 이미 스케줄링 대상에서 빠진 AMR들을 capacity에만 반영 ---
-        # 1) 이번 스케줄링에 실제로 참여하는 AMR 집합
-        ids_in_stacks = set()
+        # sch.py에 전달할 raw input (리스트의 리스트)
+        solver_input_stacks = []
         for d in dirs:
-            ids_in_stacks.update(stacks[d])
+            stack_content = []
+            for aid in current_stacks[d]:
+                target_dir = targets.get(aid)
+                stack_content.append(dir_to_idx[target_dir])
+            solver_input_stacks.append(stack_content)
 
-        # 2) 각 팔별로 "스케줄링에는 안 쓰지만, 팔 위에 올라가 있는" AMR 개수 카운트
-        prefilled = {d: 0 for d in dirs}
-        for aid, rec in self.amr_intent_map.items():
-            if aid in ids_in_stacks:
-                continue  # 이번 스케줄 대상이면 capacity에서 빼지 않음
+        # 3. StackRearrangementEnv 객체 생성 및 정의
+        capacity = max(self.len_N, self.len_E, self.len_S, self.len_W)
+        env = StackRearrangementEnv(
+            num_stacks=len(dirs),
+            stack_capacity=capacity,
+            stacks=solver_input_stacks
+        )
 
-            cur_arm = rec.get('current_arm')
-            # 현재 어느 팔 위에 있는지만 보면 충분 (센터 'C'는 제외)
-            if cur_arm in dirs:
-                prefilled[cur_arm] += 1
+        # 4. 스케줄러 호출
+        actions, elapsed_time = schedule(env.stacks, mode="h2", max_iters=1_000_000)
 
-        # 3) 각 팔 capacity에서 prefilled 개수만큼 빼서 "스케줄 가능한 슬롯 수"로 조정
-        for d in dirs:
-            capacity[d] = max(0, capacity[d] - prefilled[d])
+        return actions
 
-        predicted_stacks = self.predicted_stacks(stacks)
-
-        locked = {aid: False for aid in targets.keys()}
-        for d in dirs:
-            for aid in stacks[d]:
-                if targets.get(aid) == d:
-                    locked[aid] = True
-                else:
-                    break
-
-        trace.append({d: stacks[d][:] for d in stacks})
-        locks.append(locked.copy())
-
-        # --- 출력 헬퍼: 각 스택을 '출구방향문자 나열'로 표현 (바닥→TOP) ---
-        def _fmt_stacks_dir(st):
-            return " | ".join(f"{d}:{''.join(targets.get(a,'?') for a in st[d])}" for d in dirs)
-
-        print(f"[plan_action] START  stacks={_fmt_stacks_dir(stacks)}")
-
-        # 라운드로빈 상태
-        pivot_idx = 0
-        no_progress_count = 0
-        it = 0
-
-        while True:
-            it += 1
-            P = dirs[pivot_idx]
-            pre = _fmt_stacks_dir(stacks)
-
-            # 1) TOP 스캔 1회
-            before_len = len(actions)
-            moved_top = self.top_scan(stacks, targets, capacity, dirs, actions, locked)
-            if moved_top:
-                post = _fmt_stacks_dir(stacks)
-                mv = actions[-1] if len(actions) > before_len else ("?", "?")
-                trace.append({d: stacks[d][:] for d in stacks})
-                locks.append(dict(locked))
-                no_progress_count = 0
-                print(f"[{it:04d}] P={P}  ACT=TS {mv[0]}->{mv[1]}  {pre} -> {post}")
-                continue
-
-            # 2) 라운드 로빈: 현재 피벗 P에서 1건만 이동
-            progressed = False
-            if stacks[P] and self.to_letter(stacks[P], targets) != predicted_stacks.get(P, []):
-                candidates = [d for d in dirs if d != P and len(stacks[d]) < capacity[d]]
-                if candidates:
-                    # 기존 로직 유지: 동률이면 랜덤 선택
-                    candidate = random.choice(candidates)
-                    aid = stacks[P].pop()
-                    stacks[candidate].append(aid)
-                    actions.append((P, candidate))
-                    progressed = True
-                    post = _fmt_stacks_dir(stacks)
-                    trace.append({d: stacks[d][:] for d in stacks})
-                    locks.append(dict(locked))
-                    print(f"[{it:04d}] P={P}  ACT=RR {P}->{candidate} dir={targets.get(aid,'?')}  {pre} -> {post}")
-
-            # 피벗 업데이트
-            if not stacks[P] or all(targets.get(aid) == P for aid in stacks[P]):
-                pivot_idx = (pivot_idx + 1) % len(dirs)
-
-            if not progressed:
-                no_progress_count += 1
-                post = _fmt_stacks_dir(stacks)  # 변화가 없더라도 현재 상태를 출력
-                print(f"[{it:04d}] P={P}  ACT=NOP no_progress={no_progress_count}  {pre} -> {post}")
-                if no_progress_count >= len(dirs):
-                    print(f"[plan_action] STOP no_progress={no_progress_count} >= {len(dirs)}")
-                    break
-            else:
-                no_progress_count = 0
-
-        print(f"[plan_action] END   actions={actions}")
-        return actions, trace, locks
-
-
-
-
-
-    def top_scan(self, stacks, targets, capacity, dirs, actions, locked):
-        """
-        TOP 스캔 1회 수행해 즉시 정렬 1건을 만들고 True 반환.
-        이동할 것이 없으면 False 반환.
-        """
-        for src in dirs:
-            stack_src = stacks[src]
-            if not stack_src:
-                continue
-            top_id = stack_src[-1]
-            goal = targets.get(top_id)
-
-            # 이미 목표에 도달했으면 스킵
-            if goal == src:
-                continue
-            
-            gstack = stacks[goal]
-            goal_pure = (len(gstack) == 0) or all(targets.get(aid) == goal for aid in gstack)
-            has_room = len(gstack) < capacity[goal]
-
-            # 목표 스택이 비어있거나 'goal' 색으로만 이루어져 있고, 여유칸이 있으면 즉시 이동
-            if goal_pure and has_room:
-                stack_src.pop()
-                stacks[goal].append(top_id)
-                actions.append((src, goal))
-
-                locked[top_id] = True
-
-                return True  # 한 번 이동했으면 즉시 반환
-        
-        return False  # 이동할 것이 없으면 False 반환
-    
 
     def build_stacks_from_snapshot(self):
         """
         return:
-            stacks  = {'N': [5, 3], 'S': [8], 'W': [2, 7]}  # 5가 N의 TOP
+            stacks  = {'N': [5, 3], 'S': [8], 'W': [2, 7]}
             targets = {5: 'E', 3: 'E', 8: 'N', 2: 'W', 7: 'S'}
         """
         dirs = self.dirs
@@ -553,105 +440,167 @@ class Intersection:
                 targets[aid] = tgt
 
         return stacks, targets
-    
-    
-    def predicted_stacks(self, stacks):
-        """
-        각 스택의 '정답 타깃 배열'을 만든다. (오른쪽 끝=TOP)
-        - 반환: {"N": ["N",...], "E":[...], "S":[...], "W":[...]}
-        - 각 목표 g의 prefix는 min(총개수, capacity[g])개를 자기 문자로 채움
-        - 초과분(overflow)은 '가장 적게 찬' 스택 TOP에 주차(동률이면 N→E→S→W)
-        """
-        # 사용 팔 및 용량
-        dirs = self.dirs
-        cap_all = {'N': self.len_N, 'E': self.len_E, 'S': self.len_S, 'W': self.len_W}
-        capacity = {d: cap_all[d] for d in dirs}
-
-        # 현재 포함된 모든 아이템 id 수집
-        present_ids = []
-        for d in dirs:
-            present_ids.extend(stacks.get(d, []))
-
-        # id -> goal 매핑으로 목표별 총량 집계
-        goal_counts = {d: 0 for d in dirs}
-        for aid in present_ids:
-            rec = self.amr_intent_map.get(aid)
-            if not rec:
-                continue
-            g = rec.get('exit_arm')
-            if g in goal_counts:
-                goal_counts[g] += 1
-
-        # 기본 채움(자기 팔 prefix), 초과 계산
-        fill = {g: min(goal_counts[g], capacity[g]) for g in dirs}
-        overflow = {g: goal_counts[g] - fill[g] for g in dirs}
-
-        # 예측 스택 초기화: 바닥(prefix)을 자기 문자로 채움 (오른쪽이 TOP)
-        predicted = {d: [d] * fill[d] for d in dirs}
-
-        # NESW 타이브레이크용 인덱스
-        nesw_idx = {'N': 0, 'E': 1, 'S': 2, 'W': 3}
-
-        # 초과분을 호스트 팔의 TOP에 배치
-        # g 순회도 NESW로(결정성)
-        for g in dirs:  # NESW
-            k = overflow[g]
-            while k > 0:
-                # 호스트 후보(슬랙 있는 팔만), 자기 팔 제외
-                candidates = [h for h in dirs if h != g and len(predicted[h]) < capacity[h]]
-                if not candidates:
-                    raise RuntimeError(f"predicted_stacks: overflow '{g}'를 수용할 호스트가 없습니다.")
-                # 길이 → NESW 순서로 타이브레이크
-                host = min(candidates, key=lambda h: (len(predicted[h]), nesw_idx[h]))
-                predicted[host].append(g)  # TOP에 얹음(오른쪽 append)
-                k -= 1
-
-        return predicted
 
 
-    def to_letter(self, stacks, targets):
-        out = []
-        for a in stacks:
-            out.append(targets.get(a))
-        return out
-    
 
     def actions_to_paths(self):
-        """
-        계획된 (src,dst) 이동 시퀀스를 실제 경로 좌표로 변환.
-        - actions: [(src,dst), ...]
-        - trace: 스택 상태 추적 기록
-        - locks: 잠금 상태 추적 기록
-        반환: {amr_id: [(x,y), ...], ...}
-        """
-        actions, trace, locks = self.plan_action()
-        dirs = self.dirs
-        out_center = {'N': (0, -1), 'E': (1, 0), 'S': (0, 1), 'W': (-1, 0)}
-        in_center = {'N': (0, 1), 'E': (-1, 0), 'S': (0, -1), 'W': (1, 0)}
-        center_way = None  # 현재 center에 존재하는 AMR이 앞으로 움직일 방향
+        idxs_to_dirs = {i: d for i, d in enumerate(self.dirs)}
 
-        for t, (src, dst) in enumerate(actions):
-            stacks_snapshot = trace[t]
-            locks_snapshot = locks[t]
-            for d in dirs:
-                for aid in stacks_snapshot[d]:
-                    if locks_snapshot.get(aid, False):
-                        continue
-                    
-                    pos = self.paths[aid][-1]
-                    if d == src:           
-                        if center_way != src:             
-                            vec = in_center[src]
-                        else:
-                            vec = (0, 0)
-                    elif d == center_way:
-                        vec = out_center[center_way]
-                    else:
-                        vec = (0, 0)
-                    
-                    new_pos = (pos[0] + vec[0], pos[1] + vec[1])
-                    self.paths[aid].append(new_pos)
-                    
-            center_way = dst
+        # 1. 이동 계획 획득
+        actions = self.plan_action()
 
-        return self.paths
+        # 2. 시뮬레이션용 초기화 (현재 상태)
+        inter_sim, targets = self.build_stacks_from_snapshot()
+        center_amr_id = None
+        pending_dst = None
+
+        # 3. 액션 순차 실행 및 경로 기록
+        for src, dst in actions:
+            # [Phase 1] 이전 액션 마무리 (Pending Push)
+            if center_amr_id is not None and pending_dst is not None:
+                # 1. Center -> Dst Push
+                inter_sim[pending_dst].append(center_amr_id)
+
+                # 2. Center 비우기
+                center_amr_id = None
+                pending_dst = None
+            
+            # [Phase 2] 현재 액션 수행 (Src -> Center Pull)
+            # 1. Source -> Center
+            mover_id = inter_sim[idxs_to_dirs[src]].pop()
+            center_amr_id = mover_id
+            
+            # 2. 물리적 위치 기록
+            self._record_snapshot(inter_sim, center_amr_id=center_amr_id)
+
+            # 3. 다음을 위해 목적지 저장
+            pending_dst = idxs_to_dirs[dst]
+
+        # 4. 루프 종료 후 남은 Center AMR 처리
+        if center_amr_id is not None and pending_dst is not None:
+            inter_sim[pending_dst].append(center_amr_id)
+            self._record_snapshot(inter_sim, center_amr_id=None)
+
+        # 5. 경로 후처리
+        # 중앙을 지나지 않는 로봇 삭제 & 중앙 통과 후 경로 절삭
+        self._post_process_paths(targets)
+        print(len(self.paths), "paths generated after post-processing.")
+
+        return self.paths, self.target_exits
+
+
+    def _record_snapshot(self, inter_sim, center_amr_id):
+        """
+        현재 inter_sim, center AMR 정보를 바탕으로
+        모든 AMR의 pself.paths에 현재 좌표를 추가 기록
+        """
+        center_coord = (self.center_x, self.center_y)
+
+        # 1. Center에 있는 AMR 처리
+        if center_amr_id is not None:
+            self.paths[center_amr_id].append(center_coord)
+
+        # 2. 각 lane에 있는 AMR 처리
+        for d in self.dirs:
+            stack = inter_sim[d]
+            lane_coords = self.lane_coords[d]
+
+            for i, aid in enumerate(reversed(stack)):
+                coords = lane_coords[i]
+                self.paths[aid].append(coords)
+
+
+    def _post_process_paths(self, targets):
+        """
+        생성된 self.paths를 후처리:
+        1. 중앙을 지나지 않는 AMR은 path에서 제거 (단순 대기)
+        2. 중앙을 지나는 AMR:
+           - 원래 목적지로 가는 경우(Case A):
+               '중앙 -> 출구 첫 칸'까지만 남기고 절삭 (메인 플래너로 핸드오버)
+           - 다른 곳으로 대피하는 경우(Case B):
+               경로 절삭 없이 끝까지 이동 (확실한 비켜주기)
+
+        추가:
+           - self.target_exits[aid] 에
+             "원래 나가고 싶어하는 출구 방향 lane의 마지막 셀(tip)" 좌표를 저장
+        """
+        center = (self.center_x, self.center_y)
+
+        # 딕셔너리 크기 변경 방지를 위해 키 리스트 복사
+        for aid in list(self.paths.keys()):
+            path = self.paths[aid]
+
+            # 1. 중앙 미경유 AMR 제거
+            if center not in path and self.amr_intent_map[aid]['current_arm'] == self.amr_intent_map[aid]['exit_arm']:
+                del self.paths[aid]
+                continue
+
+            # 2. 마지막으로 중앙에 있었던 시점 찾기 (뒤에서부터 검색)
+            last_center_idx = -1
+            for i in range(len(path) - 1, -1, -1):
+                if path[i] == center:
+                    last_center_idx = i
+                    break
+
+            # --- 여기서부터 출구 tip 계산 ---
+
+            # 이 AMR이 "원래" 나가고 싶어했던 출구 방향 (register_amr에서 정한 exit_arm)
+            intended_target_dir = targets.get(aid)  # 'N', 'E', 'S', 'W' 또는 None
+
+            tip_cell = None
+            if intended_target_dir in self.lane_coords:
+                coords = self.lane_coords[intended_target_dir]
+                if coords:
+                    # 출구 방향 lane의 마지막 셀(팔 끝 tip)
+                    tip_cell = coords[-1]
+
+            # 출구 tip 좌표 저장
+            self.target_exits[aid] = tip_cell
+
+            # --- 이하: 기존 Case A / B 절삭 로직 유지 ---
+
+            # 3. 실제 나가는 방향(Actual Exit) 판별
+            #    중앙 바로 다음 칸의 좌표를 확인
+            if last_center_idx + 1 < len(path):
+                exit_cell = path[last_center_idx + 1]
+                actual_exit_dir = None
+
+                for d, coords in self.lane_coords.items():
+                    # coords[0]이 보통 교차로와 가장 가까운 칸(Front)
+                    if exit_cell in coords:
+                        actual_exit_dir = d
+                        break
+
+                # 목적지와 실제 나가는 방향 비교
+                if (
+                    actual_exit_dir is not None
+                    and intended_target_dir is not None
+                    and actual_exit_dir == intended_target_dir
+                ):
+                    # Case A: 정상 탈출
+                    # → 센터 이후 구간 중, center로부터 가장 먼 칸까지 남기고 그 뒤는 절삭
+                    max_idx = last_center_idx
+                    max_dist2 = 0
+                    cx, cy = center
+
+                    for idx in range(last_center_idx + 1, len(path)):
+                        x, y = path[idx]
+                        dx = x - cx
+                        dy = y - cy
+                        dist2 = dx * dx + dy * dy
+                        if dist2 > max_dist2:
+                            max_dist2 = dist2
+                            max_idx = idx
+
+                    # max_idx 이후는 잘라낸다 (max_idx까지 포함)
+                    cut_idx = max_idx + 1
+                    if cut_idx < len(path):
+                        self.paths[aid] = path[:cut_idx]
+                else:
+                    # Case B: 대피/회피 (Detour) -> 절삭하지 않음
+                    # 스케줄러가 계산한 대로 깊숙이 들어가야 함
+                    pass
+            else:
+                # 중앙이 경로의 마지막인 경우 (드물지만 가능) -> 그대로 둠
+                pass
+

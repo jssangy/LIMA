@@ -47,27 +47,6 @@ class AMR():
         self.path_remaining.discard(tuple(self.pos))
 
     
-    def insert_scheduled_path(self, new_path: list):
-        if not new_path:
-            return
-        
-        cur_idx = self.path_cursor
-        prefix = self.path[:cur_idx + 1]
-
-        to_insert = new_path[1:]
-
-        center_cell = to_insert[-1]
-        center_idx = None
-        for j in range(cur_idx, len(self.path)):
-            if self.path[j] == center_cell:
-                center_idx = j
-                break
-
-        suffix = self.path[center_idx + 1:]
-        self.path = prefix + to_insert + suffix
-        self.scheduling = len(to_insert)
-
-    
     def path_integrity_ratio(self):
         if self.path_orig_len == 0:
             return 1.0
@@ -84,7 +63,7 @@ class AMR():
 
         self.prev_pos = self.pos
         self.path_cursor += 1
-        self.pos = self.path[self.path_cursor]
+        self.pos = self.next_pos
         self.next_pos = self.path[self.path_cursor + 1] if self.path_cursor + 1 < len(self.path) else self.pos
         self.steps += 1
         if self.scheduling > 0:

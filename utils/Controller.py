@@ -174,3 +174,9 @@ class BFSPlanner:
         """
         path = self.planner.plan_path(amr.pos, amr.goal)
         amr.set_path(path)
+
+    def plan_path(self, start, goal):
+        """
+        BFS(거리장) 플래너를 사용하여 start에서 goal까지의 경로를 계산합니다.
+        """
+        return self.planner.plan_path(start, goal)

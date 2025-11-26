@@ -2,8 +2,8 @@ import os
 import json
 import math
 import numpy as np
-from typing import Dict
 from collections import defaultdict
+from typing import Dict, List, Tuple, Optional
 
 from utils.AMR import AMR
 from utils.Intersection import Intersection
@@ -40,13 +40,30 @@ class ENV():
         for iid, inter_info in processed_intersections.items():
             self.intersections[iid] = Intersection(
                 inter_info['data'],
-                inter_info['neighbors'],
                 inter_info['present_dirs'],
             )
+            
+        # 교차로 간 이웃 맵핑 (양방향)
+        self.iid_neighbors = {iid: set() for iid in processed_intersections.keys()}
+        for iid, inter_info in processed_intersections.items():
+            for nid in inter_info["neighbors"].values():
+                if not nid:
+                    continue
+                # 한 방향
+                self.iid_neighbors[iid].add(nid)
+                # 반대 방향도 자동 연결
+                if nid not in self.iid_neighbors:
+                    self.iid_neighbors[nid] = set()
+                self.iid_neighbors[nid].add(iid)
 
+        # 각 셀이 어느 교차로에 속하는지 맵핑
         self.cell2iids: Dict[tuple[int, int], list[str]] = defaultdict(list)
+
+        # 이벤트 셀들 (교차로 중심 + 레인 끝)
         self.event_cells = set()
         self.event_cells2iid = {}
+
+        # 맵핑 구축
         for iid, I in self.intersections.items():
             center = (I.center_x, I.center_y)
 
@@ -63,10 +80,9 @@ class ENV():
                 self.event_cells.add(end_cell)
                 self.event_cells2iid[end_cell] = iid
 
-        self.iid_locked: set[str] = set()
-        self.iid2sched: dict[str, set[int]] = defaultdict(set)
-
+        # 데드락 상태인 교차로
         self.deadlock_queue = []
+        self.iid2sched: dict[str, set[int]] = defaultdict(set)
 
         self.traffic_mode = traffic_mode
 
@@ -105,87 +121,330 @@ class ENV():
         for I in self.intersections.values():
             I.reset()
 
-        self.deadlock_queue = []
-
         if self.traffic_mode == 'task':
             self._spawn_amrs_from_task_gen()
         elif self.traffic_mode == 'traffic':
             self._spawn_amrs_from_stream_gen()
 
-        self.iid_locked.clear()
+        self.deadlock_queue = []
         self.iid2sched.clear()
 
         self.completed_amr_steps.clear()
-
         self.completed_path_integrities.clear()
-
         self.time_ms.clear()
 
         return
-    
 
+    
     def step(self):
         self.time += 1
+
+        """        # 충돌 감지 (디버그용)
+        final_positions = defaultdict(list)
+        for amr_id, amr in self.amr_list.items():
+            final_positions[amr.pos].append(amr_id)
+
+        # 2개 이상 겹친 곳 필터링
+        collisions = {pos: ids for pos, ids in final_positions.items() if len(ids) > 1}
+        
+        if collisions:
+            error_msg = "\n[CRITICAL] Collision Detected at step {}:\n".format(self.time)
+            
+            for pos, ids in collisions.items():
+                # 각 로봇의 ID와 스케줄링 여부를 문자열로 변환
+                # 예: "10(Scheduled)", "5(Normal)"
+                amr_details = []
+                for aid in ids:
+                    amr = self.amr_list[aid]
+                    status = "Scheduled" if amr.scheduling > 0 else "Normal"
+                    amr_details.append(f"{aid}({status})")
+                
+                error_msg += f"  Position {pos}: {', '.join(amr_details)}\n"
+            
+            raise RuntimeError(error_msg)
+        """
 
         if self.traffic_mode == 'task' and self.task_generator.is_episode_done():
             return False
 
+        # 1. 스케줄러 로직 (데드락 감지 및 해결)
         if self.use_scheduler:
+            # (1) 교차로별 멤버 확인
             check_iids = set()
             iid2members: dict[str, list[int]] = defaultdict(list)
-            for amr_id, amr_obj in self.amr_list.items():
-                cur_ids = set(self.cell2iids.get(amr_obj.pos, ()))
-                if cur_ids:
-                    for iid in cur_ids:
-                        iid2members[iid].append(amr_id)
 
-                if amr_obj.pos in self.event_cells:
-                    iid = self.event_cells2iid[amr_obj.pos]
+            for amr_id, amr_obj in self.amr_list.items():
+                pos = tuple(amr_obj.pos)
+                
+                # 현재 위치가 어떤 교차로 영역에 속하는지 확인
+                if pos in self.cell2iids:
+                    for iid in self.cell2iids[pos]:
+                        iid2members[iid].append(amr_id)
+                        
+                # 데드락 체크가 필요한지 확인
+                if pos in self.event_cells:
+                    iid = self.event_cells2iid[pos]
                     check_iids.add(iid)
 
-            for iid in list(check_iids - self.iid_locked):
+            # (2) 잠금 해제 체크 (Deadlock 해제 시도)
+            # 이미 잠긴 교차로 중, 스케줄링된 로봇들이 모두 빠져나갔다면 잠금 해제
+            for iid in list(self.deadlock_queue):
+                scheduled_members = self.iid2sched[iid]
+                still_active = False
+
+                for mid in list(scheduled_members):
+                    amr = self.amr_list.get(mid, None)
+                    if amr is None:
+                        scheduled_members.discard(mid)
+                        continue
+                    if amr.scheduling > 0:
+                        still_active = True
+                    else:
+                        scheduled_members.discard(mid)
+                
+                if not still_active:
+                    self.deadlock_queue.remove(iid)
+
+            # (3) 데드락 체크 및 스케줄링
+            # 잠기지 않은 교차로에 대해서만 수행
+            for iid in list(check_iids - set(self.deadlock_queue)):
                 I = self.intersections[iid]
-                I.amr_intent_map.clear()
+                I.reset()
+
+                # 해당 교차로 영역에 있는 모든 AMR 등록
                 for amr_id in iid2members[iid]:
                     amr_obj = self.amr_list[amr_id]
                     I.register_amr(amr_obj)
-                
-                if I.check_deadlock():
-                    self.iid_locked.add(iid)
 
+                if I.check_deadlock():
+                    self.deadlock_queue.append(iid)
                     if iid not in self.deadlock_queue:
                         self.deadlock_queue.append(iid)
+                    
+                    # 1. 스케줄러 경로 생성
+                    short_paths, target_exits = I.actions_to_paths()
 
-                    paths = I.actions_to_paths()
-                    for amr_id, path in paths.items():
-                        amr_obj = self.amr_list.get(amr_id)
-                        amr_obj.insert_scheduled_path(path)
-                        self.iid2sched[iid].add(amr_id)
+                    for amr_id, short_path in short_paths.items():
+                        if amr_id in self.amr_list:
+                            amr_obj = self.amr_list[amr_id]
+                            target_exit = target_exits[amr_id]
+                            self.insert_scheduled_path(amr_obj, short_path, target_exit)
+                            self.iid2sched[iid].add(amr_id)
 
-            occ = {amr.pos: amr.id for amr in self.amr_list.values()}
+                    paths_dict = {aid: amr.path for aid, amr in self.amr_list.items()}
+                    self.print_paths_tickwise(paths_dict)
 
-            not_scheduled_amrs = []
-            for amr in self.amr_list.values():
-                if amr.scheduling == 0:
-                    not_scheduled_amrs.append(amr)
-                    continue
-                
+        # 2. AMR 이동
+        # (A) 현재 위치 점유 맵 초기화
+        current_occ = {amr.pos: amr.id for amr in self.amr_list.values()}
+
+        # (B) 그룹 분리
+        normal_amrs = [a for a in self.amr_list.values() if a.scheduling == 0]
+        scheduled_amrs = [a for a in self.amr_list.values() if a.scheduling > 0]
+
+        # -------------------------------------------------------
+        # [Phase 1] 일반 로봇(Normal AMR) 먼저 이동
+        # -------------------------------------------------------
+        for amr in normal_amrs:
+            next_pos = amr.next_pos
+            if next_pos not in current_occ:
+                if amr.pos in current_occ and current_occ[amr.pos] == amr.id:
+                    del current_occ[amr.pos]
                 amr.move()
-                occ[amr.pos] = amr.id
+                current_occ[amr.pos] = amr.id
 
-            for amr in not_scheduled_amrs:
-                if amr.next_pos not in occ:
-                    amr.move()
-        else:
-            occ = {amr.pos: amr.id for amr in self.amr_list.values()}
-            for amr in self.amr_list.values():
-                if amr.next_pos not in occ:
-                    amr.move()
-                    occ[amr.pos] = amr.id
+        # -------------------------------------------------------
+        # [Phase 2] 스케줄링 차단 여부 확인 (Blocking Check)
+        # 일반 로봇들이 자리를 잡은 후, 스케줄링된 로봇들이 갈 수 있는지 확인
+        # -------------------------------------------------------
+        # 현재 일반 로봇들의 위치 집합
+        normal_occ_pos = {amr.pos for amr in normal_amrs}
+
+        # 차단된 교차로 ID 식별
+        blocked_iids = set()
+
+        for iid, members in self.iid2sched.items():
+            for mid in members:
+                amr = self.amr_list[mid]
+                next_pos = amr.next_pos
+                # 다음 위치가 일반 로봇에 의해 점유된 경우 차단
+                if next_pos in normal_occ_pos:
+                    blocked_iids.add(iid)
+                    break
+
+        
+        # -------------------------------------------------------
+        # [Phase 3] 스케줄링된 로봇 이동
+        # -------------------------------------------------------
+        for amr in scheduled_amrs:
+            # 내가 속한 스케줄이 차단되었는지 확인
+            is_blocked = False
+            # 역추적: 내가 어느 iid에 속해있는지 확인 (iid2sched 순회)
+            for iid, members in self.iid2sched.items():
+                if amr.id in members:
+                    if iid in blocked_iids:
+                        is_blocked = True
+                    break
             
+            if is_blocked:
+                # 그룹 전체가 대기해야 하므로 건너뜀
+                continue
+
+            # 이동 수행
+            if amr.pos in current_occ and current_occ[amr.pos] == amr.id:
+                del current_occ[amr.pos]
+            amr.move()
+            current_occ[amr.pos] = amr.id
+
+
+        # 3. 완료 체크 및 정보 반환
         self._check_amr_completion()
 
-        return self.make_info()        
+        return self.make_info()
+
+
+    def insert_scheduled_path(self, amr, short_path, target_exit):
+        """
+        교차로 스케줄러가 생성한 경로(short_path)를 현재 AMR 경로에 삽입한다.
+
+        - short_path : amr.pos -> 교차로 내부 merge_point 까지의 스케줄 경로
+        - target_exit: 이 AMR이 '원래' 나가고 싶어하는 출구 방향 lane의 마지막 셀(tip)
+
+        최종 경로 구성:
+        prefix(지금까지 온 경로) +
+        short_path[1:] (현재 위치 이후 교차로 내부 스케줄) +
+        bridge(merge_point → target_exit, BFS로 패치) +
+        continuation(원래 AMR 경로에서 target_exit 이후 tail)
+        """
+        # 방어 코드
+        if not short_path or len(short_path) < 2:
+            return
+
+        merge_point = short_path[-1]
+
+        # --- 1) merge_point -> target_exit 까지 BFS (출구 tip까지) ---
+        bridge = [merge_point]
+        if target_exit is not None and target_exit != merge_point:
+            try:
+                # BFSPlanner 안의 실제 BFS 객체 사용
+                bridge_path = self.planner.planner.plan_path(merge_point, target_exit)
+            except AttributeError:
+                # 혹시 BFSPlanner에 plan_path 메서드를 따로 추가했다면 이쪽을 쓰면 됨
+                bridge_path = self.planner.plan_path(merge_point, target_exit)
+
+            if bridge_path and len(bridge_path) >= 2:
+                bridge = bridge_path
+            else:
+                print(f"[Scheduler] AMR {amr.id}: BFS bridge 실패 "
+                    f"({merge_point} -> {target_exit}), merge_point만 사용.")
+        else:
+            # target_exit이 없거나 merge_point와 같으면 bridge는 [merge_point] 그대로
+            pass
+
+        # --- 2) 원래 amr 경로에서 target_exit 이후 tail 이어붙이기 ---
+        continuation = []
+        if target_exit is not None:
+            exit_idx = -1
+            # 현재 위치 이후 구간에서만 target_exit 검색
+            for i in range(amr.path_cursor + 1, len(amr.path)):
+                if amr.path[i] == target_exit:
+                    exit_idx = i
+                    break
+
+            if exit_idx != -1 and exit_idx + 1 < len(amr.path):
+                continuation = amr.path[exit_idx + 1:]
+            elif exit_idx == -1:
+                print(f"[Scheduler] AMR {amr.id}: target_exit {target_exit} "
+                    f"not found in original path.")
+            # exit_idx가 마지막 인덱스면 tail이 없으니 continuation은 빈 리스트 그대로
+
+        # --- 3) 새 suffix 구성 ---
+        new_suffix = []
+
+        # (a) short_path: 현재 위치는 prefix에 있으니 [1:]부터
+        new_suffix.extend(short_path[1:])
+
+        # (b) bridge: merge_point 중복 방지를 위해 [1:]부터
+        if len(bridge) > 1:
+            new_suffix.extend(bridge[1:])
+
+        # (c) target_exit 이후 원래 경로 tail
+        new_suffix.extend(continuation)
+
+        if not new_suffix:
+            print(f"[Scheduler] AMR {amr.id}: new_suffix 비어 있음, 경로 변경 건너뜀.")
+            return
+
+        # --- 4) AMR 경로/상태 업데이트 ---
+        prefix = amr.path[:amr.path_cursor + 1]
+
+        amr.path = prefix + new_suffix
+
+        # 스케줄된 구간 길이: short_path (중복 한칸 제거)
+        sched_len = len(short_path) - 1
+        amr.scheduling = sched_len
+
+        # next_pos 동기화
+        if len(amr.path) > amr.path_cursor + 1:
+            amr.next_pos = amr.path[amr.path_cursor + 1]
+        else:
+            amr.next_pos = amr.pos
+
+
+
+    
+    def _fmt_xy(self, xy: Optional[Tuple[int, int]]) -> str:
+        """(x,y) 튜플을 문자열로, None이면 빈 문자열."""
+        if xy is None:
+            return ""
+        x, y = xy
+        return f"({x},{y})"
+
+    def print_paths_tickwise(self, paths: Dict[int, List[Tuple[int,int]]], *, pad: str = "repeat") -> None:
+        """
+        행 = tick, 열 = AMR ID 로 정렬해서 출력.
+
+        paths : { amr_id: [(x,y), (x,y), ...] }
+        pad   : "repeat" -> 각 AMR 경로의 마지막 좌표를 반복해서 패딩
+                그 외 값 -> None 으로 패딩 (빈 칸으로 보임)
+        """
+        if not paths:
+            print("\n[tickwise] (empty)")
+            return
+
+        # 열 순서: AMR id 오름차순
+        amr_ids = sorted(paths.keys())
+        # 전체 tick 수: 가장 긴 경로 길이
+        max_len = max(len(p) for p in paths.values())
+
+        # AMR별로 tick 길이 맞춰서 문자열 테이블 만들기
+        table: Dict[int, List[str]] = {}
+        for aid in amr_ids:
+            p = paths[aid]
+            if p and pad == "repeat":
+                padded = p + [p[-1]] * (max_len - len(p))
+            else:
+                padded = p + [None] * (max_len - len(p))
+            table[aid] = [self._fmt_xy(xy) for xy in padded]
+
+        # 칸 폭 결정 (좌표/ID 중 가장 긴 것 기준)
+        col_w = max(
+            max(len(s) for aid in amr_ids for s in table[aid]),
+            max(len(str(aid)) for aid in amr_ids),
+        )
+
+        print("\n[tickwise]")
+        # 헤더: AMR id 가로로 쭉
+        header = "tick ".ljust(6) + " ".join(f"{aid:>{col_w}}" for aid in amr_ids)
+        print(header)
+        print("-" * (6 + (col_w + 1) * len(amr_ids)))
+
+        # 각 tick(T00, T01, ...) 한 줄씩 출력
+        for t in range(max_len):
+            row = " ".join(f"{table[aid][t]:>{col_w}}" for aid in amr_ids)
+            print(f"T{t:02d}  {row}")
+
+
 
 
     def _spawn_amrs_from_task_gen(self):

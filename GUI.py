@@ -6,8 +6,8 @@ from tkinter import ttk
 
 class GUI():
     def __init__(self, env):
-        self.width_window = 3770
-        self.height_window = 1040
+        self.width_window = 3760
+        self.height_window = 1030
                 
         # Load simulation environment
         self.env = env
@@ -188,16 +188,30 @@ class GUI():
 
         # 목표 지점 표시(사각형)
         active_tasks = self.env.get_active_tasks()  # {amr_id: (x,y)}
-        for agv_id, (gx, gy) in active_tasks.items():
-            color = self.env.color_map[agv_id % 6]
+        for agv_id, (gx, gy) in reversed(list(active_tasks.items())):
+            # 기본 색상은 env.color_map 사용
+            base_color = self.env.color_map[agv_id % 6]
             sx, sy = self.map_to_screen(gx, gy)
-            pygame.draw.rect(self.win, color, (sx, sy, self.zoom_level, self.zoom_level))
+            pygame.draw.rect(self.win, base_color, (sx, sy, self.zoom_level, self.zoom_level))
 
         # AGV 표시
         for _, agv in agv_list.items():
             x, y = agv.pos
             sx, sy = self.map_to_screen(x + 0.5, y + 0.5)
-            pygame.draw.circle(self.win, agv.color, (sx, sy), max(1, int(self.zoom_level / 2) - 2))
+            radius = max(1, int(self.zoom_level / 2) - 2)
+            
+            # [수정] 스케줄링 상태에 따른 시각화 구분
+            # 스케줄링 중이면: 테두리를 두껍게 하거나, 색상을 밝게 표시
+            if agv.scheduling > 0:
+                # 방법 1: 흰색 테두리 추가 (강조)
+                pygame.draw.circle(self.win, agv.color, (sx, sy), radius)
+                # pygame.draw.circle(self.win, (255, 255, 255), (sx, sy), radius, 2) # 흰색 테두리
+                
+                # 방법 2: 중앙에 점 찍기 (Deadlock 해결 중임을 표시)
+                pygame.draw.circle(self.win, (255, 255, 255), (sx, sy), max(1, radius // 2))
+            else:
+                # 일반 상태: 기본 원
+                pygame.draw.circle(self.win, agv.color, (sx, sy), radius)
 
         # 목표 라인 (옵션)
         if self.show_goal_var.get():
@@ -206,7 +220,10 @@ class GUI():
                 if goal:
                     start_sx, start_sy = self.map_to_screen(agv.pos[0] + 0.5, agv.pos[1] + 0.5)
                     end_sx,   end_sy   = self.map_to_screen(goal[0] + 0.5,    goal[1] + 0.5)
-                    pygame.draw.line(self.win, agv.color, (start_sx, start_sy), (end_sx, end_sy), 2)
+                    
+                    # 라인 색상도 스케줄링 중이면 다르게? (선택사항)
+                    line_color = agv.color
+                    pygame.draw.line(self.win, line_color, (start_sx, start_sy), (end_sx, end_sy), 2)
 
         # Deadlock overlay (iid 리스트 또는 (iid, ts) 지원)
         dq = getattr(self.env, 'deadlock_queue', [])

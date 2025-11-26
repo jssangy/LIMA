@@ -61,6 +61,11 @@ def play_ticks_curses(
       - "on_stable"          : 남은 프레임이 전부 center일 때부터 숨김
       - "locked_only"        : locked_ids에 포함된 AMR만 'on_first_center' 적용
       - "locked_then_center" : locked_ids는 on_first_center, 나머지는 on_stable
+
+    **추가 동작**
+      - 각 AMR은 자신의 원본 path 마지막 좌표까지 도달한 이후
+        (즉, path 길이만큼 시간이 지난 뒤)부터는
+        'Finished' 로 간주되어 시각화에서 사라진다.
     """
     # 1) 경로/프레임 수
     raw_paths = paths if paths is not None else getattr(I, "paths", {})
@@ -68,6 +73,17 @@ def play_ticks_curses(
     if T == 0:
         print("[viewer] paths 비어 있음. 먼저 actions_to_paths()를 실행하세요.")
         return
+
+    # ▶ 각 AMR별 완료 tick 계산
+    #    - path 길이가 L이면, t = 0..L-1 동안만 실제 경로
+    #    - t >= L 이면 '완료'로 보고 시각화에서 제거
+    finish_at: Dict[int, int] = {}
+    for aid, p in raw_paths.items():
+        if not p:
+            # 빈 경로면 t=0부터 이미 완료된 것으로 처리
+            finish_at[aid] = 0
+        else:
+            finish_at[aid] = len(p)
 
     # 2) 공통 설정
     cell_w = max(cell_w, id_width + 1)                 # 'id+dir'을 위해 최소 폭 보장
@@ -95,8 +111,9 @@ def play_ticks_curses(
             if g in ("N", "E", "S", "W"):
                 goal_dirs[aid] = g
 
-    # 5) 숨김 정책 계산
+    # 5) 숨김 정책 계산 (기존 로직 그대로)
     drop_at: Dict[int, int] = {}
+
     def mark_first_center(aid: int):
         P = padded.get(aid)
         if not P:
@@ -133,10 +150,20 @@ def play_ticks_curses(
     def render_frame(t: int):
         occ: Dict[Tuple[int, int], List[int]] = defaultdict(list)
         hidden_now: List[int] = []
+        finished_now: List[int] = []
+
         for aid, P in padded.items():
+            # ▶ 1순위: path 완료 여부
+            f_t = finish_at.get(aid, T)
+            if t >= f_t:
+                finished_now.append(aid)
+                continue
+
+            # ▶ 2순위: drop_policy에 의한 숨김
             if hide_enabled and (aid in drop_at) and (t >= drop_at[aid]):
                 hidden_now.append(aid)
                 continue
+
             occ[P[t]].append(aid)
 
         rows: List[str] = []
@@ -166,7 +193,7 @@ def play_ticks_curses(
             rows.append(gap_str.join(line_cells))
             for _ in range(max(0, row_gap)):
                 rows.append("")  # 빈 줄 삽입
-        return rows, collisions, hidden_now
+        return rows, collisions, hidden_now, finished_now
 
     # 7) Curses 메인 루프
     def main(stdscr):
@@ -188,7 +215,8 @@ def play_ticks_curses(
             except curses.error:
                 pass  # 터미널 폭이 좁아도 무시
 
-            rows, collisions, hidden_now = render_frame(t)
+            rows, collisions, hidden_now, finished_now = render_frame(t)
+
             base_row = 2
             for i, line in enumerate(rows):
                 try:
@@ -211,7 +239,21 @@ def play_ticks_curses(
 
             if hide_enabled:
                 try:
-                    stdscr.addstr(info_row, 0, f"Hidden now: {len(hidden_now)}")
+                    stdscr.addstr(info_row, 0, f"Hidden now(by policy): {len(hidden_now)}")
+                    info_row += 1
+                except curses.error:
+                    pass
+
+            # ▶ 완료된 AMR 정보 표시
+            if finished_now:
+                try:
+                    ids_str = ", ".join(str(a) for a in sorted(finished_now)[:10])
+                    more = "" if len(finished_now) <= 10 else " ..."
+                    stdscr.addstr(
+                        info_row,
+                        0,
+                        f"Finished by now: {len(finished_now)}  (ids: {ids_str}{more})"
+                    )
                     info_row += 1
                 except curses.error:
                     pass
