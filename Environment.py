@@ -49,6 +49,7 @@ class ENV():
             for nid in inter_info["neighbors"].values():
                 if not nid:
                     continue
+
                 # 한 방향
                 self.iid_neighbors[iid].add(nid)
                 # 반대 방향도 자동 연결
@@ -60,6 +61,8 @@ class ENV():
         self.cell2iids: Dict[tuple[int, int], list[str]] = defaultdict(list)
 
         # 이벤트 셀들 (교차로 중심 + 레인 끝)
+        self.event_center_cells = set()
+        self.event_tip_cells = set()
         self.event_cells = set()
         self.event_cells2iid = {}
 
@@ -69,6 +72,7 @@ class ENV():
 
             self.cell2iids[center].append(iid)
             self.event_cells.add(center)
+            self.event_center_cells.add(center)
             self.event_cells2iid[center] = iid
 
             for d in I.dirs:
@@ -78,11 +82,13 @@ class ENV():
 
                 end_cell = coords[-1]
                 self.event_cells.add(end_cell)
+                self.event_tip_cells.add(end_cell)
                 self.event_cells2iid[end_cell] = iid
 
         # 데드락 상태인 교차로
         self.deadlock_queue = []
         self.iid2sched: dict[str, set[int]] = defaultdict(set)
+        self.pending_iids = set()
 
         self.traffic_mode = traffic_mode
 
@@ -128,6 +134,7 @@ class ENV():
 
         self.deadlock_queue = []
         self.iid2sched.clear()
+        self.pending_iids.clear()
 
         self.completed_amr_steps.clear()
         self.completed_path_integrities.clear()
@@ -181,13 +188,15 @@ class ENV():
                     for iid in self.cell2iids[pos]:
                         iid2members[iid].append(amr_id)
                         
-                # 데드락 체크가 필요한지 확인
+                # 데드락 체크가 필요한지 확인 (center + tip)
                 if pos in self.event_cells:
                     iid = self.event_cells2iid[pos]
                     check_iids.add(iid)
 
+            # pending_iids도 항상 체크 대상에 포함
+            check_iids |= self.pending_iids
+
             # (2) 잠금 해제 체크 (Deadlock 해제 시도)
-            # 이미 잠긴 교차로 중, 스케줄링된 로봇들이 모두 빠져나갔다면 잠금 해제
             for iid in list(self.deadlock_queue):
                 scheduled_members = self.iid2sched[iid]
                 still_active = False
@@ -206,30 +215,46 @@ class ENV():
                     self.deadlock_queue.remove(iid)
 
             # (3) 데드락 체크 및 스케줄링
-            # 잠기지 않은 교차로에 대해서만 수행
+            # 이미 deadlock_queue에 들어간 교차로는 "스케줄 진행 중"으로 보고 제외
             for iid in list(check_iids - set(self.deadlock_queue)):
                 I = self.intersections[iid]
                 I.reset()
 
                 # 해당 교차로 영역에 있는 모든 AMR 등록
-                for amr_id in iid2members[iid]:
+                for amr_id in iid2members.get(iid, []):
                     amr_obj = self.amr_list[amr_id]
                     I.register_amr(amr_obj)
 
-                if I.check_deadlock():
-                    self.deadlock_queue.append(iid)
-                    if iid not in self.deadlock_queue:
-                        self.deadlock_queue.append(iid)
-                    
-                    # 1. 스케줄러 경로 생성
-                    short_paths, target_exits = I.actions_to_paths()
+                # 3-1) 데드락 여부 판단
+                is_deadlock = I.check_deadlock()
+                if not is_deadlock:
+                    # 더 이상 데드락 아니면 pending 후보에서 제거
+                    self.pending_iids.discard(iid)
+                    continue
+                
+                # 3-2) 이웃 교차로가 스케줄 중이면 이번 스텝엔 스킵, 대신 pending에 등록
+                if self.has_active_neighbor(iid):
+                    self.pending_iids.add(iid)
+                    continue
 
-                    for amr_id, short_path in short_paths.items():
-                        if amr_id in self.amr_list:
-                            amr_obj = self.amr_list[amr_id]
-                            target_exit = target_exits[amr_id]
-                            self.insert_scheduled_path(amr_obj, short_path, target_exit)
-                            self.iid2sched[iid].add(amr_id)
+                # 여기까지 왔으면:
+                #  - 해당 iid는 현재 데드락 상태
+                #  - 이웃 active 교차로 없음 → 이번 스텝에서 스케줄 시작 가능
+                self.pending_iids.discard(iid)
+
+                if iid not in self.deadlock_queue:
+                    self.deadlock_queue.append(iid)
+                
+                # 1. 스케줄러 경로 생성
+                short_paths, target_exits = I.actions_to_paths()
+
+                # 2. 스케줄 경로를 AMR 경로에 삽입
+                for amr_id, short_path in short_paths.items():
+                    if amr_id in self.amr_list:
+                        amr_obj = self.amr_list[amr_id]
+                        target_exit = target_exits[amr_id]
+                        self.insert_scheduled_path(amr_obj, short_path, target_exit)
+                        self.iid2sched[iid].add(amr_id)
 
                     paths_dict = {aid: amr.path for aid, amr in self.amr_list.items()}
                     self.print_paths_tickwise(paths_dict)
@@ -246,10 +271,17 @@ class ENV():
         # [Phase 1] 일반 로봇(Normal AMR) 먼저 이동
         # -------------------------------------------------------
         for amr in normal_amrs:
+            cur_pos = amr.pos
             next_pos = amr.next_pos
+
+            # ★ 우선순위 높은 교차로 tip로 진입하려는 경우 → 이 스텝에서는 대기
+            if self.block_by_priority(cur_pos, next_pos):
+                continue
+
+            # 기존 충돌/점유 체크
             if next_pos not in current_occ:
-                if amr.pos in current_occ and current_occ[amr.pos] == amr.id:
-                    del current_occ[amr.pos]
+                if cur_pos in current_occ and current_occ[cur_pos] == amr.id:
+                    del current_occ[cur_pos]
                 amr.move()
                 current_occ[amr.pos] = amr.id
 
@@ -266,7 +298,14 @@ class ENV():
         for iid, members in self.iid2sched.items():
             for mid in members:
                 amr = self.amr_list[mid]
+                cur_pos = amr.pos
                 next_pos = amr.next_pos
+
+                # 우선순위가 높은 교차로의 끝으로 진입하려는 경우 차단
+                if self.block_by_priority(cur_pos, next_pos):
+                    blocked_iids.add(iid)
+                    break
+
                 # 다음 위치가 일반 로봇에 의해 점유된 경우 차단
                 if next_pos in normal_occ_pos:
                     blocked_iids.add(iid)
@@ -390,7 +429,65 @@ class ENV():
         else:
             amr.next_pos = amr.pos
 
+    
+    def has_active_neighbor(self, iid):
+        """
+        해당 교차로 iid의 이웃 중,
+        현재 deadlock_queue에 포함된 교차로가 있는지 확인
+        """
+        for nid in self.iid_neighbors.get(iid, []):
+            if nid in self.deadlock_queue:
+                return True
+        return False
 
+
+    def block_by_priority(self, cur_pos, next_pos) -> bool:
+        """
+        현재 위치 cur_pos에서 next_pos로 이동할 때,
+        아래 조건을 모두 만족하면 우선순위 기반으로 진입을 막는다.
+
+        조건:
+          1) 현재 위치는 교차로 '밖'이거나 교차로 '중심(center)'이어야 한다.
+          2) 다음 위치는 어떤 교차로의 '레인 끝(tip)' 위치여야 한다.
+          3) 진입하려는 교차로의 우선순위(= deadlock_queue 상 위치)가
+             현재 교차로보다 높으면 True를 반환하여 이동을 차단.
+
+        우선순위:
+          - deadlock_queue에서 앞에 있을수록 우선순위 ↑ (index 0,1,2,...)
+          - deadlock_queue에 없는 교차로는 가장 낮은 우선순위로 취급.
+        """
+        # 현재 위치가 교차로 중심이 아니면서 교차로 안이거나, 다음 위치가 교차로 끝이 아니면 False
+        is_cur_outside = cur_pos not in self.cell2iids
+        if ((cur_pos not in self.event_center_cells and not is_cur_outside) 
+            or next_pos not in self.event_tip_cells):
+            return False
+
+
+        # 현재/다음 위치가 속한 교차로들 (교차로 중앙에 위치하면 무조건 한 개의 교차로에만 속함)
+        cur_iid = self.cell2iids.get(cur_pos, [])
+        next_iids = self.cell2iids.get(next_pos, [])
+
+        seq = self.deadlock_queue
+
+        def priority(iid):
+            try:
+                return seq.index(iid)
+            except ValueError:
+                return len(seq)  # 가장 낮은 우선순위
+
+        if is_cur_outside:
+            cur_priority = len(seq)  # 가장 낮은 우선순위
+        else:
+            cur_priority = priority(cur_iid[0])
+
+        # 다음 위치가 속한 교차로들 중 가장 높은 우선순위 찾기
+        next_priority = min(priority(iid) for iid in next_iids)
+
+        if next_priority < cur_priority:
+            return True
+
+        return False        
+        
 
     
     def _fmt_xy(self, xy: Optional[Tuple[int, int]]) -> str:
