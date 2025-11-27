@@ -9,7 +9,7 @@ import time
 from utils.env import StackRearrangementEnv, NUM_STACKS, STACK_CAPACITY
 
 # 디버깅 플래그: True일 때만 print 문이 출력됨
-DEBUG = True
+DEBUG = False
 
 # 결정적 이동(Deterministic Move) 최적화 사용 여부 (기본값: True)
 USE_DETERMINISTIC_MOVE = True

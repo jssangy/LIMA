@@ -256,9 +256,6 @@ class ENV():
                         self.insert_scheduled_path(amr_obj, short_path, target_exit)
                         self.iid2sched[iid].add(amr_id)
 
-                    paths_dict = {aid: amr.path for aid, amr in self.amr_list.items()}
-                    self.print_paths_tickwise(paths_dict)
-
         # 2. AMR 이동
         # (A) 현재 위치 점유 맵 초기화
         current_occ = {amr.pos: amr.id for amr in self.amr_list.values()}
@@ -364,18 +361,7 @@ class ENV():
         # --- 1) merge_point -> target_exit 까지 BFS (출구 tip까지) ---
         bridge = [merge_point]
         if target_exit is not None and target_exit != merge_point:
-            try:
-                # BFSPlanner 안의 실제 BFS 객체 사용
-                bridge_path = self.planner.planner.plan_path(merge_point, target_exit)
-            except AttributeError:
-                # 혹시 BFSPlanner에 plan_path 메서드를 따로 추가했다면 이쪽을 쓰면 됨
-                bridge_path = self.planner.plan_path(merge_point, target_exit)
-
-            if bridge_path and len(bridge_path) >= 2:
-                bridge = bridge_path
-            else:
-                print(f"[Scheduler] AMR {amr.id}: BFS bridge 실패 "
-                    f"({merge_point} -> {target_exit}), merge_point만 사용.")
+            bridge = self.planner.planner.plan_path(merge_point, target_exit)
         else:
             # target_exit이 없거나 merge_point와 같으면 bridge는 [merge_point] 그대로
             pass
@@ -392,10 +378,6 @@ class ENV():
 
             if exit_idx != -1 and exit_idx + 1 < len(amr.path):
                 continuation = amr.path[exit_idx + 1:]
-            elif exit_idx == -1:
-                print(f"[Scheduler] AMR {amr.id}: target_exit {target_exit} "
-                    f"not found in original path.")
-            # exit_idx가 마지막 인덱스면 tail이 없으니 continuation은 빈 리스트 그대로
 
         # --- 3) 새 suffix 구성 ---
         new_suffix = []
@@ -409,10 +391,6 @@ class ENV():
 
         # (c) target_exit 이후 원래 경로 tail
         new_suffix.extend(continuation)
-
-        if not new_suffix:
-            print(f"[Scheduler] AMR {amr.id}: new_suffix 비어 있음, 경로 변경 건너뜀.")
-            return
 
         # --- 4) AMR 경로/상태 업데이트 ---
         prefix = amr.path[:amr.path_cursor + 1]
@@ -487,61 +465,6 @@ class ENV():
             return True
 
         return False        
-        
-
-    
-    def _fmt_xy(self, xy: Optional[Tuple[int, int]]) -> str:
-        """(x,y) 튜플을 문자열로, None이면 빈 문자열."""
-        if xy is None:
-            return ""
-        x, y = xy
-        return f"({x},{y})"
-
-    def print_paths_tickwise(self, paths: Dict[int, List[Tuple[int,int]]], *, pad: str = "repeat") -> None:
-        """
-        행 = tick, 열 = AMR ID 로 정렬해서 출력.
-
-        paths : { amr_id: [(x,y), (x,y), ...] }
-        pad   : "repeat" -> 각 AMR 경로의 마지막 좌표를 반복해서 패딩
-                그 외 값 -> None 으로 패딩 (빈 칸으로 보임)
-        """
-        if not paths:
-            print("\n[tickwise] (empty)")
-            return
-
-        # 열 순서: AMR id 오름차순
-        amr_ids = sorted(paths.keys())
-        # 전체 tick 수: 가장 긴 경로 길이
-        max_len = max(len(p) for p in paths.values())
-
-        # AMR별로 tick 길이 맞춰서 문자열 테이블 만들기
-        table: Dict[int, List[str]] = {}
-        for aid in amr_ids:
-            p = paths[aid]
-            if p and pad == "repeat":
-                padded = p + [p[-1]] * (max_len - len(p))
-            else:
-                padded = p + [None] * (max_len - len(p))
-            table[aid] = [self._fmt_xy(xy) for xy in padded]
-
-        # 칸 폭 결정 (좌표/ID 중 가장 긴 것 기준)
-        col_w = max(
-            max(len(s) for aid in amr_ids for s in table[aid]),
-            max(len(str(aid)) for aid in amr_ids),
-        )
-
-        print("\n[tickwise]")
-        # 헤더: AMR id 가로로 쭉
-        header = "tick ".ljust(6) + " ".join(f"{aid:>{col_w}}" for aid in amr_ids)
-        print(header)
-        print("-" * (6 + (col_w + 1) * len(amr_ids)))
-
-        # 각 tick(T00, T01, ...) 한 줄씩 출력
-        for t in range(max_len):
-            row = " ".join(f"{table[aid][t]:>{col_w}}" for aid in amr_ids)
-            print(f"T{t:02d}  {row}")
-
-
 
 
     def _spawn_amrs_from_task_gen(self):

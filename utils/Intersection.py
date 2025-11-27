@@ -79,56 +79,10 @@ class Intersection:
             'exit_arm': exit_arm_direction
         }
 
-
-
-    def _print_intent_table(self):
-        """
-        AMR별 current_arm / exit_arm 상태를 표로 출력.
-        행 = AMR id, 열 = current_arm, exit_arm
-        """
-        if not self.amr_intent_map:
-            print("\n[Intent Table] (empty)")
-            return
-
-        # AMR id 정렬 (키가 str일 수도 있으니 int 캐스팅 시도)
-        rows = []
-        for aid, rec in self.amr_intent_map.items():
-            try:
-                aid_int = int(aid)
-            except (TypeError, ValueError):
-                aid_int = aid  # 그대로 사용
-            cur = rec.get("current_arm", "")
-            nxt = rec.get("exit_arm", "")
-            rows.append((aid_int, str(cur), str(nxt)))
-
-        # id 기준 정렬
-        try:
-            rows.sort(key=lambda x: int(x[0]))
-        except Exception:
-            rows.sort(key=lambda x: str(x[0]))
-
-        # 컬럼 폭 계산
-        id_w   = max(len("AMR"), max(len(str(r[0])) for r in rows))
-        cur_w  = max(len("current_arm"), max(len(r[1]) for r in rows))
-        exit_w = max(len("exit_arm"),   max(len(r[2]) for r in rows))
-
-        print("\n[Intent Table]")
-        header = f"{'AMR':>{id_w}}  {'current_arm':>{cur_w}}  {'exit_arm':>{exit_w}}"
-        print(header)
-        print("-" * len(header))
-
-        for aid, cur, nxt in rows:
-            print(f"{str(aid):>{id_w}}  {cur:>{cur_w}}  {nxt:>{exit_w}}")
-
-
     def check_deadlock(self):
         if self.check_cycle_deadlock():
-            self._print_intent_table()
-            print("Deadlock detected by cycle!")
             return True
         if self.check_center_deadlock():
-            self._print_intent_table()
-            print("Deadlock detected by center ingress conflict!")
             return True
         return False
 
@@ -484,7 +438,6 @@ class Intersection:
         # 5. 경로 후처리
         # 중앙을 지나지 않는 로봇 삭제 & 중앙 통과 후 경로 절삭
         self._post_process_paths(targets)
-        print(len(self.paths), "paths generated after post-processing.")
 
         return self.paths, self.target_exits
 
