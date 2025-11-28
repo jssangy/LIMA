@@ -50,7 +50,7 @@ class ENV():
                 if not nid:
                     continue
 
-                # 한 방향
+                # 한 방향 연결
                 self.iid_neighbors[iid].add(nid)
                 # 반대 방향도 자동 연결
                 if nid not in self.iid_neighbors:
