@@ -4,12 +4,25 @@ import math
 import numpy as np
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from utils.AMR import AMR
 from utils.Intersection import Intersection
 from utils import Funct
 from utils.traffic_generator import TaskSetGenerator, discover_border_arms_NxM, TrafficGenerator
 from utils.Controller import AStarPlanner, PIBTPlanner, CBSPlanner, BFSPlanner
+
+
+def _actions_to_paths_job(iid: str, inter: "Intersection"):
+    """
+    서브 프로세스에서 실행할 함수.
+    - iid: 교차로 ID (문자열)
+    - inter: Intersection 객체 (해당 프로세스에서만 사용하는 복사본)
+    반환:
+      (iid, short_paths, target_exits)
+    """
+    short_paths, target_exits = inter.actions_to_paths()
+    return iid, short_paths, target_exits
 
 
 class ENV():
@@ -22,10 +35,16 @@ class ENV():
         map_path = os.path.join(base_dir, data['mapFile'])
         self.goal = set()
 
+        self.scheduler_pool = ProcessPoolExecutor(max_workers=8)
+
         self.time = 0
         
         self.map = self._load_map(map_path)
         self.walkable_tiles = np.count_nonzero(self.map == 0)
+        print(f"\nMap width: {self.map.shape[1]}, Map height: {self.map.shape[0]}")
+        print(f"Walkable tiles (value 0): {self.walkable_tiles}")
+        print(f"Number of AMRs to spawn: {num_amrs}")
+        print(f"Density: {num_amrs / self.walkable_tiles * 100:.2f}%")
         self.max_arm_len_h = max_arm_len_h
         self.max_arm_len_v = max_arm_len_v
         processed_intersections = self._find_intersections_and_build_graph()
@@ -179,6 +198,14 @@ class ENV():
             # pending_iids도 항상 체크 대상에 포함
             check_iids |= self.pending_iids
 
+            # --- 교차로 capacity 검사 ---
+            for iid, cnt in self.iid_inside_counts.items():
+                if cnt > self.intersection_capacity:
+                    raise RuntimeError(
+                        f"[CRITICAL] Intersection {iid} has {cnt} AMRs "
+                        f"(capacity = {self.intersection_capacity}) at step {self.time}"
+                    )
+
             # (2) 잠금 해제 체크 (Deadlock 해제 시도)
             for iid in list(self.deadlock_queue):
                 scheduled_members = self.iid2sched[iid]
@@ -197,9 +224,13 @@ class ENV():
                 if not still_active:
                     self.deadlock_queue.remove(iid)
 
-            # (3) 데드락 체크 및 스케줄링
-            # 이미 deadlock_queue에 들어간 교차로는 "스케줄 진행 중"으로 보고 제외
-            for iid in list(check_iids - set(self.deadlock_queue)):
+            # 현재 스케줄 진행 중인 교차로 id 집합
+            active_iids = set(self.deadlock_queue)
+
+            # (3-A) 데드락 체크 및 "스케줄 후보 iid" 수집
+            iids_to_schedule: list[str] = []
+
+            for iid in list(check_iids - active_iids):
                 I = self.intersections[iid]
                 I.reset()
 
@@ -225,19 +256,44 @@ class ENV():
                 #  - 이웃 active 교차로 없음 → 이번 스텝에서 스케줄 시작 가능
                 self.pending_iids.discard(iid)
 
-                if iid not in self.deadlock_queue:
+                if iid not in active_iids:
                     self.deadlock_queue.append(iid)
-                
-                # 1. 스케줄러 경로 생성
-                short_paths, target_exits = I.actions_to_paths()
+                    active_iids.add(iid)
 
-                # 2. 스케줄 경로를 AMR 경로에 삽입
+                # 이번 스텝에서 actions_to_paths()를 호출해야 하는 교차로 목록에 추가
+                iids_to_schedule.append(iid)
+
+            # (3-B) iids_to_schedule에 대해서 I.actions_to_paths() 병렬 실행
+            futures = {}
+            for iid in iids_to_schedule:
+                I = self.intersections[iid]
+                # 프로세스 풀에 job 제출
+                fut = self.scheduler_pool.submit(_actions_to_paths_job, iid, I)
+                futures[fut] = iid
+
+            # 결과 수집 및 경로 반영
+            for fut in as_completed(futures):
+                iid = futures[fut]
+                try:
+                    iid_ret, short_paths, target_exits = None, None, None
+                    # _actions_to_paths_job이 (iid, short_paths, target_exits)를 반환한다고 가정
+                    iid_ret, short_paths, target_exits = fut.result()
+                except Exception as e:
+                    print(f"[Scheduler] actions_to_paths failed for iid={iid}: {e}")
+                    continue
+
+                # 안전 최소 체크
+                if short_paths is None or target_exits is None:
+                    continue
+
+                # 스케줄 경로를 AMR 경로에 삽입
                 for amr_id, short_path in short_paths.items():
                     if amr_id in self.amr_list:
                         amr_obj = self.amr_list[amr_id]
                         target_exit = target_exits[amr_id]
                         self.insert_scheduled_path(amr_obj, short_path, target_exit)
                         self.iid2sched[iid].add(amr_id)
+
 
         # 2. AMR 이동
         # (A) 현재 위치 점유 맵 초기화

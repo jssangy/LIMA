@@ -3,35 +3,9 @@ pygame
 pyglet
 pyyaml
 
+교차로 스케줄링하는 부분 병렬화하니 훨씬 빠르게 되네요
 
-[27050] P=N  ACT=NOP no_progress=1  N:NNNNN | E:EEEEE | S:SSWS | W:W -> N:NNNNN | E:EEEEE | S:SSWS | W:W
-[27051] P=E  ACT=NOP no_progress=2  N:NNNNN | E:EEEEE | S:SSWS | W:W -> N:NNNNN | E:EEEEE | S:SSWS | W:W
-[27052] P=S  ACT=RR S->W dir=S  N:NNNNN | E:EEEEE | S:SSWS | W:W -> N:NNNNN | E:EEEEE | S:SSW | W:WS
-[27053] P=S  ACT=RR S->W dir=W  N:NNNNN | E:EEEEE | S:SSW | W:WS -> N:NNNNN | E:EEEEE | S:SS | W:WSW
-[27054] P=W  ACT=RR W->S dir=W  N:NNNNN | E:EEEEE | S:SS | W:WSW -> N:NNNNN | E:EEEEE | S:SSW | W:WS
-[27055] P=W  ACT=RR W->S dir=S  N:NNNNN | E:EEEEE | S:SSW | W:WS -> N:NNNNN | E:EEEEE | S:SSWS | W:W
-[27056] P=N  ACT=NOP no_progress=1  N:NNNNN | E:EEEEE | S:SSWS | W:W -> N:NNNNN | E:EEEEE | S:SSWS | W:W
-[27057] P=E  ACT=NOP no_progress=2  N:NNNNN | E:EEEEE | S:SSWS | W:W -> N:NNNNN | E:EEEEE | S:SSWS | W:W
-[27058] P=S  ACT=RR S->W dir=S  N:NNNNN | E:EEEEE | S:SSWS | W:W -> N:NNNNN | E:EEEEE | S:SSW | W:WS
-[27059] P=S  ACT=RR S->W dir=W  N:NNNNN | E:EEEEE | S:SSW | W:WS -> N:NNNNN | E:EEEEE | S:SS | W:WSW
-[27060] P=W  ACT=RR W->S dir=W  N:NNNNN | E:EEEEE | S:SS | W:WSW -> N:NNNNN | E:EEEEE | S:SSW | W:WS
-[27061] P=W  ACT=RR W->S dir=S  N:NNNNN | E:EEEEE | S:SSW | W:WS -> N:NNNNN | E:EEEEE | S:SSWS | W:W
-[27062] P=N  ACT=NOP no_progress=1  N:NNNNN | E:EEEEE | S:SSWS | W:W -> N:NNNNN | E:EEEEE | S:SSWS | W:W
-[27063] P=E  ACT=NOP no_progress=2  N:NNNNN | E:EEEEE | S:SSWS | W:W -> N:NNNNN | E:EEEEE | S:SSWS | W:W
-[27064] P=S  ACT=RR S->W dir=S  N:NNNNN | E:EEEEE | S:SSWS | W:W -> N:NNNNN | E:EEEEE | S:SSW | W:WS
-[27065] P=S  ACT=RR S->W dir=W  N:NNNNN | E:EEEEE | S:SSW | W:WS -> N:NNNNN | E:EEEEE | S:SS | W:WSW
-[27066] P=W  ACT=RR W->S dir=W  N:NNNNN | E:EEEEE | S:SS | W:WSW -> N:NNNNN | E:EEEEE | S:SSW | W:WS
-[27067] P=W  ACT=RR W->S dir=S  N:NNNNN | E:EEEEE | S:SSW | W:WS -> N:NNNNN | E:EEEEE | S:SSWS | W:W
-[27068] P=N  ACT=NOP no_progress=1  N:NNNNN | E:EEEEE | S:SSWS | W:W -> N:NNNNN | E:EEEEE | S:SSWS | W:W
-[27069] P=E  ACT=NOP no_progress=2  N:NNNNN | E:EEEEE | S:SSWS | W:W -> N:NNNNN | E:EEEEE | S:SSWS | W:W
-[27070] P=S  ACT=RR S->W dir=S  N:NNNNN | E:EEEEE | S:SSWS | W:W -> N:NNNNN | E:EEEEE | S:SSW | W:WS
-[27071] P=S  ACT=RR S->W dir=W  N:NNNNN | E:EEEEE | S:SSW | W:WS -> N:NNNNN | E:EEEEE | S:SS | W:WSW
-[27072] P=W  ACT=RR W->S dir=W  N:NNNNN | E:EEEEE | S:SS | W:WSW -> N:NNNNN | E:EEEEE | S:SSW | W:WS
-[27073] P=W  ACT=RR W->S dir=S  N:NNNNN | E:EEEEE | S:SSW | W:WS -> N:NNNNN | E:EEEEE | S:SSWS | W:W
-[27074] P=N  ACT=NOP no_progress=1  N:NNNNN | E:EEEEE | S:SSWS | W:W -> N:NNNNN | E:EEEEE | S:SSWS | W:W
-[27075] P=E  ACT=NOP no_progress=2  N:NNNNN | E:EEEEE | S:SSWS | W:W -> N:NNNNN | E:EEEEE | S:SSWS | W:W
-[27076] P=S  ACT=RR S->W dir=S  N:NNNNN | E:EEEEE | S:SSWS | W:W -> N:NNNNN | E:EEEEE | S:SSW | W:WS
-[27077] P=S  ACT=RR S->W dir=W  N:NNNNN | E:EEEEE | S:SSW | W:WS -> N:NNNNN | E:EEEEE | S:SS | W:WSW
-[27078] P=W  ACT=RR W->S dir=W  N:NNNNN | E:EEEEE | S:SS | W:WSW -> N:NNNNN | E:EEEEE | S:SSW | W:WS
-[27079] P=W  ACT=RR W->S dir=S  N:NNNNN | E:EEEEE | S:SSW | W:WS -> N:NNNNN | E:EEEEE | S:SSWS | W:W
-[27080] P=N  ACT=NOP no_progress=1  N:NNNNN | E:EEEEE | S:SSWS | W:W -> N:NNNNN | E:EEEEE | S:SSWS | W:W
+교차로 내 최대 AMR 개수 15개 제한 때문에 생각보다 AMR 개수를 크게 못늘리네요
+
+교차로 9개짜리 맵 AMR 개수 50개(밀도 35%)로 해도 실패하는게 가끔 있고
+교차로 900개짜리 맵 AMR 개수 
