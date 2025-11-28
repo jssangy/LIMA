@@ -27,6 +27,7 @@ def main():
         max_arm_len_h=args.max_arm_h, 
         max_arm_len_v=args.max_arm_v, 
         num_amrs=args.num_amrs, 
+
         max_steps=args.max_steps, 
         running_opt=args.algo, 
         traffic_mode=args.traffic_mode

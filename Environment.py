@@ -57,6 +57,11 @@ class ENV():
                     self.iid_neighbors[nid] = set()
                 self.iid_neighbors[nid].add(iid)
 
+        # 교차로별 현재 AMR 수 (step마다 갱신)
+        self.iid_inside_counts: dict[str, int] = defaultdict(int)
+        # 교차로 최대 수용량
+        self.intersection_capacity = 15
+
         # 각 셀이 어느 교차로에 속하는지 맵핑
         self.cell2iids: Dict[tuple[int, int], list[str]] = defaultdict(list)
 
@@ -132,6 +137,7 @@ class ENV():
         elif self.traffic_mode == 'traffic':
             self._spawn_amrs_from_stream_gen()
 
+        self.iid_inside_counts.clear()
         self.deadlock_queue = []
         self.iid2sched.clear()
         self.pending_iids.clear()
@@ -146,31 +152,6 @@ class ENV():
     def step(self):
         self.time += 1
 
-        """        # 충돌 감지 (디버그용)
-        final_positions = defaultdict(list)
-        for amr_id, amr in self.amr_list.items():
-            final_positions[amr.pos].append(amr_id)
-
-        # 2개 이상 겹친 곳 필터링
-        collisions = {pos: ids for pos, ids in final_positions.items() if len(ids) > 1}
-        
-        if collisions:
-            error_msg = "\n[CRITICAL] Collision Detected at step {}:\n".format(self.time)
-            
-            for pos, ids in collisions.items():
-                # 각 로봇의 ID와 스케줄링 여부를 문자열로 변환
-                # 예: "10(Scheduled)", "5(Normal)"
-                amr_details = []
-                for aid in ids:
-                    amr = self.amr_list[aid]
-                    status = "Scheduled" if amr.scheduling > 0 else "Normal"
-                    amr_details.append(f"{aid}({status})")
-                
-                error_msg += f"  Position {pos}: {', '.join(amr_details)}\n"
-            
-            raise RuntimeError(error_msg)
-        """
-
         if self.traffic_mode == 'task' and self.task_generator.is_episode_done():
             return False
 
@@ -179,6 +160,7 @@ class ENV():
             # (1) 교차로별 멤버 확인
             check_iids = set()
             iid2members: dict[str, list[int]] = defaultdict(list)
+            self.iid_inside_counts.clear()
 
             for amr_id, amr_obj in self.amr_list.items():
                 pos = tuple(amr_obj.pos)
@@ -187,6 +169,7 @@ class ENV():
                 if pos in self.cell2iids:
                     for iid in self.cell2iids[pos]:
                         iid2members[iid].append(amr_id)
+                        self.iid_inside_counts[iid] += 1
                         
                 # 데드락 체크가 필요한지 확인 (center + tip)
                 if pos in self.event_cells:
@@ -272,7 +255,7 @@ class ENV():
             next_pos = amr.next_pos
 
             # ★ 우선순위 높은 교차로 tip로 진입하려는 경우 → 이 스텝에서는 대기
-            if self.block_by_priority(cur_pos, next_pos):
+            if self.block_intersection(cur_pos, next_pos):
                 continue
 
             # 기존 충돌/점유 체크
@@ -299,7 +282,7 @@ class ENV():
                 next_pos = amr.next_pos
 
                 # 우선순위가 높은 교차로의 끝으로 진입하려는 경우 차단
-                if self.block_by_priority(cur_pos, next_pos):
+                if self.block_intersection(cur_pos, next_pos):
                     blocked_iids.add(iid)
                     break
 
@@ -419,16 +402,22 @@ class ENV():
         return False
 
 
-    def block_by_priority(self, cur_pos, next_pos) -> bool:
+    def block_intersection(self, cur_pos, next_pos) -> bool:
         """
         현재 위치 cur_pos에서 next_pos로 이동할 때,
-        아래 조건을 모두 만족하면 우선순위 기반으로 진입을 막는다.
+        교차로 관련 정책(수용량 + 우선순위)에 의해 진입을 막아야 하면 True를 반환.
 
-        조건:
-          1) 현재 위치는 교차로 '밖'이거나 교차로 '중심(center)'이어야 한다.
-          2) 다음 위치는 어떤 교차로의 '레인 끝(tip)' 위치여야 한다.
-          3) 진입하려는 교차로의 우선순위(= deadlock_queue 상 위치)가
-             현재 교차로보다 높으면 True를 반환하여 이동을 차단.
+        1) 수용량(capacity) 정책:
+           - cur_pos → next_pos 이동이 어떤 교차로 iid에 대해
+             '외부 → 내부' 진입이고,
+           - 해당 교차로의 현재 AMR 수가 self.intersection_capacity 이상이면
+             → True (차단)
+
+        2) 우선순위(priority) 정책:
+           - 현재 위치는 교차로 '밖'이거나 교차로 '중심(center)'이어야 한다.
+           - 다음 위치는 어떤 교차로의 '레인 끝(tip)' 위치여야 한다.
+           - 이때 진입하려는 교차로의 우선순위(= deadlock_queue 상 위치)가
+             현재 교차로보다 높으면 → True (차단)
 
         우선순위:
           - deadlock_queue에서 앞에 있을수록 우선순위 ↑ (index 0,1,2,...)
@@ -440,11 +429,24 @@ class ENV():
             or next_pos not in self.event_tip_cells):
             return False
 
-
-        # 현재/다음 위치가 속한 교차로들 (교차로 중앙에 위치하면 무조건 한 개의 교차로에만 속함)
+        # 현재/다음 위치가 속한 교차로들 (교차로 중앙에 위치하면 현재 위치는 무조건 한 개의 교차로에만 속함)
         cur_iid = self.cell2iids.get(cur_pos, [])
-        next_iids = self.cell2iids.get(next_pos, [])
+        cur_iid_set = set(self.cell2iids.get(cur_pos, []))
+        next_iid_set = set(self.cell2iids.get(next_pos, []))
 
+        entering_iid_set = next_iid_set - cur_iid_set
+        entering_iid = next(iter(entering_iid_set))
+
+        # -----------------------------
+        # (1) 수용량(capacity) 정책
+        # -----------------------------
+        if self.iid_inside_counts.get(entering_iid, 0) >= self.intersection_capacity:
+            # 수용량 초과 → 진입 차단
+            return True        
+        
+        # -----------------------------
+        # (2) 우선순위(priority) 정책
+        # -----------------------------
         seq = self.deadlock_queue
 
         def priority(iid):
@@ -459,7 +461,7 @@ class ENV():
             cur_priority = priority(cur_iid[0])
 
         # 다음 위치가 속한 교차로들 중 가장 높은 우선순위 찾기
-        next_priority = min(priority(iid) for iid in next_iids)
+        next_priority = priority(entering_iid)
 
         if next_priority < cur_priority:
             return True
