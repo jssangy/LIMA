@@ -224,13 +224,28 @@ class ENV():
                 if not still_active:
                     self.deadlock_queue.remove(iid)
 
+            # ★ deadlock_queue를 "교차로 내 AMR 수" 기준으로 정렬
+            #    - AMR 많이 들어있는 교차로일수록 앞쪽(index 작게)
+            self.deadlock_queue.sort(
+                key=lambda x: self.iid_inside_counts.get(x, 0),
+                reverse=True,
+            )
+
             # 현재 스케줄 진행 중인 교차로 id 집합
             active_iids = set(self.deadlock_queue)
 
             # (3-A) 데드락 체크 및 "스케줄 후보 iid" 수집
             iids_to_schedule: list[str] = []
 
-            for iid in list(check_iids - active_iids):
+
+            # ★ 후보 교차로들도 교차로 내 AMR 개수 많은 순서대로 처리
+            candidate_iids = sorted(
+                (check_iids - active_iids),
+                key=lambda x: self.iid_inside_counts.get(x, 0),
+                reverse=True,
+            )
+
+            for iid in candidate_iids:
                 I = self.intersections[iid]
                 I.reset()
 
@@ -260,7 +275,7 @@ class ENV():
                     self.deadlock_queue.append(iid)
                     active_iids.add(iid)
 
-                # 이번 스텝에서 actions_to_paths()를 호출해야 하는 교차로 목록에 추가
+                # 이 교차로에 대해 actions_to_paths 실행
                 iids_to_schedule.append(iid)
 
             # (3-B) iids_to_schedule에 대해서 I.actions_to_paths() 병렬 실행
