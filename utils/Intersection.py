@@ -694,15 +694,8 @@ class Intersection:
 
 
         # --------------------------------------------------
-        # 8) self.paths는 현재 위치 1-step만 가진 상태로 두고,
-        #    target_lanes는 env/동기화 로직에서 활용하도록 반환
+        # 8) self.paths 동기화 경로 생성
         # --------------------------------------------------
-                # -------------------------------
-        # 3) lanes vs target_lanes → 동기화 경로 생성
-        # -------------------------------
-
-        center = (self.center_x, self.center_y)
-
         # 현재/목표 인덱스 맵(near index)
         cur_loc = {}   # aid -> (arm, idx)  (센터는 ('C', None))
         for d in dirs:
@@ -718,117 +711,153 @@ class Intersection:
                 if aid is not None:
                     tgt_loc[aid] = (d, i)
 
-        # -------------------------------
-        # 8-A) 같은 팔 내 이동(same-arm)과 교차 팔 이동(cross-arm) 분류
-        # -------------------------------
-        same_arm_amrs = set()
-        cross_amrs = []
-
+        # 각 AMR의 필요 스텝 수 계산
+        steps = {}
+        max_steps = 0
         for aid in paths.keys():
-            if aid == center_id:
+            if aid == center_id and aid in tgt_loc:
                 continue
-            if aid in cur_loc and aid in tgt_loc:
+            elif aid in cur_loc and aid in tgt_loc:
                 d0, i0 = cur_loc[aid]
                 d1, i1 = tgt_loc[aid]
                 if d0 == d1 and d0 in dirs:
-                    same_arm_amrs.add(aid)
-                elif (d0 in dirs or d0 == 'C') and d1 in dirs and d0 != d1:
-                    # 팔이 바뀌어야 하는 경우(또는 center->팔)
-                    cross_amrs.append(aid)
-
-        # -------------------------------
-        # 8-B) Phase 1: 같은 팔 내 슬라이딩 (build_prestage_paths 기존 로직)
-        # -------------------------------
-        steps1 = {}
-        max_steps1 = 0
-
-        for aid in paths.keys():
-            if aid in same_arm_amrs:
-                d0, i0 = cur_loc[aid]
-                d1, i1 = tgt_loc[aid]
-                dist = abs(i1 - i0)
-            elif aid == center_id and aid in tgt_loc:
-                # center_id가 있으면, host.front로 한 번에 점프할 수도 있음
-                dist = 1
+                    dist = abs(i1 - i0)  # 같은 팔 내 인덱스 차
+                else:
+                    # 각 팔 인덱스 합 + 센터 경유(1)
+                    dist = i0 + i1 + 1
             else:
                 dist = 0
+            steps[aid] = dist
+            if dist > max_steps:
+                max_steps = dist
 
-            steps1[aid] = dist
-            if dist > max_steps1:
-                max_steps1 = dist
+        # 현재/목표 인덱스 맵(near index)
+        cur_loc: dict[int, tuple[str, int | None]] = {}   # aid -> (arm, idx)  (센터는 ('C', None))
+        for d in dirs:
+            for i, aid in enumerate(lanes[d]):
+                if aid is not None:
+                    cur_loc[aid] = (d, i)
+        if center_id is not None:
+            cur_loc[center_id] = ('C', None)
 
-        # per-step 좌표 생성 (Phase 1)
-        for s in range(1, max_steps1 + 1):
+        tgt_loc: dict[int, tuple[str, int]] = {}          # aid -> (arm, idx)
+        for d in dirs:
+            for i, aid in enumerate(target_lanes[d]):
+                if aid is not None:
+                    tgt_loc[aid] = (d, i)
+
+        # AMR 분류 + 필요 스텝 수 계산
+        steps: dict[int, int] = {}
+        max_steps = 0
+        same_arm_amrs: set[int] = set()
+        cross_amrs: set[int] = set()
+
+        for aid in paths.keys():
+            dist = 0
+
+            # center AMR
+            if center_id is not None and aid == center_id and aid in tgt_loc:
+                d1, i1 = tgt_loc[aid]
+                # center -> target 팔 i1까지: front(0)부터 한 칸씩
+                dist = i1 + 1
+                cross_amrs.add(aid)
+
+            # 일반 AMR
+            elif aid in cur_loc and aid in tgt_loc:
+                d0, i0 = cur_loc[aid]
+                d1, i1 = tgt_loc[aid]
+
+                if d0 == d1 and d0 in dirs:
+                    # 같은 팔 내 슬라이딩
+                    dist = abs(i1 - i0)
+                    if dist > 0:
+                        same_arm_amrs.add(aid)
+                elif d0 in dirs and d1 in dirs:
+                    # 팔이 바뀌는 경우: 현재 팔 -> center -> 새 팔
+                    to_center = (i0 or 0) + 1        # lane idx i0 -> center
+                    from_center = i1 + 1             # center -> lane idx i1
+                    dist = to_center + from_center
+                    cross_amrs.add(aid)
+                else:
+                    dist = 0  # 그 외는 안 움직임
+
+            steps[aid] = dist
+            if dist > max_steps:
+                max_steps = dist
+
+        # per-step 좌표 생성
+        for s in range(1, max_steps + 1):
             for aid in paths.keys():
                 last = paths[aid][-1]
+                dist = steps.get(aid, 0)
 
-                # center AMR: 스텝 1에 host.front로 점프, 이후 고정
-                if aid == center_id and aid in tgt_loc:
-                    if s == 1:
-                        d1, i1 = tgt_loc[aid]
-                        pos = self.lane_coords[d1][0]
-                    else:
-                        pos = last
-                    paths[aid].append(pos)
+                # 더 이상 움직일 필요 없으면 계속 대기
+                if dist == 0 or s > dist:
+                    paths[aid].append(last)
                     continue
 
-                # 같은 팔 내 이동(한 칸씩)
+                # 1) 같은 팔 내 슬라이딩 (build_prestage_paths 로직 재사용)
                 if aid in same_arm_amrs:
                     d0, i0 = cur_loc[aid]
                     d1, i1 = tgt_loc[aid]
-                    m = steps1[aid]
-                    if m == 0:
-                        paths[aid].append(last)
-                        continue
+                    m = dist
                     move_k = min(s, m)
                     sign = 0
-                    if i1 > i0: sign = 1
-                    elif i1 < i0: sign = -1
+                    if i1 > i0:
+                        sign = 1
+                    elif i1 < i0:
+                        sign = -1
                     idx = i0 + sign * move_k
                     pos = self.lane_coords[d0][idx]
                     paths[aid].append(pos)
                     continue
 
-                # 그 외(Phase1에서는 정지)
-                paths[aid].append(last)
-
-        # Phase 1이 끝난 시점의 step index
-        current_T = max_steps1
-
-        # -------------------------------
-        # 8-C) Phase 2: cross-arm 이동 (팔이 바뀌는 경우)
-        #   - 각 AMR마다
-        #       t_center: center로 들어가는 시점
-        #       t_target: target 팔의 칸으로 가는 시점
-        #   - center에는 한 번에 한 AMR만 들어가도록 slot을 순차 배정
-        # -------------------------------
-        K = len(cross_amrs)
-        slot = {aid: j for j, aid in enumerate(cross_amrs)}  # aid -> 0..K-1
-        extra_steps = 2 * K  # 각 AMR당 center, target 두 스텝
-        total_T = current_T + extra_steps
-
-        for s in range(current_T + 1, total_T + 1):
-            for aid in paths.keys():
-                last = paths[aid][-1]
-
-                if aid not in slot:
-                    # cross 대상이 아닌 AMR은 그대로 대기
-                    paths[aid].append(last)
+                # 2) center AMR: center -> target 팔로 직진
+                if center_id is not None and aid == center_id and aid in tgt_loc:
+                    d1, i1 = tgt_loc[aid]
+                    # dist = i1 + 1, s = 1..dist
+                    step_out = min(s, dist)
+                    idx = step_out - 1   # 0..i1
+                    pos = self.lane_coords[d1][idx]
+                    paths[aid].append(pos)
                     continue
 
-                j = slot[aid]
-                t_center = current_T + 2 * j + 1
-                t_target = current_T + 2 * j + 2
-
-                if s == t_center:
-                    pos = center
-                elif s == t_target:
+                # 3) 팔이 바뀌는 일반 cross-amr (팔 -> center -> 다른 팔)
+                if aid in cross_amrs:
+                    d0, i0 = cur_loc[aid]
                     d1, i1 = tgt_loc[aid]
-                    pos = self.lane_coords[d1][i1]
-                else:
-                    pos = last
 
-                paths[aid].append(pos)
+                    to_center = (i0 or 0) + 1
+                    from_center = i1 + 1
+                    # dist == to_center + from_center
+
+                    if s <= to_center:
+                        # 현재 팔에서 center 방향으로 한 칸씩 당기기
+                        if i0 is None:
+                            # 이 케이스는 거의 없음; 방어적 코드
+                            pos = last
+                        else:
+                            if s <= i0:
+                                # lane[i0] -> lane[i0-1] -> ... -> lane[0]
+                                idx = i0 - s
+                                pos = self.lane_coords[d0][idx]
+                            else:
+                                # s == to_center: center 도달
+                                pos = center
+                    else:
+                        # center에서 target 팔로 나가기
+                        s2 = s - to_center  # 1..from_center
+                        if s2 <= from_center:
+                            idx = s2 - 1     # 0..i1
+                            pos = self.lane_coords[d1][idx]
+                        else:
+                            pos = last
+
+                    paths[aid].append(pos)
+                    continue
+
+                # 그 외: 이번 step에서는 안 움직임
+                paths[aid].append(last)
 
         self.paths = paths.copy()
         return target_lanes, paths

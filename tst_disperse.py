@@ -307,7 +307,7 @@ def main():
     ap.add_argument("--lenS", type=int, default=5, help="S 레인 길이")
     ap.add_argument("--lenW", type=int, default=5, help="W 레인 길이")
     ap.add_argument("--seed", type=int, default=0, help="전역 시드(케이스별로 +i)")
-    ap.add_argument("--moves", type=int, default=5, help="각 케이스에서 최대 몇 대까지 옮길지 상한 (없으면 랜덤)")
+    ap.add_argument("--moves", type=int, default=3, help="각 케이스에서 최대 몇 대까지 옮길지 상한 (없으면 랜덤)")
     ap.add_argument("--no-view", action="store_true", help="tick_viewer 생략")
     args = ap.parse_args()
 
