@@ -289,17 +289,9 @@ class ENV():
             # 결과 수집 및 경로 반영
             for fut in as_completed(futures):
                 iid = futures[fut]
-                try:
-                    iid_ret, short_paths, target_exits = None, None, None
-                    # _actions_to_paths_job이 (iid, short_paths, target_exits)를 반환한다고 가정
-                    iid_ret, short_paths, target_exits = fut.result()
-                except Exception as e:
-                    print(f"[Scheduler] actions_to_paths failed for iid={iid}: {e}")
-                    continue
-
-                # 안전 최소 체크
-                if short_paths is None or target_exits is None:
-                    continue
+                iid_ret, short_paths, target_exits = None, None, None
+                # _actions_to_paths_job이 (iid, short_paths, target_exits)를 반환한다고 가정
+                iid_ret, short_paths, target_exits = fut.result()
 
                 # 스케줄 경로를 AMR 경로에 삽입
                 for amr_id, short_path in short_paths.items():
@@ -508,12 +500,14 @@ class ENV():
         entering_iid_set = next_iid_set - cur_iid_set
         entering_iid = next(iter(entering_iid_set))
 
+
         # -----------------------------
         # (1) 수용량(capacity) 정책
         # -----------------------------
-        if self.iid_inside_counts.get(entering_iid, 0) >= self.intersection_capacity:
+        # if self.iid_inside_counts.get(entering_iid, 0) >= self.intersection_capacity:
             # 수용량 초과 → 진입 차단
-            return True        
+        #     return True   
+ 
         
         # -----------------------------
         # (2) 우선순위(priority) 정책

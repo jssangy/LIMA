@@ -190,8 +190,7 @@ class Intersection:
 
         self.is_deadlock = False
         return False
-   
-    
+
 
     def build_prestage_paths(self):
         """
@@ -469,7 +468,7 @@ class Intersection:
         1. 중앙을 지나지 않는 AMR은 path에서 제거 (단순 대기)
         2. 중앙을 지나는 AMR:
            - 원래 목적지로 가는 경우(Case A):
-               '중앙 -> 출구 첫 칸'까지만 남기고 절삭 (메인 플래너로 핸드오버)
+               '중앙 -> 출구까지만 남기고 절삭
            - 다른 곳으로 대피하는 경우(Case B):
                경로 절삭 없이 끝까지 이동 (확실한 비켜주기)
 
@@ -557,3 +556,279 @@ class Intersection:
                 # 중앙이 경로의 마지막인 경우 (드물지만 가능) -> 그대로 둠
                 pass
 
+
+    def disperse_paths(self, input_dir: str, num_amrs: int):
+        """
+        데드락 해소용 분산:
+        - 이 교차로에서 input_dir 팔에 있는 AMR들 중 최대 num_amrs개를
+          나머지 팔들로 분산시킬 수 있도록 target_lanes를 만든다.
+        - overflow 후보는 input_dir 팔의 센터에 가장 가까운 AMR들(near→far 순)이다.
+        - 교차로 중앙(center)에 있는 AMR도 적당한 팔로 분산한다.
+        - 각 팔은 near→far 압축을 수행한다 (build_prestage_paths와 동일).
+        - 실제 시간 방향 경로(self.paths)는 여기서 동기화하지 않고,
+          각 AMR의 현재 위치만 1-step으로 기록해 둔다.
+        
+        반환:
+            target_lanes: {'N': [aid|None, ...], ...}
+            paths:        {aid: [(x, y)]}  (현재 위치만 포함)
+        """
+
+        cx, cy = self.center_x, self.center_y
+        center = (cx, cy)
+        dirs = self.dirs
+        active_dirs = [d for d in dirs if d != input_dir]
+
+        # --------------------------------------------------
+        # 0) 현재 스냅샷: lanes (near→far), pos2aid
+        # --------------------------------------------------
+        lanes = {d: [None] * len(self.lane_coords[d]) for d in dirs}
+        pos2aid = {}
+        for aid, rec in self.amr_intent_map.items():
+            a = rec.get("amr_obj")
+            pos2aid[a.pos] = aid
+
+        for d, coords in self.lane_coords.items():
+            for i, p in enumerate(coords):  # i=0: center에 가장 가까운 칸
+                lanes[d][i] = pos2aid.get(p, None)
+
+        # center AMR (있다면)
+        center_id = pos2aid.get(center, None)
+
+        # --------------------------------------------------
+        # 1) 초기 paths: 각 AMR의 현재 위치 한 칸만 기록
+        #    (동기화 경로는 나중에 별도 로직에서 처리)
+        # --------------------------------------------------
+        paths = {}
+        for aid, rec in self.amr_intent_map.items():
+            a = rec.get("amr_obj")
+            paths[aid] = [a.pos]
+
+        # --------------------------------------------------
+        # 2) target_lanes 기본형: 각 팔을 near→far로 압축
+        #    (build_prestage_paths의 1단계와 동일)
+        # --------------------------------------------------
+        target_lanes = {}
+        for d in dirs:
+            filled = [aid for aid in lanes[d] if aid is not None]  # 순서 유지
+            cap_d = len(lanes[d])
+            target_lanes[d] = filled + [None] * (cap_d - len(filled))
+
+        # 현재 점유 수 계산 함수 (target_lanes 기준)
+        def occ(d: str) -> int:
+            return sum(1 for x in target_lanes[d] if x is not None)
+
+        # --------------------------------------------------
+        # 3) overflow 후보 선택:
+        #    - input_dir 팔의 front(0번 인덱스)에서부터 num_amrs개까지
+        # --------------------------------------------------
+        overflow_amrs: list[int] = []
+        if input_dir in dirs and num_amrs > 0:
+            for aid in target_lanes[input_dir]:
+                if aid is not None:
+                    overflow_amrs.append(aid)
+                    if len(overflow_amrs) >= num_amrs:
+                        break
+
+        # --------------------------------------------------
+        # 4) input_dir 팔에서 overflow_amrs 제거 후 다시 압축
+        #    (해당 팔에서 빼고, 나머지는 near→far로 유지)
+        # --------------------------------------------------
+        if overflow_amrs:
+            remove_set = set(overflow_amrs)
+            lane_in = target_lanes[input_dir]
+            cap_in = len(lane_in)
+            kept = [
+                aid for aid in lane_in
+                if (aid is not None and aid not in remove_set)
+            ]
+            target_lanes[input_dir] = kept + [None] * (cap_in - len(kept))
+
+        # --------------------------------------------------
+        # 5) host 선택 + front 삽입 로직을 함수로 빼기
+        #    (exit_arm 우선, 아니면 가장 덜 찬 팔)
+        # --------------------------------------------------
+        def assign_to_host_front(aid: int):
+            rec = self.amr_intent_map.get(aid, {})
+            exit_dir = rec.get("exit_arm")
+
+            host = None
+            # (1) exit_dir 우선 (단, input_dir 제외 + 여유 있을 때)
+            if (
+                exit_dir in active_dirs
+                and occ(exit_dir) < len(target_lanes[exit_dir])
+            ):
+                host = exit_dir
+            else:
+                # (2) active_dirs 중 가장 덜 찬 팔 선택 (dirs 순서 타이브레이크)
+                if active_dirs:
+                    counts = {d: occ(d) for d in active_dirs}
+                    min_count = min(counts.values())
+                    for d in dirs:  # NESW 순서 유지
+                        if d not in active_dirs:
+                            continue
+                        if counts[d] == min_count and occ(d) < len(target_lanes[d]):
+                            host = d
+                            break
+
+            if host is None:
+                # 더 이상 여유가 없으면 이 AMR은 분산 불가 → 스킵
+                return
+
+            lane = target_lanes[host]
+            # front 삽입: [aid] + lane[:-1]
+            #  - target_lanes가 이미 near→far 압축되어 있어서,
+            #    occ(host) < len(lane) 이면 lane의 마지막 원소는 None.
+            target_lanes[host] = [aid] + lane[:-1]
+
+        # --------------------------------------------------
+        # 6) center에 있는 AMR 분산
+        # --------------------------------------------------
+        if center_id is not None:
+            assign_to_host_front(center_id)
+
+        # --------------------------------------------------
+        # 7) overflow_amrs들을 active_dirs로 분산
+        # --------------------------------------------------
+        for aid in overflow_amrs:
+            assign_to_host_front(aid)
+
+
+        # --------------------------------------------------
+        # 8) self.paths는 현재 위치 1-step만 가진 상태로 두고,
+        #    target_lanes는 env/동기화 로직에서 활용하도록 반환
+        # --------------------------------------------------
+                # -------------------------------
+        # 3) lanes vs target_lanes → 동기화 경로 생성
+        # -------------------------------
+
+        center = (self.center_x, self.center_y)
+
+        # 현재/목표 인덱스 맵(near index)
+        cur_loc = {}   # aid -> (arm, idx)  (센터는 ('C', None))
+        for d in dirs:
+            for i, aid in enumerate(lanes[d]):
+                if aid is not None:
+                    cur_loc[aid] = (d, i)
+        if center_id is not None:
+            cur_loc[center_id] = ('C', None)
+
+        tgt_loc = {}   # aid -> (arm, idx)
+        for d in dirs:
+            for i, aid in enumerate(target_lanes[d]):
+                if aid is not None:
+                    tgt_loc[aid] = (d, i)
+
+        # -------------------------------
+        # 8-A) 같은 팔 내 이동(same-arm)과 교차 팔 이동(cross-arm) 분류
+        # -------------------------------
+        same_arm_amrs = set()
+        cross_amrs = []
+
+        for aid in paths.keys():
+            if aid == center_id:
+                continue
+            if aid in cur_loc and aid in tgt_loc:
+                d0, i0 = cur_loc[aid]
+                d1, i1 = tgt_loc[aid]
+                if d0 == d1 and d0 in dirs:
+                    same_arm_amrs.add(aid)
+                elif (d0 in dirs or d0 == 'C') and d1 in dirs and d0 != d1:
+                    # 팔이 바뀌어야 하는 경우(또는 center->팔)
+                    cross_amrs.append(aid)
+
+        # -------------------------------
+        # 8-B) Phase 1: 같은 팔 내 슬라이딩 (build_prestage_paths 기존 로직)
+        # -------------------------------
+        steps1 = {}
+        max_steps1 = 0
+
+        for aid in paths.keys():
+            if aid in same_arm_amrs:
+                d0, i0 = cur_loc[aid]
+                d1, i1 = tgt_loc[aid]
+                dist = abs(i1 - i0)
+            elif aid == center_id and aid in tgt_loc:
+                # center_id가 있으면, host.front로 한 번에 점프할 수도 있음
+                dist = 1
+            else:
+                dist = 0
+
+            steps1[aid] = dist
+            if dist > max_steps1:
+                max_steps1 = dist
+
+        # per-step 좌표 생성 (Phase 1)
+        for s in range(1, max_steps1 + 1):
+            for aid in paths.keys():
+                last = paths[aid][-1]
+
+                # center AMR: 스텝 1에 host.front로 점프, 이후 고정
+                if aid == center_id and aid in tgt_loc:
+                    if s == 1:
+                        d1, i1 = tgt_loc[aid]
+                        pos = self.lane_coords[d1][0]
+                    else:
+                        pos = last
+                    paths[aid].append(pos)
+                    continue
+
+                # 같은 팔 내 이동(한 칸씩)
+                if aid in same_arm_amrs:
+                    d0, i0 = cur_loc[aid]
+                    d1, i1 = tgt_loc[aid]
+                    m = steps1[aid]
+                    if m == 0:
+                        paths[aid].append(last)
+                        continue
+                    move_k = min(s, m)
+                    sign = 0
+                    if i1 > i0: sign = 1
+                    elif i1 < i0: sign = -1
+                    idx = i0 + sign * move_k
+                    pos = self.lane_coords[d0][idx]
+                    paths[aid].append(pos)
+                    continue
+
+                # 그 외(Phase1에서는 정지)
+                paths[aid].append(last)
+
+        # Phase 1이 끝난 시점의 step index
+        current_T = max_steps1
+
+        # -------------------------------
+        # 8-C) Phase 2: cross-arm 이동 (팔이 바뀌는 경우)
+        #   - 각 AMR마다
+        #       t_center: center로 들어가는 시점
+        #       t_target: target 팔의 칸으로 가는 시점
+        #   - center에는 한 번에 한 AMR만 들어가도록 slot을 순차 배정
+        # -------------------------------
+        K = len(cross_amrs)
+        slot = {aid: j for j, aid in enumerate(cross_amrs)}  # aid -> 0..K-1
+        extra_steps = 2 * K  # 각 AMR당 center, target 두 스텝
+        total_T = current_T + extra_steps
+
+        for s in range(current_T + 1, total_T + 1):
+            for aid in paths.keys():
+                last = paths[aid][-1]
+
+                if aid not in slot:
+                    # cross 대상이 아닌 AMR은 그대로 대기
+                    paths[aid].append(last)
+                    continue
+
+                j = slot[aid]
+                t_center = current_T + 2 * j + 1
+                t_target = current_T + 2 * j + 2
+
+                if s == t_center:
+                    pos = center
+                elif s == t_target:
+                    d1, i1 = tgt_loc[aid]
+                    pos = self.lane_coords[d1][i1]
+                else:
+                    pos = last
+
+                paths[aid].append(pos)
+
+        self.paths = paths.copy()
+        return target_lanes, paths
