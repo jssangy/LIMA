@@ -11,7 +11,7 @@ def main():
     parser.add_argument("--prob", type=str, default="cross_9")
     parser.add_argument("--algo", type=int, default=0, choices=[0,1,2,3,4],
                         help="0=BFS, 1=A*, 2=D*, 3=PIBT, 4=CBS")
-    parser.add_argument("--num-amrs", type=int, default=40)
+    parser.add_argument("--num-amrs", type=int, default=90)
     parser.add_argument("--max-arm-h", type=int, default=5)
     parser.add_argument("--max-arm-v", type=int, default=5)
     parser.add_argument("--max-steps", type=int, default=10000)

@@ -1,33 +1,50 @@
 # tst_disperse.py
 # ------------------------------------------------------------
-# 여러 랜덤 케이스로 Intersection → disperse_paths 검증
-# tick_viewer로 매 케이스 결과를 인터랙티브 시각화
+# Intersection.disperse_paths 검증용 랜덤 테스트
+#  - 경로 형식 (좌표 범위, 1틱 1칸 이동, 길이 동기화)
+#  - target_lanes와 최종 위치 일치 여부
+#  - arm 이동 제약 (input_dir / center 외 팔은 arm 고정)
+#  - "탈출 가능한 AMR" + input_dir 팔에 그대로 남은 AMR 제거 로직 검증
 # ------------------------------------------------------------
 import argparse
 import random
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 from utils.Intersection import Intersection
-from tick_viewer import play_ticks_curses
+try:
+    from tick_viewer import play_ticks_curses
+    HAS_VIEWER = True
+except ImportError:
+    HAS_VIEWER = False
 
 
-# --- 최소 AMR 스텁 (Intersection.register_amr 가 요구하는 필드만) --- #
+# --- 최소 AMR 스텁 --- #
 class AMR:
     def __init__(self, aid: int, pos: Tuple[int, int]):
         self.id = aid
         self.pos = pos
         self.path: List[Tuple[int, int]] = []
 
-    def set_path(self, path: List[Tuple[int, int]]):
-        self.path = path
 
-
-# --- 헬퍼들 (tst.py에서 가져온 것 + 약간 확장) --- #
-def build_path_through_center(I: Intersection, start_pos: Tuple[int, int], exit_dir: str) -> List[Tuple[int, int]]:
-    """register_amr가 exit_arm을 추출할 수 있도록 center를 경유시키는 경로"""
+def build_path_through_center(
+    I: Intersection,
+    start_pos: Tuple[int, int],
+    exit_dir: str,
+) -> List[Tuple[int, int]]:
+    """
+    register_amr가 current_arm / exit_arm을 제대로 잡을 수 있도록
+    항상 center를 한 번 거쳐서 exit_dir 팔로 나가는 path를 만든다.
+    """
     center = (I.center_x, I.center_y)
-    exit_front = I.lane_coords[exit_dir][0]
-    return [start_pos, center, exit_front]
+    if exit_dir in I.lane_coords and I.lane_coords[exit_dir]:
+        exit_front = I.lane_coords[exit_dir][0]
+    else:
+        exit_front = start_pos
+
+    if start_pos == center:
+        return [center, exit_front]
+    else:
+        return [start_pos, center, exit_front]
 
 
 def register(I: Intersection, amr: AMR, exit_dir: str):
@@ -35,23 +52,11 @@ def register(I: Intersection, amr: AMR, exit_dir: str):
     I.register_amr(amr)
 
 
-def seed_paths_from_intent(I: Intersection):
-    """현재 위치로 self.paths 시드 (disperse_paths가 self.paths를 덮어쓸 수 있게 초기화)"""
-    I.paths = {}
-    for aid, rec in I.amr_intent_map.items():
-        a = rec.get("amr_obj")
-        if not a:
-            continue
-        pos = getattr(a, "pos", None)
-        if pos is None:
-            continue
-        I.paths[aid] = [pos]
-
-
-def snapshot_lanes(I: Intersection) -> Dict[str, List[tuple | None]]:
+def snapshot_lanes(I: Intersection) -> Dict[str, List[Tuple[int, str] | None]]:
     """각 레인 셀에 (amr_id, exit_dir) 또는 None 저장"""
-    lanes = {}
-    pos2info = {}
+    lanes: Dict[str, List[Tuple[int, str] | None]] = {}
+    pos2info: Dict[Tuple[int, int], Tuple[int, str]] = {}
+
     for aid, rec in I.amr_intent_map.items():
         amr = rec.get("amr_obj")
         if not amr:
@@ -64,7 +69,7 @@ def snapshot_lanes(I: Intersection) -> Dict[str, List[tuple | None]]:
     return lanes
 
 
-def pprint_lanes(title: str, lanes: Dict[str, List[tuple | None]]):
+def pprint_lanes(title: str, lanes: Dict[str, List[Tuple[int, str] | None]]):
     def cell(v):
         if v is None:
             return "."
@@ -91,7 +96,7 @@ def all_coords_ok(I: Intersection, paths: Dict[int, List[Tuple[int, int]]]):
     return True, None
 
 
-def manhattan(a, b):
+def manhattan(a: Tuple[int, int], b: Tuple[int, int]) -> int:
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
 
@@ -141,9 +146,8 @@ def print_paths_tickwise(paths: Dict[int, List[Tuple[int, int]]], *, center=None
         print(f"T{t:02d}  {row}")
 
 
-# --- disperse_paths 검증용 헬퍼들 --- #
-def infer_arm(I: Intersection, pos: Tuple[int, int] | None) -> str | None:
-    """좌표가 어느 팔 / center에 있는지 arm label 반환 ('N','E','S','W','C' 또는 None)"""
+def infer_arm(I: Intersection, pos: Optional[Tuple[int, int]]) -> Optional[str]:
+    """좌표가 어느 팔/center에 있는지 arm label 반환 ('N','E','S','W','C' 또는 None)"""
     if pos is None:
         return None
     cx, cy = I.center_x, I.center_y
@@ -155,20 +159,14 @@ def infer_arm(I: Intersection, pos: Tuple[int, int] | None) -> str | None:
     return None
 
 
-def final_lanes_from_paths(I: Intersection, paths: Dict[int, List[Tuple[int, int]]]) -> Dict[str, List[int | None]]:
-    """마지막 tick 기준 각 레인에 어떤 AMR이 있는지 인덱스별로 복원"""
-    finals = {aid: p[-1] for aid, p in paths.items()}
-    lanes: Dict[str, List[int | None]] = {}
-    for d, coords in I.lane_coords.items():
-        lanes[d] = [None] * len(coords)
-    for aid, pos in finals.items():
-        for d, coords in I.lane_coords.items():
-            if pos in coords:
-                idx = coords.index(pos)
-                assert lanes[d][idx] is None, f"collision at {d}[{idx}] between AMRs"
-                lanes[d][idx] = aid
-                break
-    return lanes
+def final_arm_from_lanes(target_lanes: Dict[str, List[Optional[int]]]) -> Dict[int, str]:
+    res: Dict[int, str] = {}
+    for d, lane in target_lanes.items():
+        for aid in lane:
+            if aid is None:
+                continue
+            res[aid] = d
+    return res
 
 
 # --- 랜덤 케이스 러너 (disperse_paths) --- #
@@ -181,8 +179,10 @@ def run_random_disperse_case(
     lenW: int,
     seed: int,
     view: bool,
-    max_move: int | None,
+    input_dir_arg: Optional[str] = None,
+    num_amrs_arg: Optional[int] = None,
 ):
+
     print(f"\n== Case #{case_idx}: random disperse_paths (seed={seed}) ==")
     if seed != 0:
         random.seed(seed)
@@ -190,11 +190,11 @@ def run_random_disperse_case(
     # 교차로 생성 (중앙 (10,10); 팔 길이는 인자)
     I = Intersection(
         intersection_data=(10, 10, lenN, lenE, lenS, lenW),
-        present_dirs={"N", "E", "S", "W"},
+        present_dirs=None,
     )
 
     # 시작 위치 후보(레인 전체) 준비
-    lane_cells = []
+    lane_cells: List[Tuple[int, int]] = []
     for d in I.dirs:
         lane_cells.extend(I.lane_coords[d])
     random.shuffle(lane_cells)
@@ -204,111 +204,203 @@ def run_random_disperse_case(
     chosen_starts = lane_cells[:n_cap]
 
     # 무작위 AMR 생성 & 등록(출구 방향도 랜덤)
+    all_amrs: List[AMR] = []
     for idx, start in enumerate(chosen_starts, start=1):
         exit_dir = random.choice(list(I.dirs))
         amr = AMR(idx, start)
         register(I, amr, exit_dir)
+        all_amrs.append(amr)
 
-    # paths 시드
-    seed_paths_from_intent(I)
+    # (선택) 어느 정도 확률로 center AMR 하나 만들어보기
+    cx, cy = I.center_x, I.center_y
+    center_xy = (cx, cy)
+    if all_amrs and random.random() < 0.4:
+        a = all_amrs[0]
+        a.pos = center_xy
+        register(I, a, random.choice(list(I.dirs)))  # center 기준으로 intent 다시 등록
 
     print("initial lanes:")
     pprint_lanes("lanes   ", snapshot_lanes(I))
 
-    # input_dir 하나 뽑고, 그 레인의 AMR 수만큼 이동 상한 설정
-    input_dir = random.choice(list(I.dirs))
-    initial_lanes = snapshot_lanes(I)
-    n_in_input = sum(1 for cell in initial_lanes.get(input_dir, []) if cell is not None)
-    if max_move is not None:
-        num_amrs = min(max_move, n_in_input)
+    # 원래 arm / exit 정보
+    original_arm: Dict[int, str] = {}
+    exit_arm: Dict[int, str] = {}
+    for aid, rec in I.amr_intent_map.items():
+        original_arm[aid] = rec.get("current_arm")
+        exit_arm[aid] = rec.get("exit_arm")
+
+    all_ids = set(original_arm.keys())
+    center_ids = {aid for aid, arm in original_arm.items() if arm == "C"}
+
+    # input_dir, num_amrs 결정 (직접 지정 가능)
+    #  - input_dir_arg 가 주어지면 그 값을 사용, 아니면 랜덤
+    #  - num_amrs_arg 가 주어지면 min(num_amrs_arg, n_in_input), 아니면 랜덤
+    if input_dir_arg is not None:
+        if input_dir_arg not in I.dirs:
+            raise ValueError(f"invalid --input-dir {input_dir_arg}, must be one of {I.dirs}")
+        input_dir = input_dir_arg
+    else:
+        input_dir = random.choice(list(I.dirs))
+
+    snap = snapshot_lanes(I)
+    n_in_input = sum(1 for cell in snap.get(input_dir, []) if cell is not None)
+
+    if num_amrs_arg is not None:
+        # 실제 있는 개수보다 클 수 있으니 clamp
+        num_amrs = min(num_amrs_arg, n_in_input)
     else:
         num_amrs = random.randint(0, n_in_input) if n_in_input > 0 else 0
 
-    print(f"disperse_paths input_dir={input_dir}, num_amrs={num_amrs}")
+    print(f"input_dir={input_dir}, num_amrs={num_amrs} (n_in_input={n_in_input})")
 
     # 실행
     target_lanes, paths = I.disperse_paths(input_dir=input_dir, num_amrs=num_amrs)
 
-    # I.paths가 반환값과 일치한다고 가정
+    # self.paths 가 반환값과 일치해야 함
     assert paths is I.paths or paths == I.paths
 
-    # 검증 1: 좌표 범위 / 한 틱 이동 거리
+    # ----- 1) 기초 검증: path 형식 -----
+    # 좌표 유효성
     ok, detail = all_coords_ok(I, paths)
-    if not ok:
-        raise AssertionError(f"⚠️ invalid coord found: {detail}")
+    assert ok, f"⚠️ invalid coord found: {detail}"
+
+    # 한 틱당 1칸 이동
     ok2, detail2 = steps_ok(paths)
-    if not ok2:
-        raise AssertionError(f"⚠️ 한 틱에 2칸 이상 이동: {detail2}")
+    assert ok2, f"⚠️ 한 틱에 2칸 이상 이동: {detail2}"
 
-    # 검증 2: 모든 path 길이 동일
-    lens = {len(p) for p in paths.values()}
-    assert len(lens) == 1, f"paths length mismatch: {lens}"
+    # path 길이 동기화 (남아 있는 AMR들에 대해)
+    if paths:
+        lens = {len(p) for p in paths.values()}
+        assert len(lens) == 1, f"paths length mismatch: {lens}"
 
-    # 검증 3: 최종 레인 배치가 target_lanes와 일치하는지
-    final_lanes = final_lanes_from_paths(I, paths)
+    # ----- 2) target_lanes와 최종 위치 일치 여부 -----
+    final_pos: Dict[int, Tuple[int, int]] = {aid: p[-1] for aid, p in paths.items()}
+    final_lanes_from_paths: Dict[str, List[Optional[int]]] = {d: [None] * len(I.lane_coords[d]) for d in I.dirs}
+    for aid, pos in final_pos.items():
+        for d, coords in I.lane_coords.items():
+            if pos in coords:
+                idx = coords.index(pos)
+                assert final_lanes_from_paths[d][idx] is None, f"collision at {d}[{idx}]"
+                final_lanes_from_paths[d][idx] = aid
+                break
+
     for d in I.dirs:
-        tgt = target_lanes.get(d, [])
-        fin = final_lanes.get(d, [])
-        assert len(tgt) == len(fin), f"lane length mismatch at {d}: {len(tgt)} vs {len(fin)}"
-        for i, (aid_tgt, aid_fin) in enumerate(zip(tgt, fin)):
+        tgt_lane = target_lanes[d]
+        fin_lane = final_lanes_from_paths[d]
+        assert len(tgt_lane) == len(fin_lane)
+        for i, (aid_tgt, aid_fin) in enumerate(zip(tgt_lane, fin_lane)):
             if aid_tgt is None:
-                # target이 None이면 final도 None이거나 AMR이 없어야 한다
-                assert aid_fin is None, f"{d}[{i}] expected None, got AMR {aid_fin}"
-            else:
-                assert aid_fin == aid_tgt, f"{d}[{i}] expected AMR {aid_tgt}, got {aid_fin}"
+                # paths에 없는 AMR일 수도 있으므로 fin_lane은 None일 수도 있고 아닐 수도 있다.
+                continue
+            if aid_tgt in paths:
+                assert aid_fin == aid_tgt, f"{d}[{i}] expected {aid_tgt}, got {aid_fin}"
 
-    # 검증 4: arm 이동 제약
+    # ----- 3) 팔 이동 제약 검증 -----
     #   - input_dir / center 출발이 아닌 AMR은 팔이 바뀌면 안 됨
-    center_xy = (I.center_x, I.center_y)
-    final_pos = {aid: p[-1] for aid, p in paths.items()}
-    initial_pos = {aid: p[0] for aid, p in paths.items()}
-
-    initial_arm = {aid: infer_arm(I, pos) for aid, pos in initial_pos.items()}
-    final_arm = {aid: infer_arm(I, pos) for aid, pos in final_pos.items()}
-
+    final_arm_map = final_arm_from_lanes(target_lanes)
     moved_from_input = 0
-    for aid in paths.keys():
-        ia = initial_arm[aid]
-        fa = final_arm[aid]
+
+    for aid in all_ids:
+        ia = original_arm[aid]
+        fa = final_arm_map.get(aid)
+
         if ia == input_dir:
-            if fa is not None and fa != input_dir:
+            if fa is not None and fa != ia:
                 moved_from_input += 1
         elif ia == "C":
-            # center 출발인 경우는 아무 팔로 가도 OK
-            pass
+            # center 출발이면 어디로 가도 OK
+            continue
         else:
             # 다른 팔에서 출발한 AMR은 팔이 바뀌면 안 됨
-            assert ia == fa, f"AMR {aid} moved from arm {ia} to {fa}, but only {input_dir}/center should move"
+            if fa is not None:
+                assert fa == ia, f"AMR {aid} moved from arm {ia} to {fa}, but only {input_dir}/center may move"
 
     assert moved_from_input <= num_amrs, (
         f"moved {moved_from_input} AMRs from {input_dir}, "
         f"but requested num_amrs={num_amrs}"
     )
 
+    # ----- 4) 탈출 가능한 AMR + input_dir AMR 제거 로직 검증 -----
+    alive_ids = set(paths.keys())
+    removed_ids = all_ids - alive_ids
+
+    expected_removed: set[int] = set()
+    # 9번 블럭의 로직 그대로 재현
+    for d in I.dirs:
+        lane = target_lanes[d]
+
+        for i in range(len(lane) - 1, -1, -1):  # far -> near
+            aid = lane[i]
+            if aid is None:
+                continue
+
+            cur_arm = original_arm[aid]
+            ex_arm = exit_arm.get(aid)
+            fin_arm = final_arm_map.get(aid)
+
+            if d == input_dir:
+                # input_dir 팔에 "남아 있는" AMR은 paths에서 제거
+                expected_removed.add(aid)
+                continue
+
+            # (예외 1) 원래 center AMR
+            if aid in center_ids:
+                break
+
+            # (예외 2) 다른 팔로 보내진 AMR (원래 팔과 최종 팔이 다르면)
+            if fin_arm is not None and fin_arm != cur_arm:
+                break
+
+            # 여기까지 왔으면 "원래 팔에 그대로 남아 있는 AMR"
+            if cur_arm == ex_arm:
+                expected_removed.add(aid)
+                continue
+            else:
+                break
+
+    assert expected_removed == removed_ids, (
+        f"탈출 AMR 제거 집합 불일치:\n"
+        f"  expected={sorted(expected_removed)}\n"
+        f"  actual  ={sorted(removed_ids)}"
+    )
+
+    # ----- 5) 시각화 및 요약 -----
     print_paths_tickwise(paths, center=center_xy, pad="repeat")
 
-    # 뷰어로 확인 (q로 종료 → 다음 케이스 진행)
-    if view:
+    if view and HAS_VIEWER:
         play_ticks_curses(I)
 
-    # 요약
-    for aid, p in sorted(paths.items()):
-        print(f"AMR {aid:>2} len={len(p)} tail={p}")
-
+    print(f"alive_ids   = {sorted(alive_ids)}")
+    print(f"removed_ids = {sorted(removed_ids)}")
     print("✅ disperse_paths case passed")
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cases", type=int, default=1, help="몇 개의 랜덤 케이스를 돌릴지")
-    ap.add_argument("--amrs", type=int, default=15, help="케이스당 AMR 수")
-    ap.add_argument("--lenN", type=int, default=5, help="N 레인 길이")
-    ap.add_argument("--lenE", type=int, default=5, help="E 레인 길이")
-    ap.add_argument("--lenS", type=int, default=5, help="S 레인 길이")
-    ap.add_argument("--lenW", type=int, default=5, help="W 레인 길이")
+    ap.add_argument("--amrs", type=int, default=10, help="케이스당 AMR 수")
+    ap.add_argument("--lenN", type=int, default=5)
+    ap.add_argument("--lenE", type=int, default=5)
+    ap.add_argument("--lenS", type=int, default=5)
+    ap.add_argument("--lenW", type=int, default=5)
     ap.add_argument("--seed", type=int, default=0, help="전역 시드(케이스별로 +i)")
-    ap.add_argument("--moves", type=int, default=3, help="각 케이스에서 최대 몇 대까지 옮길지 상한 (없으면 랜덤)")
     ap.add_argument("--no-view", action="store_true", help="tick_viewer 생략")
+
+    # 새로 추가: input_dir, num_amrs 강제 지정
+    ap.add_argument(
+        "--input-dir",
+        type=str,
+        choices=["N", "E", "S", "W"],
+        default="N",
+        help="분산 테스트에 사용할 input_dir (N/E/S/W 중 하나). 미지정 시 랜덤."
+    )
+    ap.add_argument(
+        "--num-amrs",
+        type=int,
+        default=3,
+        help="disperse_paths에 전달할 num_amrs (미지정 시 랜덤)."
+    )
+
     args = ap.parse_args()
 
     for i in range(args.cases):
@@ -320,11 +412,13 @@ def main():
             lenS=args.lenS,
             lenW=args.lenW,
             seed=args.seed + i if args.seed != 0 else 0,
-            view=not args.no_view,
-            max_move=args.moves,
+            view=(not args.no_view),
+            input_dir_arg=args.input_dir,
+            num_amrs_arg=args.num_amrs,
         )
 
     print("\nAll disperse_paths random cases finished ✅")
+
 
 
 if __name__ == "__main__":

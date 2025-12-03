@@ -248,6 +248,22 @@ class GUI():
                 text_surface = font.render(str(priority + 1), True, (255,255,0))
                 self.win.blit(text_surface, (px + 5, py + 5))
 
+        # Disperse overlay (self.disperse_iid: set of iid)
+        disperse_set = getattr(self.env, 'disperse_iid', set())
+        if disperse_set:
+            for iid in disperse_set:
+                I = self.env.intersections.get(iid)
+                if not I:
+                    continue
+                x_min, x_max = I.center_x - I.len_W, I.center_x + I.len_E
+                y_min, y_max = I.center_y - I.len_N, I.center_y + I.len_S
+                px, py = self.map_to_screen(x_min, y_min)
+                p_width  = (x_max - x_min + 1) * self.zoom_level
+                p_height = (y_max - y_min + 1) * self.zoom_level
+
+                # 분산 중 교차로는 순서 없이 전부 흰색 사각형, 숫자 없음
+                pygame.draw.rect(self.win, (255, 255, 255), (px, py, p_width, p_height), 3)
+
         pygame.display.flip()
 
     

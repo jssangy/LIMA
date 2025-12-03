@@ -137,7 +137,6 @@ def run_random_case(case_idx: int, n_amrs: int, lenN: int, lenE: int, lenS: int,
     # 교차로 생성 (중앙 (10,10); 팔 길이는 인자)
     I = Intersection(
         intersection_data=(10, 10, lenN, lenE, lenS, lenW),
-        neighbors_map={},
         present_dirs={'N','E','S','W'},
     )
 

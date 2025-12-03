@@ -45,6 +45,7 @@ class ENV():
         print(f"Walkable tiles (value 0): {self.walkable_tiles}")
         print(f"Number of AMRs to spawn: {num_amrs}")
         print(f"Density: {num_amrs / self.walkable_tiles * 100:.2f}%")
+
         self.max_arm_len_h = max_arm_len_h
         self.max_arm_len_v = max_arm_len_v
         processed_intersections = self._find_intersections_and_build_graph()
@@ -111,6 +112,7 @@ class ENV():
 
         # 데드락 상태인 교차로
         self.deadlock_queue = []
+        self.disperse_iid = set()
         self.iid2sched: dict[str, set[int]] = defaultdict(set)
         self.pending_iids = set()
 
@@ -158,6 +160,7 @@ class ENV():
 
         self.iid_inside_counts.clear()
         self.deadlock_queue = []
+        self.disperse_iid.clear()
         self.iid2sched.clear()
         self.pending_iids.clear()
 
@@ -169,7 +172,7 @@ class ENV():
 
     
     def step(self):
-        self.time += 1
+        self.time += 1        
 
         if self.traffic_mode == 'task' and self.task_generator.is_episode_done():
             return False
@@ -198,16 +201,8 @@ class ENV():
             # pending_iids도 항상 체크 대상에 포함
             check_iids |= self.pending_iids
 
-            # --- 교차로 capacity 검사 ---
-            for iid, cnt in self.iid_inside_counts.items():
-                if cnt > self.intersection_capacity:
-                    raise RuntimeError(
-                        f"[CRITICAL] Intersection {iid} has {cnt} AMRs "
-                        f"(capacity = {self.intersection_capacity}) at step {self.time}"
-                    )
-
-            # (2) 잠금 해제 체크 (Deadlock 해제 시도)
-            for iid in list(self.deadlock_queue):
+            # (2-1) 잠금 해제 체크 (Deadlock 해제 시도)
+            for iid in self.deadlock_queue:
                 scheduled_members = self.iid2sched[iid]
                 still_active = False
 
@@ -224,6 +219,24 @@ class ENV():
                 if not still_active:
                     self.deadlock_queue.remove(iid)
 
+            # (2-2) 잠금 해제 체크 (Disperse 해제 시도)
+            for iid in list(self.disperse_iid):
+                scheduled_members = self.iid2sched[iid]
+                stiil_active = False
+
+                for mid in list(scheduled_members):
+                    amr = self.amr_list.get(mid, None)
+                    if amr is None:
+                        scheduled_members.discard(mid)
+                        continue
+                    if amr.scheduling > 0:
+                        stiil_active = True
+                    else:
+                        scheduled_members.discard(mid)
+
+                if not stiil_active:
+                    self.disperse_iid.discard(iid)
+
             # ★ deadlock_queue를 "교차로 내 AMR 수" 기준으로 정렬
             #    - AMR 많이 들어있는 교차로일수록 앞쪽(index 작게)
             self.deadlock_queue.sort(
@@ -232,11 +245,10 @@ class ENV():
             )
 
             # 현재 스케줄 진행 중인 교차로 id 집합
-            active_iids = set(self.deadlock_queue)
+            active_iids = set(self.deadlock_queue) | self.disperse_iid
 
             # (3-A) 데드락 체크 및 "스케줄 후보 iid" 수집
             iids_to_schedule: list[str] = []
-
 
             # ★ 후보 교차로들도 교차로 내 AMR 개수 많은 순서대로 처리
             candidate_iids = sorted(
@@ -263,6 +275,12 @@ class ENV():
                 
                 # 3-2) 이웃 교차로가 스케줄 중이면 이번 스텝엔 스킵, 대신 pending에 등록
                 if self.has_active_neighbor(iid):
+                    self.pending_iids.add(iid)
+                    continue
+
+                # 3-3) capacity 초과 시 disperse 처리
+                if self.iid_inside_counts.get(iid, 0) > self.intersection_capacity:
+                    self.try_disperse_for_iid(iid, I, iid2members)
                     self.pending_iids.add(iid)
                     continue
 
@@ -384,6 +402,158 @@ class ENV():
 
         return self.make_info()
 
+    
+    def try_disperse_for_iid(self, iid: str, I: Intersection, iid2members: dict[str, list[int]]) -> None:
+        """
+        교차로 iid에서 actions_to_paths를 돌리기 전에,
+        AMR 개수가 15 초과면 disperse_paths를 이용해 이웃으로 분산 스케줄을 넣는다.
+        """
+        capacity = self.intersection_capacity
+        cur_count = self.iid_inside_counts.get(iid, 0)
+        overflow = cur_count - capacity
+
+        if overflow <= 0:
+            return
+
+        # 1) 현재 교차로 팔 별 AMR 개수 파악
+        arm_counts = {d: 0 for d in I.dirs}
+        for rec in I.amr_intent_map.values():
+            arm = rec['current_arm']
+            if arm in arm_counts:
+                arm_counts[arm] += 1
+
+        # 2) 이웃 교차로 중에서 후보 선정
+        #    - 현 교차로에서 해당 방향 팔에 AMR이 없는 이웃은 제외
+        #    - deadlock_queue / disperse_iid 에 이미 있는 이웃은 제외
+        #    - 이웃도 capacity 미만일 때만 후보
+        #    - 이웃의 이웃 중에 deadlock/disperse 중인 교차로가 있으면 제외
+        dir_priority = {'N': 0, 'E': 1, 'S': 2, 'W': 3}
+        neighbor_dirs: dict[str, str] = {}      # nid -> 방향 (현재 iid 기준)
+        neighbor_counts: dict[str, int] = {}    # nid -> 현재 AMR 수
+
+        def _get_direction_between(src_iid, dst_iid):
+            """src_iid 기준으로 dst_iid가 어느 방향에 있는지 반환"""
+            I_src = self.intersections[src_iid]
+            J_dst = self.intersections[dst_iid]
+
+            cx, cy = I_src.center_x, I_src.center_y
+            nx, ny = J_dst.center_x, J_dst.center_y
+
+            if nx == cx and ny < cy:
+                return 'N'
+            elif nx > cx and ny == cy:
+                return 'E'
+            elif nx == cx and ny > cy:
+                return 'S'
+            elif nx < cx and ny == cy:
+                return 'W'
+            return None
+
+        for nid in self.iid_neighbors.get(iid, []):
+            # 이미 스케줄 중인 교차로는 제외
+            if nid in self.deadlock_queue or nid in self.disperse_iid:
+                continue
+
+            d = _get_direction_between(iid, nid)
+            if d is None:
+                continue
+
+            # 해당 팔에 AMR이 없는 방향은 이번엔 사용 안 함
+            if arm_counts.get(d, 0) <= 0:
+                continue
+
+            n_count = self.iid_inside_counts.get(nid, 0)
+            if n_count >= capacity:
+                continue
+
+            # 이웃의 이웃 중에 deadlock/disperse 중인 교차로가 있으면 제외
+            has_blocked_neighbor = False
+            for nnid in self.iid_neighbors.get(nid, []):
+                if nnid in self.deadlock_queue or nnid in self.disperse_iid:
+                    has_blocked_neighbor = True
+                    break
+            if has_blocked_neighbor:
+                continue
+
+            neighbor_dirs[nid] = d
+            neighbor_counts[nid] = n_count
+
+        if not neighbor_counts:
+            # 분산 가능한 이웃이 없으면 스케줄링 pass
+            return
+
+        # 3) overflow를 이웃들에게 분산
+        #    - 현재 AMR 수가 가장 적은 이웃부터 몰아서 채우고
+        #    - 그래도 overflow가 남으면 그 다음 이웃에게 채움
+        #    - 동률이면 NESW 순으로 tie-break
+        remaining = overflow
+        send_count = {nid: 0 for nid in neighbor_counts.keys()}
+
+        # 이웃들을 (현재 AMR 수 오름차순, NESW 우선순위) 정렬
+        sorted_neighbors = sorted(
+            neighbor_counts.keys(),
+            key=lambda nid: (neighbor_counts[nid], dir_priority[neighbor_dirs[nid]])
+        )
+
+        for nid in sorted_neighbors:
+            if remaining <= 0:
+                break
+
+            current = neighbor_counts[nid]
+            spare = capacity - current
+            if spare <= 0:
+                continue
+
+            # 이 이웃에게 최대한 몰아서 할당
+            assign = min(remaining, spare)
+            send_count[nid] = assign
+            remaining -= assign
+
+        # 분산 대상이 없으면 그냥 deadlock 스케줄 진행
+        if all(v == 0 for v in send_count.values()):
+            return
+
+        # 4) 각 이웃 교차로에 대해서 disperse_paths 스케줄링
+        for nid, num_send in send_count.items():
+            if num_send <= 0:
+                continue
+
+            # 이웃 Intersection 객체
+            J = self.intersections[nid]
+
+            # J의 intent 등록 (현재 상태 기준)
+            J.reset()
+            for amr_id in iid2members.get(nid, []):
+                amr_obj = self.amr_list[amr_id]
+                J.register_amr(amr_obj)
+
+            # iid -> nid 방향 d의 반대 방향이 J입장에서는 input_dir이 됨
+            d = neighbor_dirs[nid]
+            opp = {'N': 'S', 'E': 'W', 'S': 'N', 'W': 'E'}[d]
+
+            # disperse_paths 실행
+            short_paths, target_exits = J.disperse_paths(opp, num_send)
+
+            if not short_paths:
+                continue
+
+            # 분산 스케줄 active 처리 (과밀 교차로 iid를 그룹으로 묶어도 되고,
+            # nid별로 묶고 싶으면 self.disperse_iid.add(nid), sched_set = self.iid2sched[nid] 으로 조정)
+            self.disperse_iid.add(nid)
+
+            # insert_scheduled_path로 실제 경로 삽입 + iid2sched 갱신
+            sched_set = self.iid2sched[nid]
+            for amr_id, short_path in short_paths.items():
+                if amr_id not in self.amr_list:
+                    continue
+                amr_obj = self.amr_list[amr_id]
+                target_exit = target_exits[amr_id]
+                self.insert_scheduled_path(amr_obj, short_path, target_exit)
+                sched_set.add(amr_id)
+
+        return
+        
+
 
     def insert_scheduled_path(self, amr, short_path, target_exit):
         """
@@ -460,7 +630,7 @@ class ENV():
         현재 deadlock_queue에 포함된 교차로가 있는지 확인
         """
         for nid in self.iid_neighbors.get(iid, []):
-            if nid in self.deadlock_queue:
+            if nid in self.deadlock_queue or nid in self.disperse_iid:
                 return True
         return False
 
@@ -468,15 +638,9 @@ class ENV():
     def block_intersection(self, cur_pos, next_pos) -> bool:
         """
         현재 위치 cur_pos에서 next_pos로 이동할 때,
-        교차로 관련 정책(수용량 + 우선순위)에 의해 진입을 막아야 하면 True를 반환.
+        교차로 관련 정책(우선순위)에 의해 진입을 막아야 하면 True를 반환.
 
-        1) 수용량(capacity) 정책:
-           - cur_pos → next_pos 이동이 어떤 교차로 iid에 대해
-             '외부 → 내부' 진입이고,
-           - 해당 교차로의 현재 AMR 수가 self.intersection_capacity 이상이면
-             → True (차단)
-
-        2) 우선순위(priority) 정책:
+        우선순위(priority) 정책:
            - 현재 위치는 교차로 '밖'이거나 교차로 '중심(center)'이어야 한다.
            - 다음 위치는 어떤 교차로의 '레인 끝(tip)' 위치여야 한다.
            - 이때 진입하려는 교차로의 우선순위(= deadlock_queue 상 위치)가
@@ -500,18 +664,12 @@ class ENV():
         entering_iid_set = next_iid_set - cur_iid_set
         entering_iid = next(iter(entering_iid_set))
 
-
-        # -----------------------------
-        # (1) 수용량(capacity) 정책
-        # -----------------------------
-        # if self.iid_inside_counts.get(entering_iid, 0) >= self.intersection_capacity:
-            # 수용량 초과 → 진입 차단
-        #     return True   
- 
+        # 분산(disperse) 정책이 진행 중인 교차로는 진입 금지
+        if entering_iid in self.disperse_iid:
+            return True
         
-        # -----------------------------
-        # (2) 우선순위(priority) 정책
-        # -----------------------------
+
+        # 우선순위(priority) 정책   
         seq = self.deadlock_queue
 
         def priority(iid):

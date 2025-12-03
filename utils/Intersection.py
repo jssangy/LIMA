@@ -79,6 +79,14 @@ class Intersection:
             'exit_arm': exit_arm_direction
         }
 
+        # --- 추가: target_exits를 register_amr 시점에 바로 세팅 ---
+        tip_cell = None
+        if exit_arm_direction in self.lane_coords:
+            coords = self.lane_coords[exit_arm_direction]
+            if coords:
+                tip_cell = coords[-1]  # 해당 팔의 맨 끝 tip
+        self.target_exits[amr.id] = tip_cell
+
     def check_deadlock(self):
         if self.check_cycle_deadlock():
             return True
@@ -444,7 +452,7 @@ class Intersection:
     def _record_snapshot(self, inter_sim, center_amr_id):
         """
         현재 inter_sim, center AMR 정보를 바탕으로
-        모든 AMR의 pself.paths에 현재 좌표를 추가 기록
+        모든 AMR의 self.paths에 현재 좌표를 추가 기록
         """
         center_coord = (self.center_x, self.center_y)
 
@@ -471,10 +479,6 @@ class Intersection:
                '중앙 -> 출구까지만 남기고 절삭
            - 다른 곳으로 대피하는 경우(Case B):
                경로 절삭 없이 끝까지 이동 (확실한 비켜주기)
-
-        추가:
-           - self.target_exits[aid] 에
-             "원래 나가고 싶어하는 출구 방향 lane의 마지막 셀(tip)" 좌표를 저장
         """
         center = (self.center_x, self.center_y)
 
@@ -498,16 +502,6 @@ class Intersection:
 
             # 이 AMR이 "원래" 나가고 싶어했던 출구 방향 (register_amr에서 정한 exit_arm)
             intended_target_dir = targets.get(aid)  # 'N', 'E', 'S', 'W' 또는 None
-
-            tip_cell = None
-            if intended_target_dir in self.lane_coords:
-                coords = self.lane_coords[intended_target_dir]
-                if coords:
-                    # 출구 방향 lane의 마지막 셀(팔 끝 tip)
-                    tip_cell = coords[-1]
-
-            # 출구 tip 좌표 저장
-            self.target_exits[aid] = tip_cell
 
             # --- 이하: 기존 Case A / B 절삭 로직 유지 ---
 
@@ -569,8 +563,8 @@ class Intersection:
           각 AMR의 현재 위치만 1-step으로 기록해 둔다.
         
         반환:
-            target_lanes: {'N': [aid|None, ...], ...}
-            paths:        {aid: [(x, y)]}  (현재 위치만 포함)
+        paths:        {aid: [(x, y), ...]}       # 프리-스테이지 동기화 경로
+        target_exits: {aid: (x, y) 또는 None}   # 각 AMR의 "원래" 출구 tip 좌표
         """
 
         cx, cy = self.center_x, self.center_y
@@ -859,5 +853,76 @@ class Intersection:
                 # 그 외: 이번 step에서는 안 움직임
                 paths[aid].append(last)
 
+        # --------------------------------------------------
+        # 9) 탈출 가능한 AMR은 self.paths에서 제거
+        #    - 기준:
+        #       * 최종 lane( target_lanes )을 각 방향별로 뒤에서부터 보면서
+        #       * 원래 current_arm == exit_arm 인 AMR은 제거
+        #    - 예외:
+        #       * 원래 center AMR (current_arm == 'C')
+        #       * 원래 팔과 최종 팔이 다른(=다른 팔로 보내진) AMR
+        #    - 추가 조건:
+        #       * 뒤에서 앞으로 오다가 "삭제 불가능한 AMR"을 만나면
+        #         바로 break 해서 그 방향 레인 순회 종료
+        # --------------------------------------------------
+
+        # 9-1) 원래 arm / exit 정보
+        original_arm: dict[int, str] = {}
+        exit_arm: dict[int, str] = {}
+        for aid, rec in self.amr_intent_map.items():
+            original_arm[aid] = rec.get("current_arm")
+            exit_arm[aid] = rec.get("exit_arm")
+
+        # 9-2) 최종 arm (disperse 이후, target_lanes 기준)
+        final_arm: dict[int, str] = {}
+        for d in dirs:
+            lane = target_lanes[d]
+            for i, aid in enumerate(lane):
+                if aid is None:
+                    continue
+                final_arm[aid] = d
+
+        # 9-3) 원래 center AMR 집합
+        center_ids = {aid for aid, arm in original_arm.items() if arm == "C"}
+
+        # 9-4) 각 방향별 lane을 뒤에서부터 훑으면서 삭제/종료 판별
+        for d in dirs:
+            lane = target_lanes[d]
+
+            # far → near
+            for i in range(len(lane) - 1, -1, -1):
+                aid = lane[i]
+                if aid is None:
+                    # 빈 칸이면 계속 위로
+                    continue
+
+                cur_arm = original_arm[aid]
+                ex_arm = exit_arm.get(aid)
+                fin_arm = final_arm.get(aid)
+
+                if d == input_dir:
+                    # input_dir 팔에서 분산되지 않은 AMR은 제거
+                    paths.pop(aid, None)
+                    continue
+
+                # (예외 1) 원래 center AMR → 여기서부터는 더 못 비움
+                if aid in center_ids:
+                    break
+
+                # (예외 2) 다른 팔로 보내진 AMR → 이 애 앞쪽도 더 못 비움
+                #  (원래 팔과 최종 팔이 다르면 break)
+                if fin_arm is not None and fin_arm != cur_arm:
+                    break
+
+                # 여기까지 왔으면 "원래 팔에 그대로 남아 있는 AMR"
+                # 이 중에서 current_arm == exit_arm 이면 탈출 가능한 애
+                if cur_arm == ex_arm:
+                    # 이 AMR은 스케줄러가 안 챙겨도 되므로 self.paths에서 제거
+                    paths.pop(aid, None)
+                    continue
+                else:
+                    # current_arm != exit_arm 이면 이 지점에서 바로 중단
+                    break
+
         self.paths = paths.copy()
-        return target_lanes, paths
+        return self.paths, self.target_exits
