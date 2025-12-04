@@ -42,9 +42,9 @@ class ENV():
         self.map = self._load_map(map_path)
         self.walkable_tiles = np.count_nonzero(self.map == 0)
         print(f"\nMap width: {self.map.shape[1]}, Map height: {self.map.shape[0]}")
-        print(f"Walkable tiles (value 0): {self.walkable_tiles}")
+        print(f"Walkable tiles (value 0): {self.walkable_tiles - len(self.goal)}")
         print(f"Number of AMRs to spawn: {num_amrs}")
-        print(f"Density: {num_amrs / self.walkable_tiles * 100:.2f}%")
+        print(f"Density: {num_amrs / (self.walkable_tiles - len(self.goal)) * 100:.2f}%")
 
         self.max_arm_len_h = max_arm_len_h
         self.max_arm_len_v = max_arm_len_v
@@ -239,10 +239,7 @@ class ENV():
 
             # ★ deadlock_queue를 "교차로 내 AMR 수" 기준으로 정렬
             #    - AMR 많이 들어있는 교차로일수록 앞쪽(index 작게)
-            self.deadlock_queue.sort(
-                key=lambda x: self.iid_inside_counts.get(x, 0),
-                reverse=True,
-            )
+            # self.deadlock_queue.sort(key=lambda x: self.iid_inside_counts.get(x, 0), reverse=True)
 
             # 현재 스케줄 진행 중인 교차로 id 집합
             active_iids = set(self.deadlock_queue) | self.disperse_iid
@@ -251,13 +248,13 @@ class ENV():
             iids_to_schedule: list[str] = []
 
             # ★ 후보 교차로들도 교차로 내 AMR 개수 많은 순서대로 처리
-            candidate_iids = sorted(
-                (check_iids - active_iids),
-                key=lambda x: self.iid_inside_counts.get(x, 0),
-                reverse=True,
-            )
+            # candidate_iids = sorted((check_iids - active_iids), key=lambda x: self.iid_inside_counts.get(x, 0), reverse=True)
 
-            for iid in candidate_iids:
+            for iid in list(check_iids - active_iids):
+                # disperse 중인 교차로는 건너뜀
+                if iid in self.disperse_iid:
+                    continue
+                
                 I = self.intersections[iid]
                 I.reset()
 
@@ -551,8 +548,7 @@ class ENV():
                 self.insert_scheduled_path(amr_obj, short_path, target_exit)
                 sched_set.add(amr_id)
 
-        return
-        
+        return        
 
 
     def insert_scheduled_path(self, amr, short_path, target_exit):
