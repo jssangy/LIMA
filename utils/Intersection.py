@@ -851,6 +851,9 @@ class Intersection:
                 # 그 외: 이번 step에서는 안 움직임
                 paths[aid].append(last)
 
+        for aid in paths.keys():
+            paths[aid].append(paths[aid][-1])  # 최종 대기 패딩
+
         # --------------------------------------------------
         # 9) 탈출 가능한 AMR은 self.paths에서 제거
         #    - 기준:

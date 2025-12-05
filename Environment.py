@@ -112,7 +112,7 @@ class ENV():
 
         # 데드락 상태인 교차로
         self.deadlock_queue = []
-        self.disperse_iid = set()
+        self.disperse_iid: dict[str, set[str]] = {}
         self.iid2sched: dict[str, set[int]] = defaultdict(set)
         self.pending_iids = set()
 
@@ -220,29 +220,31 @@ class ENV():
                     self.deadlock_queue.remove(iid)
 
             # (2-2) 잠금 해제 체크 (Disperse 해제 시도)
-            for iid in list(self.disperse_iid):
-                scheduled_members = self.iid2sched[iid]
-                stiil_active = False
+            for root_iid, group in list(self.disperse_iid.items()):
+                still_active = False
 
-                for mid in list(scheduled_members):
-                    amr = self.amr_list.get(mid, None)
-                    if amr is None:
-                        scheduled_members.discard(mid)
-                        continue
-                    if amr.scheduling > 0:
-                        stiil_active = True
-                    else:
-                        scheduled_members.discard(mid)
+                for gid in group:
+                    scheduled_members = self.iid2sched[gid]
+                    
+                    for mid in list(scheduled_members):
+                        amr = self.amr_list.get(mid, None)
+                        if amr is None:
+                            scheduled_members.discard(mid)
+                            continue
+                        if amr.scheduling > 0:
+                            still_active = True
+                        else:
+                            scheduled_members.discard(mid)
 
-                if not stiil_active:
-                    self.disperse_iid.discard(iid)
+                if not still_active:
+                    del self.disperse_iid[root_iid]
 
             # ★ deadlock_queue를 "교차로 내 AMR 수" 기준으로 정렬
             #    - AMR 많이 들어있는 교차로일수록 앞쪽(index 작게)
             # self.deadlock_queue.sort(key=lambda x: self.iid_inside_counts.get(x, 0), reverse=True)
 
             # 현재 스케줄 진행 중인 교차로 id 집합
-            active_iids = set(self.deadlock_queue) | self.disperse_iid
+            active_iids = set(self.deadlock_queue) | self._all_disperse_iids()
 
             # (3-A) 데드락 체크 및 "스케줄 후보 iid" 수집
             iids_to_schedule: list[str] = []
@@ -252,7 +254,7 @@ class ENV():
 
             for iid in list(check_iids - active_iids):
                 # disperse 중인 교차로는 건너뜀
-                if iid in self.disperse_iid:
+                if iid in self._all_disperse_iids():
                     continue
                 
                 I = self.intersections[iid]
@@ -333,7 +335,7 @@ class ENV():
             next_pos = amr.next_pos
 
             # ★ 우선순위 높은 교차로 tip로 진입하려는 경우 → 이 스텝에서는 대기
-            if self.block_intersection(cur_pos, next_pos):
+            if self.block_intersection(cur_pos, next_pos, normal_only=True):
                 continue
 
             # 기존 충돌/점유 체크
@@ -354,13 +356,18 @@ class ENV():
         blocked_iids = set()
 
         for iid, members in self.iid2sched.items():
-            for mid in members:
-                amr = self.amr_list[mid]
+            # ✅ 순회는 snapshot(list)로, 수정은 원본 set(members)에
+            for mid in list(members):
+                amr = self.amr_list.get(mid, None)
+                if amr is None:
+                    members.discard(mid)
+                    continue
+
                 cur_pos = amr.pos
                 next_pos = amr.next_pos
 
                 # 우선순위가 높은 교차로의 끝으로 진입하려는 경우 차단
-                if self.block_intersection(cur_pos, next_pos):
+                if self.block_intersection(cur_pos, next_pos, normal_only=False):
                     blocked_iids.add(iid)
                     break
 
@@ -404,10 +411,19 @@ class ENV():
         """
         교차로 iid에서 actions_to_paths를 돌리기 전에,
         AMR 개수가 15 초과면 disperse_paths를 이용해 이웃으로 분산 스케줄을 넣는다.
+
+        self.disperse_iid: dict[root_iid, set[교차로들]]
+            - key: 분산 트리거가 된 root 교차로 (과밀 교차로 iid)
+            - value: 이 분산 작업에 참여 중인 교차로 집합({root, neighbor1, neighbor2, ...})
         """
-        capacity = self.intersection_capacity
+        # 이미 이 root에 대한 분산 그룹이 있다면 다시 안 건드림
+        if iid in self.disperse_iid:
+            return
+
+        root_capacity = self.intersection_capacity
+        neighbor_capacity = 20
         cur_count = self.iid_inside_counts.get(iid, 0)
-        overflow = cur_count - capacity
+        overflow = cur_count - root_capacity
 
         if overflow <= 0:
             return
@@ -419,9 +435,14 @@ class ENV():
             if arm in arm_counts:
                 arm_counts[arm] += 1
 
+        # 이미 분산 그룹에 포함된 교차로들 (모든 그룹의 합집합)
+        locked_by_disperse: set[str] = set()
+        for group in self.disperse_iid.values():
+            locked_by_disperse.update(group)
+
         # 2) 이웃 교차로 중에서 후보 선정
         #    - 현 교차로에서 해당 방향 팔에 AMR이 없는 이웃은 제외
-        #    - deadlock_queue / disperse_iid 에 이미 있는 이웃은 제외
+        #    - deadlock_queue / disperse 그룹에 이미 속한 이웃은 제외
         #    - 이웃도 capacity 미만일 때만 후보
         #    - 이웃의 이웃 중에 deadlock/disperse 중인 교차로가 있으면 제외
         dir_priority = {'N': 0, 'E': 1, 'S': 2, 'W': 3}
@@ -447,8 +468,8 @@ class ENV():
             return None
 
         for nid in self.iid_neighbors.get(iid, []):
-            # 이미 스케줄 중인 교차로는 제외
-            if nid in self.deadlock_queue or nid in self.disperse_iid:
+            # 이미 스케줄 중(deadlock or disperse 그룹)에 속한 교차로는 제외
+            if nid in self.deadlock_queue or nid in locked_by_disperse:
                 continue
 
             d = _get_direction_between(iid, nid)
@@ -460,13 +481,13 @@ class ENV():
                 continue
 
             n_count = self.iid_inside_counts.get(nid, 0)
-            if n_count >= capacity:
+            if n_count >= neighbor_capacity:
                 continue
 
             # 이웃의 이웃 중에 deadlock/disperse 중인 교차로가 있으면 제외
             has_blocked_neighbor = False
             for nnid in self.iid_neighbors.get(nid, []):
-                if nnid in self.deadlock_queue or nnid in self.disperse_iid:
+                if nnid in self.deadlock_queue or nnid in locked_by_disperse:
                     has_blocked_neighbor = True
                     break
             if has_blocked_neighbor:
@@ -486,7 +507,6 @@ class ENV():
         remaining = overflow
         send_count = {nid: 0 for nid in neighbor_counts.keys()}
 
-        # 이웃들을 (현재 AMR 수 오름차순, NESW 우선순위) 정렬
         sorted_neighbors = sorted(
             neighbor_counts.keys(),
             key=lambda nid: (neighbor_counts[nid], dir_priority[neighbor_dirs[nid]])
@@ -497,20 +517,27 @@ class ENV():
                 break
 
             current = neighbor_counts[nid]
-            spare = capacity - current
+            spare = neighbor_capacity - current
             if spare <= 0:
                 continue
 
-            # 이 이웃에게 최대한 몰아서 할당
             assign = min(remaining, spare)
             send_count[nid] = assign
             remaining -= assign
 
-        # 분산 대상이 없으면 그냥 deadlock 스케줄 진행
+        # 모든 이웃에 최대한 분산해도 overflow가 남으면 이번 스텝엔 패스
+        if remaining > 0:
+            return
+
+        # 분산 대상이 하나도 없으면 종료
         if all(v == 0 for v in send_count.values()):
             return
 
         # 4) 각 이웃 교차로에 대해서 disperse_paths 스케줄링
+        #    - 스케줄 그룹은 root iid 기준으로 묶는다
+        sched_set = self.iid2sched[iid]
+        group_iids: set[str] = {iid}   # root 포함
+
         for nid, num_send in send_count.items():
             if num_send <= 0:
                 continue
@@ -530,16 +557,13 @@ class ENV():
 
             # disperse_paths 실행
             short_paths, target_exits = J.disperse_paths(opp, num_send)
-
             if not short_paths:
                 continue
 
-            # 분산 스케줄 active 처리 (과밀 교차로 iid를 그룹으로 묶어도 되고,
-            # nid별로 묶고 싶으면 self.disperse_iid.add(nid), sched_set = self.iid2sched[nid] 으로 조정)
-            self.disperse_iid.add(nid)
+            # 이웃 교차로도 같은 그룹에 포함
+            group_iids.add(nid)
 
-            # insert_scheduled_path로 실제 경로 삽입 + iid2sched 갱신
-            sched_set = self.iid2sched[nid]
+            # 스케줄 등록은 root iid를 기준으로 묶음
             for amr_id, short_path in short_paths.items():
                 if amr_id not in self.amr_list:
                     continue
@@ -548,7 +572,17 @@ class ENV():
                 self.insert_scheduled_path(amr_obj, short_path, target_exit)
                 sched_set.add(amr_id)
 
-        return        
+        # 실제로 그룹에 이웃이 한 명이라도 들어갔다면 그룹 잠금
+        if len(group_iids) > 1:
+            self.disperse_iid[iid] = group_iids
+
+    
+    def _all_disperse_iids(self):
+        """현재 분산 스케줄링에 참여 중인 모든 교차로 ID 집합 반환"""
+        all_iids = set()
+        for group in self.disperse_iid.values():
+            all_iids.update(group)
+        return all_iids
 
 
     def insert_scheduled_path(self, amr, short_path, target_exit):
@@ -561,8 +595,8 @@ class ENV():
         최종 경로 구성:
         prefix(지금까지 온 경로) +
         short_path[1:] (현재 위치 이후 교차로 내부 스케줄) +
-        bridge(merge_point → target_exit, BFS로 패치) +
-        continuation(원래 AMR 경로에서 target_exit 이후 tail)
+        bridge(merge_point → 재합류 지점, BFS로 패치) +
+        continuation(원래 AMR 경로에서 재합류 지점 이후 tail)
         """
         # 방어 코드
         if not short_path or len(short_path) < 2:
@@ -570,26 +604,62 @@ class ENV():
 
         merge_point = short_path[-1]
 
-        # --- 1) merge_point -> target_exit 까지 BFS (출구 tip까지) ---
-        bridge = [merge_point]
-        if target_exit is not None and target_exit != merge_point:
-            bridge = self.planner.planner.plan_path(merge_point, target_exit)
-        else:
-            # target_exit이 없거나 merge_point와 같으면 bridge는 [merge_point] 그대로
-            pass
+        # 현재까지 따라온 원래 경로에서의 마지막 위치 (cursor 위치)
+        if not (0 <= amr.path_cursor < len(amr.path)):
+            return
+        last_original_pos = amr.path[amr.path_cursor]
 
-        # --- 2) 원래 amr 경로에서 target_exit 이후 tail 이어붙이기 ---
-        continuation = []
+        # --- 1) bridge: merge_point -> rejoin_point 까지 BFS 경로 ---
+        #    기본은 target_exit을 재합류 지점으로 사용,
+        #    target_exit을 원래 경로에서 못 찾으면 last_original_pos로 되돌아오는 식으로 처리
+        bridge = [merge_point]
+        rejoin_point = None       # bridge 끝에서 원래 path로 합류할 지점
+        continuation = []         # rejoin_point 이후의 원래 path tail
+
+        # (1-A) target_exit이 지정된 경우: 우선 target_exit 기준으로 tail을 찾으려고 시도
         if target_exit is not None:
             exit_idx = -1
-            # 현재 위치 이후 구간에서만 target_exit 검색
             for i in range(amr.path_cursor + 1, len(amr.path)):
                 if amr.path[i] == target_exit:
                     exit_idx = i
                     break
 
-            if exit_idx != -1 and exit_idx + 1 < len(amr.path):
-                continuation = amr.path[exit_idx + 1:]
+            if exit_idx != -1:
+                # ✅ 정상 케이스: 원래 path에 target_exit가 존재
+                rejoin_point = target_exit
+                if exit_idx + 1 < len(amr.path):
+                    continuation = amr.path[exit_idx + 1:]
+            else:
+                # ❌ target_exit를 원래 path에서 못 찾은 경우:
+                #    last_original_pos로 되돌아가서 그 뒤 tail을 그대로 쓰기로 함
+                rejoin_point = last_original_pos
+                if amr.path_cursor + 1 < len(amr.path):
+                    continuation = amr.path[amr.path_cursor + 1:]
+        else:
+            # (1-B) target_exit 자체가 None인 스케줄 (pure detour같은 상황)
+            #       → last_original_pos로 되돌아가서 그 뒤 tail을 그대로 씀
+            rejoin_point = last_original_pos
+            if amr.path_cursor + 1 < len(amr.path):
+                continuation = amr.path[amr.path_cursor + 1:]
+
+        # 이 시점에서 rejoin_point는
+        #   - normal case: target_exit
+        #   - 예외 case: last_original_pos
+        # 중 하나가 되고, continuation은 rejoin_point 이후의 tail
+
+        # bridge 계산: merge_point -> rejoin_point
+        if rejoin_point is not None and rejoin_point != merge_point:
+            b = self.planner.planner.plan_path(merge_point, rejoin_point)
+            if b and len(b) >= 1:
+                bridge = b
+            else:
+                # BFS 실패 시, 그냥 merge_point에서 바로 tail로 넘어가거나,
+                # 필요하다면 여기서 멈추도록 선택할 수 있음.
+                # 일단은 bridge = [merge_point] 그대로 두고 continuation만 이어줌.
+                print(f"[Warning] AMR {amr.id}: plan_path({merge_point} -> {rejoin_point}) failed.")
+        else:
+            # rejoin_point가 없거나 merge_point와 같으면 bridge는 [merge_point] 그대로
+            pass
 
         # --- 3) 새 suffix 구성 ---
         new_suffix = []
@@ -601,12 +671,11 @@ class ENV():
         if len(bridge) > 1:
             new_suffix.extend(bridge[1:])
 
-        # (c) target_exit 이후 원래 경로 tail
+        # (c) rejoin_point 이후 원래 경로 tail (혹은 last_original_pos 이후 tail)
         new_suffix.extend(continuation)
 
         # --- 4) AMR 경로/상태 업데이트 ---
         prefix = amr.path[:amr.path_cursor + 1]
-
         amr.path = prefix + new_suffix
 
         # 스케줄된 구간 길이: short_path (중복 한칸 제거)
@@ -619,6 +688,7 @@ class ENV():
         else:
             amr.next_pos = amr.pos
 
+
     
     def has_active_neighbor(self, iid):
         """
@@ -626,12 +696,12 @@ class ENV():
         현재 deadlock_queue에 포함된 교차로가 있는지 확인
         """
         for nid in self.iid_neighbors.get(iid, []):
-            if nid in self.deadlock_queue or nid in self.disperse_iid:
+            if nid in self.deadlock_queue or nid in self._all_disperse_iids():
                 return True
         return False
 
 
-    def block_intersection(self, cur_pos, next_pos) -> bool:
+    def block_intersection(self, cur_pos, next_pos, normal_only=False) -> bool:
         """
         현재 위치 cur_pos에서 next_pos로 이동할 때,
         교차로 관련 정책(우선순위)에 의해 진입을 막아야 하면 True를 반환.
@@ -660,10 +730,13 @@ class ENV():
         entering_iid_set = next_iid_set - cur_iid_set
         entering_iid = next(iter(entering_iid_set))
 
-        # 분산(disperse) 정책이 진행 중인 교차로는 진입 금지
-        if entering_iid in self.disperse_iid:
+        # normal_only 모드: 교차로 수용량 초과 시 진입 금지
+        if normal_only and self.iid_inside_counts.get(entering_iid, 0) >= self.intersection_capacity:
             return True
-        
+
+        # 분산(disperse) 정책이 진행 중인 교차로는 진입 금지
+        if entering_iid in self._all_disperse_iids():
+            return True        
 
         # 우선순위(priority) 정책   
         seq = self.deadlock_queue
