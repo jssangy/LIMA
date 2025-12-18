@@ -10,9 +10,10 @@ class AMR():
         self.pos = pos
         self.prev_pos = pos
         self.next_pos = pos
-        self.steps = 0        
+        self.steps = 0       
+        self.prev_moved = False 
 
-        # 자율 주행 및 경로 복귀를 위한 상태
+        # 경로
         self.path = []
         self.path_cursor = 0
         self.scheduling = 0
@@ -28,9 +29,12 @@ class AMR():
         self.prev_pos = self.pos
         self.next_pos = self.pos
         self.steps = 0
+        self.prev_moved = False
         self.path = []
         self.path_cursor = 0
         self.scheduling = 0
+        self.path_remaining: set[Tuple[int, int]] = set()
+        self.path_orig_len = 0
 
 
     def set_path(self, new_path: list):
@@ -54,18 +58,16 @@ class AMR():
         return (self.path_orig_len - self.scheduling) / self.path_orig_len * 100.0
 
 
-    def move(self, freeze=False):
+    def move(self):
         """
         [수정] 이동 후, 경로상의 현재 위치를 찾아 path_cursor를 동기화합니다.
         """
-        if freeze:
-            return
-
         self.prev_pos = self.pos
         self.path_cursor += 1
         self.pos = self.next_pos
         self.next_pos = self.path[self.path_cursor + 1] if self.path_cursor + 1 < len(self.path) else self.pos
         self.steps += 1
+        self.prev_moved = True
         if self.scheduling > 0:
             self.scheduling -= 1
         if self.path_remaining:

@@ -1,6 +1,7 @@
 import random
 from itertools import chain
 from copy import deepcopy
+from collections import deque
 
 from utils.sch import schedule
 from utils.env import StackRearrangementEnv
@@ -34,6 +35,9 @@ class Intersection:
         self.is_deadlock = False
         self.paths = {}                 # {amr_id: [(x,y), ...]}
         self.target_exits = {}          # {amr_id: (x,y)}  # 각 AMR의 "원래" 출구 tip 좌표
+
+        # 최근 disperse 호출한 iid 4개 저장
+        self.disperse_hist = deque(maxlen=4)
 
 
     def reset(self):
@@ -548,6 +552,7 @@ class Intersection:
                     pass
             else:
                 # 중앙이 경로의 마지막인 경우 (드물지만 가능) -> 그대로 둠
+                print(f"[{self.id}] AMR {aid} path ends at center; no exit cell found.")
                 pass
 
 
@@ -851,8 +856,11 @@ class Intersection:
                 # 그 외: 이번 step에서는 안 움직임
                 paths[aid].append(last)
 
+        # 마지막 위치 padding 생성
         for aid in paths.keys():
-            paths[aid].append(paths[aid][-1])  # 최종 대기 패딩
+            last = paths[aid][-1]
+            paths[aid].append(last)
+                
 
         # --------------------------------------------------
         # 9) 탈출 가능한 AMR은 self.paths에서 제거
@@ -901,10 +909,6 @@ class Intersection:
                 ex_arm = exit_arm.get(aid)
                 fin_arm = final_arm.get(aid)
 
-                if d == input_dir:
-                    # input_dir 팔에서 분산되지 않은 AMR은 제거
-                    paths.pop(aid, None)
-                    continue
 
                 # (예외 1) 원래 center AMR → 여기서부터는 더 못 비움
                 if aid in center_ids:

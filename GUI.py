@@ -198,7 +198,7 @@ class GUI():
         for _, agv in agv_list.items():
             x, y = agv.pos
             sx, sy = self.map_to_screen(x + 0.5, y + 0.5)
-            radius = max(1, int(self.zoom_level / 2) - 2)
+            radius = max(1, int(self.zoom_level / 2) - 5)
             
             # [수정] 스케줄링 상태에 따른 시각화 구분
             # 스케줄링 중이면: 테두리를 두껍게 하거나, 색상을 밝게 표시
@@ -216,7 +216,7 @@ class GUI():
         # 목표 라인 (옵션)
         if self.show_goal_var.get():
             for agv_id, agv in agv_list.items():
-                goal = active_tasks.get(agv_id)
+                goal = agv.path[-1] if agv.path else None
                 if goal:
                     start_sx, start_sy = self.map_to_screen(agv.pos[0] + 0.5, agv.pos[1] + 0.5)
                     end_sx,   end_sy   = self.map_to_screen(goal[0] + 0.5,    goal[1] + 0.5)
@@ -381,7 +381,7 @@ class GUI():
         self.append_log('Start Simulation')
     
     # If stop button is clicked
-    def stop_env(self, event = None):
+    def stop_env(self, event=None):
         self.running_check = False
         self.append_log('Stop Simulation')
 
