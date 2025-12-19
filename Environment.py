@@ -28,7 +28,7 @@ def _actions_to_paths_job(iid: str, inter: "Intersection"):
 
 
 class ENV():
-    def __init__(self, prob_path, max_arm_len_h=5, max_arm_len_v=5, num_amrs=500, max_steps=1024, running_opt=0, traffic_mode='task'):
+    def __init__(self, prob_path, max_arm_len_h=5, max_arm_len_v=5, num_amrs=500, max_steps=1024, running_opt=0, traffic_mode='task', workers=8):
         super().__init__()
         """환경 초기화"""
         base_dir = os.path.dirname(prob_path)

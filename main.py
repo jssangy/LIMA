@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--max-arm-v", type=int, default=5)
     parser.add_argument("--max-steps", type=int, default=100000000)
     parser.add_argument("--traffic-mode", type=str, default="task", choices=["traffic","task"])
+    parser.add_argument("--workers", type=int, default=16)
     args = parser.parse_args()
 
     prob_path = f"problems/cross/{args.prob}.json"
@@ -29,7 +30,8 @@ def main():
 
         max_steps=args.max_steps, 
         running_opt=args.algo, 
-        traffic_mode=args.traffic_mode
+        traffic_mode=args.traffic_mode,
+        workers=args.workers,
     )
 
     env.reset()
