@@ -11,7 +11,8 @@ class AMR():
         self.prev_pos = pos
         self.next_pos = pos
         self.steps = 0       
-        self.prev_moved = False 
+        self.prev_moved = False
+        self.no_move_steps = 0
 
         # 경로
         self.path = []
@@ -30,6 +31,8 @@ class AMR():
         self.next_pos = self.pos
         self.steps = 0
         self.prev_moved = False
+        self.no_move_steps = 0
+
         self.path = []
         self.path_cursor = 0
         self.scheduling = 0
@@ -68,6 +71,7 @@ class AMR():
         self.next_pos = self.path[self.path_cursor + 1] if self.path_cursor + 1 < len(self.path) else self.pos
         self.steps += 1
         self.prev_moved = True
+        self.no_move_steps = 0
         if self.scheduling > 0:
             self.scheduling -= 1
         if self.path_remaining:

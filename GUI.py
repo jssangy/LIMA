@@ -198,7 +198,7 @@ class GUI():
         for _, agv in agv_list.items():
             x, y = agv.pos
             sx, sy = self.map_to_screen(x + 0.5, y + 0.5)
-            radius = max(1, int(self.zoom_level / 2) - 5)
+            radius = max(1, int(self.zoom_level / 2) - 2)
             
             # [수정] 스케줄링 상태에 따른 시각화 구분
             # 스케줄링 중이면: 테두리를 두껍게 하거나, 색상을 밝게 표시
@@ -384,6 +384,11 @@ class GUI():
     def stop_env(self, event=None):
         self.running_check = False
         self.append_log('Stop Simulation')
+        
+        env = self.env
+
+        for amr in env.amr_list.values():
+            print(f'\nAMR {amr.id} path: {amr.path[amr.path_cursor:]}')
 
     # If reset button is clicked
     def reset_env(self, event = None):
