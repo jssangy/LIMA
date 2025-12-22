@@ -146,11 +146,13 @@ class CBSPlanner:
         pass
 
 class BFSPlanner:
-    def __init__(self, map_data):
+    def __init__(self, map_data, center_xs, center_ys):
         """
         맵 데이터를 기반으로 BFS 기반 거리장 플래너를 초기화합니다.
         """
         self.planner = BFS(map_data)
+        self.center_xs = center_xs
+        self.center_ys = center_ys
 
     def plan_for_new_amrs(self, amr_list):
         """
@@ -172,7 +174,7 @@ class BFSPlanner:
         """
         BFS(거리장) 플래너를 사용하여 경로를 계산하고 주입합니다.
         """
-        path = self.planner.plan_path(amr.pos, amr.goal)
+        path = self.planner.plan_path_highway(amr.pos, amr.goal, self.center_xs, self.center_ys)
         amr.set_path(path)
 
     def plan_path(self, start, goal):

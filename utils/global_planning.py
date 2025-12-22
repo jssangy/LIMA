@@ -1,11 +1,13 @@
 import heapq
-from typing import Dict, Tuple, Iterable, Optional, Set, List
+from typing import Dict, Tuple, Iterable, Optional, Set, List, Sequence
 import random
 import numpy as np
-
-import heapq, random
+import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
+import matplotlib.colors as mcolors
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
+from bisect import bisect_left, bisect_right
 
 # A* Algorithm
 class AStar:
@@ -370,6 +372,100 @@ class BFS:
         self.H, self.W = map_data.shape
         self._distance_fields: Dict[Pos, np.ndarray] = {}  # goal -> distance_field 맵 캐시
 
+        self.edge_heat = np.zeros((4, self.H, self.W), dtype=np.float32)
+        self._dir2idx = {(0, -1): 0, (0, 1): 1, (-1, 0): 2, (1, 0): 3}  # 상, 하, 좌, 우
+        self._opp = {0:1, 1:0, 2:3, 3:2}  # 상<->하, 좌<->우
+
+    def reset_heat(self):
+        self.edge_heat.fill(0.0)
+
+    def add_heat_from_path(self, path: List[Pos], w: float = 1.0):
+        """경로를 따라 edge_heat 누적"""
+        if not path or len(path) < 2:
+            return
+        for (x, y), (nx, ny) in zip(path, path[1:]):
+            idx = self._dir2idx.get((nx - x, ny - y))
+            if idx is None:
+                continue
+            self.edge_heat[idx, y, x] += w
+
+    def heat_plan_path(
+        self,
+        start: Pos,
+        goal: Pos,
+        alpha: float = 0.3,
+        slack: int = 1,
+        u_turn_penalty: float = 0.2,
+        max_extra: int = 30,
+    ) -> List[Pos]:
+        if start == goal:
+            return [start]
+
+        if goal not in self._distance_fields:
+            self._distance_fields[goal] = self._create_field_from_goal(goal)
+        field = self._distance_fields[goal]
+
+        if field[start[1], start[0]] < 0:
+            print(f"Warning: Start position {start} is unreachable from goal {goal}.")
+            return [start]
+
+        path: List[Pos] = [start]
+        current: Pos = start
+        prev: Pos | None = None
+
+        start_dist = int(field[start[1], start[0]])
+        max_steps = start_dist + max_extra
+
+        def dir_idx(cur: Pos, nxt: Pos) -> int | None:
+            return self._dir2idx.get((nxt[0] - cur[0], nxt[1] - cur[1]))
+
+        steps = 0
+        while current != goal and steps < max_steps:
+            steps += 1
+            neighbors = self._get_neighbors(current)
+            if not neighbors:
+                return path
+
+            dist_map = {n: field[n[1], n[0]] for n in neighbors}
+            dist_map = {n: d for n, d in dist_map.items() if d >= 0}
+            if not dist_map:
+                return path
+
+            min_dist = min(dist_map.values())
+
+            # ✅ detour 허용: 최단만 고집하면 heat가 의미 없어질 때가 많음
+            cands = [n for n, d in dist_map.items() if d <= min_dist + slack]
+            if not cands:
+                cands = [n for n, d in dist_map.items() if d == min_dist]
+
+            cx, cy = current
+
+            def opposite_edge_heat(cur: Pos, nxt: Pos) -> float:
+                di = dir_idx(cur, nxt)
+                if di is None:
+                    return 0.0
+                nx, ny = nxt
+                # ✅ 반대방향(대면) 흐름만 패널티
+                return float(self.edge_heat[self._opp[di], ny, nx])
+
+            def score(n: Pos) -> float:
+                s = float(dist_map[n])
+                s += alpha * opposite_edge_heat(current, n)
+                if prev is not None and n == prev:
+                    s += u_turn_penalty
+                return s
+
+            best = min(score(n) for n in cands)
+            best_neighbors = [n for n in cands if score(n) == best]
+            next_node = random.choice(best_neighbors)
+
+            prev = current
+            current = next_node
+            path.append(current)
+
+        return path
+
+
     def plan_path(self, start: Pos, goal: Pos) -> List[Pos]:
         """
         주어진 시작점과 목표점에 대한 경로를 추출합니다.
@@ -459,7 +555,247 @@ class BFS:
             nx, ny = x + dx, y + dy
             if 0 <= nx < self.W and 0 <= ny < self.H and self.map[ny, nx] == 0:
                 neighbors.append((nx, ny))
-        return neighbors
+        return neighbors  
+
+    def _plot_one_dir_lines(self, dir_tag: str, save_path: str | None = None):
+        """
+        dir_tag: 'N','S','W','E'
+        - 배경 흰색
+        - heat=0 엣지는 안 그림(= 흰색 유지)
+        - heat 높을수록 더 붉게
+        """
+        dir2idx = {"N": 0, "S": 1, "W": 2, "E": 3}
+        idx = dir2idx[dir_tag]
+
+        H, W = self.H, self.W
+
+        def next_pos(x, y):
+            if dir_tag == "N": return x, y - 1
+            if dir_tag == "S": return x, y + 1
+            if dir_tag == "W": return x - 1, y
+            if dir_tag == "E": return x + 1, y
+            raise ValueError(dir_tag)
+
+        segments = []
+        values = []
+
+        for y in range(H):
+            for x in range(W):
+                v = float(self.edge_heat[idx, y, x])
+                if v <= 0:
+                    continue  # ✅ heat 없으면 아예 안 그림(흰 배경 유지)
+
+                if self.map is not None and self.map[y, x] == 1:
+                    continue
+
+                nx, ny = next_pos(x, y)
+                if not (0 <= nx < W and 0 <= ny < H):
+                    continue
+                if self.map is not None and self.map[ny, nx] == 1:
+                    continue
+
+                segments.append([(x, y), (nx, ny)])
+                values.append(v)
+
+        if not values:
+            print(f"[plot] {dir_tag}: heat가 0이라 그릴 게 없습니다.")
+            return
+
+        values = np.asarray(values, dtype=np.float32)
+
+        # ✅ 대비 강화: 퍼센타일 스케일 + 비선형 정규화
+        vmin = np.percentile(values, 5)
+        vmax = np.percentile(values, 99)
+        if vmax <= vmin:
+            vmin = float(values.min())
+            vmax = float(values.max())
+
+        # gamma < 1 이면 작은 값도 더 “잘 보이게” 강조됨
+        norm = mcolors.PowerNorm(gamma=0.5, vmin=vmin, vmax=vmax)
+
+        lc = LineCollection(
+            segments,
+            array=values,
+            cmap="Reds",       # ✅ 흰→분홍→빨강
+            norm=norm,
+            linewidths=1.8,
+            alpha=1.0,
+        )
+
+        fig, ax = plt.subplots(figsize=(8, 8), facecolor="white")
+        ax.set_facecolor("white")  # ✅ 배경 흰색
+        ax.add_collection(lc)
+
+        ax.set_xlim(-0.5, W - 0.5)
+        ax.set_ylim(H - 0.5, -0.5)
+        ax.set_aspect("equal")
+
+        title = {"N": "N (Up)", "S": "S (Down)", "W": "W (Left)", "E": "E (Right)"}[dir_tag]
+        ax.set_title(f"Edge heat: {title} (white bg / red high)")
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+
+        cbar = fig.colorbar(lc, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label("edge heat")
+
+        if save_path:
+            plt.savefig(save_path, dpi=200, bbox_inches="tight", facecolor="white")
+
+        plt.show()
+
+    def plot_edge_heat(self, save_prefix: str | None = None):
+        """
+        N/S/W/E를 각각 '선분'으로 그립니다.
+        - N,S: 세로선만
+        - E,W: 가로선만
+        """
+        for tag in ["N", "S", "W", "E"]:
+            save_path = f"{save_prefix}_{tag}.png" if save_prefix else None
+            self._plot_one_dir_lines(tag, save_path=save_path)
+
+
+    def _is_free(self, p: Pos) -> bool:
+        x, y = p
+        return 0 <= x < self.W and 0 <= y < self.H and self.map[y, x] == 0
+
+    def _random_center_in_range(self, sorted_vals: Sequence[int], a: int, b: int) -> Optional[int]:
+        lo, hi = (a, b) if a <= b else (b, a)
+        l = bisect_left(sorted_vals, lo)
+        r = bisect_left(sorted_vals, hi + 1)
+        if l >= r:
+            return None
+        return random.choice(sorted_vals[l:r])
+
+    def _nearest_center_in_range(self, sorted_vals: Sequence[int], a: int, b: int, target: int) -> Optional[int]:
+        lo, hi = (a, b) if a <= b else (b, a)
+        l = bisect_left(sorted_vals, lo)
+        r = bisect_left(sorted_vals, hi + 1)
+
+        # 범위 내 후보가 없으면 전체에서라도 가장 가까운 값
+        vals = sorted_vals[l:r] if l < r else sorted_vals
+        if not vals:
+            return None
+
+        i = bisect_left(vals, target)
+        cands = []
+        if i < len(vals): cands.append(vals[i])
+        if i > 0: cands.append(vals[i - 1])
+        return min(cands, key=lambda v: abs(v - target))
+
+    def _try_straight(self, a: Pos, b: Pos) -> Optional[list[Pos]]:
+        ax, ay = a
+        bx, by = b
+        if ax != bx and ay != by:
+            return None
+
+        path = [a]
+        if ax == bx:
+            step = 1 if by > ay else -1
+            for y in range(ay + step, by + step, step):
+                if self.map[y, ax] == 1:
+                    return None
+                path.append((ax, y))
+        else:
+            step = 1 if bx > ax else -1
+            for x in range(ax + step, bx + step, step):
+                if self.map[ay, x] == 1:
+                    return None
+                path.append((x, ay))
+        return path
+
+    def _plan_segment(self, start: Pos, goal: Pos) -> Optional[list[Pos]]:
+        # 직선 가능하면 직선, 아니면 기존 BFS(거리장) 사용
+        if not self._is_free(goal):
+            return None
+        seg = self._try_straight(start, goal)
+        if seg is not None:
+            return seg
+        seg = self.plan_path(start, goal)
+        if not seg or seg[-1] != goal:
+            return None
+        return seg
+
+    def _plan_via(self, start: Pos, waypoints: list[Pos]) -> Optional[list[Pos]]:
+        cur = start
+        full = [cur]
+        for wp in waypoints:
+            if wp == cur:
+                continue
+            seg = self._plan_segment(cur, wp)
+            if seg is None:
+                return None
+            full.extend(seg[1:])
+            cur = wp
+        return full
+
+    def plan_path_highway(self, start: Pos, goal: Pos, center_xs: list[int], center_ys: list[int], tries: int = 8) -> list[Pos]:
+        """
+        벽(goal)이 N/S/E/W 끝에 있을 때:
+        - 내부 교차로 중심 라인(row/col)을 이용해 '차선변경-고속주행-주차진입' 형태로 경로 생성.
+        실패하면 기본 plan_path로 폴백.
+        """
+        if start == goal:
+            return [start]
+
+        sx, sy = start
+        gx, gy = goal
+
+        # goal이 벽인지 판정
+        on_top = (gy == 0)
+        on_bottom = (gy == self.H - 1)
+        on_left = (gx == 0)
+        on_right = (gx == self.W - 1)
+
+        # 코너면 방향 하나 랜덤 선택
+        if (on_top or on_bottom) and (on_left or on_right):
+            if random.random() < 0.5:
+                on_left = on_right = False
+            else:
+                on_top = on_bottom = False
+
+        # CASE A: 위/아래 벽 -> y_rand 랜덤(센터y), x_align은 가까운 센터x
+        if on_top or on_bottom:
+            x_align = self._nearest_center_in_range(center_xs, sx, gx, sx)
+            if x_align is None:
+                return self.plan_path(start, goal)
+
+            for _ in range(tries):
+                y_rand = self._random_center_in_range(center_ys, sy, gy)
+                if y_rand is None:
+                    break
+
+                # 경유점 구성 (형태 유지용)
+                waypoints = [(x_align, sy), (x_align, y_rand), (gx, y_rand), goal]
+
+                path = self._plan_via(start, waypoints)
+                if path is not None:
+                    return path
+
+            return self.plan_path(start, goal)
+
+        # CASE B: 좌/우 벽 -> x_rand 랜덤(센터x), y_align은 가까운 센터y
+        if on_left or on_right:
+            y_align = self._nearest_center_in_range(center_ys, sy, gy, sy)
+            if y_align is None:
+                return self.plan_path(start, goal)
+
+            for _ in range(tries):
+                x_rand = self._random_center_in_range(center_xs, sx, gx)
+                if x_rand is None:
+                    break
+
+                waypoints = [(sx, y_align), (x_rand, y_align), (x_rand, gy), goal]
+
+                path = self._plan_via(start, waypoints)
+                if path is not None:
+                    return path
+
+            return self.plan_path(start, goal)
+
+        # goal이 벽이 아니면 그냥 기본
+        return self.plan_path(start, goal)
+
+
     
 
 class AStar_for_CBS:

@@ -11,12 +11,12 @@ def main():
     parser.add_argument("--prob", type=str, default="cross_3030")
     parser.add_argument("--algo", type=int, default=0, choices=[0,1,2,3,4],
                         help="0=BFS, 1=A*, 2=D*, 3=PIBT, 4=CBS")
-    parser.add_argument("--num-amrs", type=int, default=7000)
+    parser.add_argument("--num-amrs", type=int, default=6120)
     parser.add_argument("--max-arm-h", type=int, default=5)
     parser.add_argument("--max-arm-v", type=int, default=5)
     parser.add_argument("--max-steps", type=int, default=100000000)
     parser.add_argument("--traffic-mode", type=str, default="task", choices=["traffic","task"])
-    parser.add_argument("--workers", type=int, default=16)
+    parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args()
 
     prob_path = f"problems/cross/{args.prob}.json"

@@ -56,14 +56,16 @@ class ENV():
         self.amr_list = {}
         self.max_steps = max_steps
 
-        self.planner = BFSPlanner(self.map)
-
         self.intersections: Dict[str, Intersection] = {}
         for iid, inter_info in processed_intersections.items():
             self.intersections[iid] = Intersection(
                 inter_info['data'],
                 inter_info['present_dirs'],
             )
+
+        self.center_xs = sorted({I.center_x for I in self.intersections.values()})
+        self.center_ys = sorted({I.center_y for I in self.intersections.values()})
+        self.planner = BFSPlanner(self.map, self.center_xs, self.center_ys)
             
         # 교차로 간 이웃 맵핑 (양방향)
         self.iid_neighbors = {iid: set() for iid in processed_intersections.keys()}
@@ -260,9 +262,10 @@ class ENV():
                 self.deadlock_waiting_iids.discard(iid)
                 candidate_deadlocks.append(iid)
                 
-            # 후보 deadlock 교차로들을 "교차로 내 AMR 수 적은 순"으로 정렬
+            # 후보 deadlock 교차로들을 "교차로 내 AMR 수 많은 순"으로 정렬
             candidate_deadlocks.sort(
-                key=lambda x: self.iid_inside_counts.get(x, 0)
+                key=lambda x: self.iid_inside_counts.get(x, 0),
+                reverse=True,
             )
 
             # (3-A-2) 2차 패스: 정렬된 순서대로 actions_to_paths 스케줄 결정
@@ -333,8 +336,6 @@ class ENV():
                 edge_amrs = []
                 for aid in iid2members.get(iid, []):
                     amr = self.amr_list[aid]
-                    if amr is None:
-                        continue
                     if amr.scheduling > 0:
                         scheduling = True
                         break
@@ -370,6 +371,7 @@ class ENV():
 
             # ★ 우선순위 높은 교차로 tip로 진입하려는 경우 → 이 스텝에서는 대기
             if self.block_intersection(cur_pos, next_pos, normal_only=True):
+                amr.no_move_steps += 1
                 continue
 
             # 기존 충돌/점유 체크
@@ -471,7 +473,6 @@ class ENV():
         """
         cycles = []
         neighbors_B = [x for x in self.iid_neighbors.get(B, []) if x != A]
-        neighbors_B_set = set(neighbors_B)
 
         # B의 두 이웃(C, E) 선택 (중복 제거 위해 i<j)
         for i in range(len(neighbors_B)):
@@ -656,7 +657,6 @@ class ENV():
         else:
             amr.next_pos = amr.pos
 
-
     
     def has_active_neighbor(self, iid):
         """
@@ -699,8 +699,8 @@ class ENV():
         entering_iid = next(iter(entering_iid_set))
 
         # normal_only 모드: 교차로 수용량 초과 시 진입 금지
-        # if normal_only and self.iid_inside_counts.get(entering_iid, 0) >= self.scheduling_capacity:
-        #     return True
+        if normal_only and self.iid_inside_counts.get(entering_iid, 0) > self.scheduling_capacity:
+            return True
 
         # 우선순위(priority) 정책   
         seq = self.deadlock_queue
