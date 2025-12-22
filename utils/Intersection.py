@@ -36,6 +36,8 @@ class Intersection:
         self.paths = {}                 # {amr_id: [(x,y), ...]}
         self.target_exits = {}          # {amr_id: (x,y)}  # 각 AMR의 "원래" 출구 tip 좌표
 
+        self.capacity = 0
+
 
     def reset(self):
         self.amr_intent_map = {}
