@@ -342,9 +342,7 @@ class StackScheduler:
         return min_surplus, None
 
 
-def schedule(
-    initial_stacks: List[List[int]], mode: str = "random", **kwargs
-) -> Tuple[List[Tuple[int, int]], float]:
+def schedule(initial_stacks, mode="random", per_stack_quota=None, **kwargs):
     """헬퍼 함수: 초기 스택 상태에서 필요한 move 시퀀스를 반환.
     
     Returns:
@@ -360,8 +358,81 @@ def schedule(
     else:
         raise ValueError(f"지원하지 않는 모드입니다: {mode}")
     
+    if per_stack_quota is not None:
+        moves = append_overflow_moves(
+            initial_stacks=initial_stacks,
+            moves=moves,
+            per_stack_quota=per_stack_quota,
+            stack_capacity=scheduler.env.stack_capacity,
+        )
+    
     elapsed_time = time.time() - start_time
     return moves, elapsed_time
+
+
+Move = Tuple[int, int]
+
+def append_overflow_moves(
+    initial_stacks: List[List[int]],
+    moves: List[Move],
+    per_stack_quota: List[int],        # 예: N=3, E=15, S=15, W=15 (인덱스는 스택 인덱스)
+    stack_capacity: int,
+    seed: Optional[int] = None,
+) -> List[Move]:
+    """
+    solve 결과 moves를 적용한 뒤, 각 스택이 quota를 초과하면
+    초과분만큼 top에서 꺼내 다른 스택 top에 얹는 move를 추가한다.
+    """
+    rng = random.Random(seed)
+
+    stacks = deepcopy(initial_stacks)
+
+    # 1) 기존 moves 적용(드라이런)
+    for src, dst in moves:
+        if not stacks[src]:
+            continue
+        if len(stacks[dst]) >= stack_capacity:
+            continue
+        stacks[dst].append(stacks[src].pop())
+
+    # 2) quota 초과분을 다른 스택으로 이동
+    extra: List[Move] = []
+
+    # quota는 물리 cap보다 클 수 없게 clamp
+    quota = [min(q, stack_capacity) for q in per_stack_quota]
+
+    while True:
+        overflow_list = [(i, len(stacks[i]) - quota[i]) for i in range(len(stacks)) if len(stacks[i]) > quota[i]]
+        if not overflow_list:
+            break
+
+        # 가장 많이 초과한 스택부터 처리(타이브레이크 랜덤)
+        max_over = max(k for _, k in overflow_list)
+        over_srcs = [i for i, k in overflow_list if k == max_over]
+        src = rng.choice(over_srcs)
+
+        # 받을 수 있는 목적지 후보(물리 cap + quota 둘 다 만족)
+        candidates = [
+            j for j in range(len(stacks))
+            if j != src and len(stacks[j]) < stack_capacity and len(stacks[j]) < quota[j]
+        ]
+        if not candidates:
+            break  # 더 이상 옮길 곳이 없음 -> 여기서 멈춤(상위에서 다른 정책 사용)
+
+        # slack 큰 곳 우선(동률 랜덤)
+        def slack(j: int):
+            return (quota[j] - len(stacks[j]), stack_capacity - len(stacks[j]))
+        best_slack = max(slack(j) for j in candidates)
+        best = [j for j in candidates if slack(j) == best_slack]
+        dst = rng.choice(best)
+
+        # top pop -> top push
+        ball = stacks[src].pop()
+        stacks[dst].append(ball)
+        extra.append((src, dst))
+
+    return moves + extra
+
 
 
 if __name__ == "__main__":

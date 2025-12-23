@@ -36,7 +36,8 @@ class Intersection:
         self.paths = {}                 # {amr_id: [(x,y), ...]}
         self.target_exits = {}          # {amr_id: (x,y)}  # 각 AMR의 "원래" 출구 tip 좌표
 
-        self.capacity = 0
+        self.reservation_count = 0                  # 교차로 내 AMR 예약 개수
+        self.neighbor_reservation_count = {d: 0 for d in "NESW"}  # {N: 0, E: 0, S: 0, W: 0} 인접 교차로별 예약 개수
 
 
     def reset(self):
@@ -375,7 +376,11 @@ class Intersection:
         )
 
         # 4. 스케줄러 호출
-        actions, elapsed_time = schedule(env.stacks, mode="h2", max_iters=1_000_000)
+        per_stack_quota = []
+        for d, counts in self.neighbor_reservation_count.items():
+            per_stack_quota.append(counts)
+
+        actions, elapsed_time = schedule(env.stacks, mode="h2", max_iters=1_000_000, per_stack_quota=None)
 
         return actions
 

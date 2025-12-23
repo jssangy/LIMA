@@ -67,19 +67,11 @@ class ENV():
         self.center_ys = sorted({I.center_y for I in self.intersections.values()})
         self.planner = BFSPlanner(self.map, self.center_xs, self.center_ys)
             
-        # 교차로 간 이웃 맵핑 (양방향)
-        self.iid_neighbors = {iid: set() for iid in processed_intersections.keys()}
-        for iid, inter_info in processed_intersections.items():
-            for nid in inter_info["neighbors"].values():
-                if not nid:
-                    continue
-
-                # 한 방향 연결
-                self.iid_neighbors[iid].add(nid)
-                # 반대 방향도 자동 연결
-                if nid not in self.iid_neighbors:
-                    self.iid_neighbors[nid] = set()
-                self.iid_neighbors[nid].add(iid)
+        # 교차로 간 이웃 맵핑
+        self.iid_neighbors: dict[str, dict[str, str]] = {
+            iid: dict(inter_info.get("neighbors", {}))
+            for iid, inter_info in processed_intersections.items()
+        }
 
         # 교차로별 현재 AMR 수 (step마다 갱신)
         self.iid_inside_counts: dict[str, int] = defaultdict(int)
@@ -201,6 +193,12 @@ class ENV():
                     iid = self.event_cells2iid[pos]
                     check_iids.add(iid)
 
+            if self.time == 1:
+                for iid, count in self.iid_inside_counts.items():
+                    I = self.intersections[iid]
+                    I.reservation_count = count
+
+            # 교차로 정지 상태인지 확인
             for iid, members in iid2members.items():
                 if not members:
                     continue
@@ -445,25 +443,6 @@ class ENV():
 
         return self.make_info()
 
-
-    def _get_direction_between(self, src_iid, dst_iid):
-        """src_iid 기준으로 dst_iid가 어느 방향에 있는지 반환"""
-        I_src = self.intersections[src_iid]
-        J_dst = self.intersections[dst_iid]
-
-        cx, cy = I_src.center_x, I_src.center_y
-        nx, ny = J_dst.center_x, J_dst.center_y
-
-        if nx == cx and ny < cy:
-            return 'N'
-        elif nx > cx and ny == cy:
-            return 'E'
-        elif nx == cx and ny > cy:
-            return 'S'
-        elif nx < cx and ny == cy:
-            return 'W'
-        return None
-
     
     def _find_4cycles_from_B(self, A, B):
         """
@@ -472,7 +451,7 @@ class ENV():
         banned에 포함된 iid는 cycle에서 제외
         """
         cycles = []
-        neighbors_B = [x for x in self.iid_neighbors.get(B, []) if x != A]
+        neighbors_B = [x for x in self.iid_neighbors.get(B, {}).values() if x != A]
 
         # B의 두 이웃(C, E) 선택 (중복 제거 위해 i<j)
         for i in range(len(neighbors_B)):
@@ -503,22 +482,19 @@ class ENV():
         I = self.intersections[A]
 
         candidates = []
-        for B in self.iid_neighbors.get(A, []):
+        for d, B in self.iid_neighbors.get(A, {}).items():
             if B in stalled_iids or B in active_iids:
                 continue
 
-            d = self._get_direction_between(A, B)
-            if d is None:
-                continue
             # A 입장에서 실제 팔이 있는 방향만
             if d not in I.dirs:
                 continue
 
-            # 사이클 구성원은 stalled 포함하면 안 되게(추천)
-            banned = set(stalled_iids)
+            # cycle 구성원(C,D,E)도 stalled/active에 있으면 제외
+            banned = set(stalled_iids) | set(active_iids)
             banned.add(A)
 
-            cycles = self._find_4cycles_from_B(A, B)
+            cycles = self._find_4cycles_from_B(A, B, banned=banned)
             if not cycles:
                 continue
 
@@ -530,10 +506,10 @@ class ENV():
         d, B, cycles = random.choice(candidates)
         cycle = random.choice(cycles)
 
-        # 방향(시계/반시계)도 랜덤으로 뒤집고 싶으면:
+        # 방향(시계/반시계) 랜덤 뒤집기
         if random.random() < 0.5:
             B, C, D, E = cycle
-            cycle = (B, E, D, C)  # 역방향: B-E-D-C-B
+            cycle = (B, E, D, C)
 
         return d, B, cycle
 
@@ -663,7 +639,7 @@ class ENV():
         해당 교차로 iid의 이웃 중,
         현재 deadlock_queue에 포함된 교차로가 있는지 확인
         """
-        for nid in self.iid_neighbors.get(iid, []):
+        for nid in self.iid_neighbors.get(iid, {}).values():
             if nid in self.deadlock_queue:
                 return True
         return False
