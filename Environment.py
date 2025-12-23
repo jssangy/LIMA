@@ -3,15 +3,15 @@ import json
 import math
 import random
 import numpy as np
-from collections import deque, defaultdict
-from typing import Dict, List, Tuple, Optional
+from collections import defaultdict, Counter
+from typing import Dict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from utils.AMR import AMR
 from utils.Intersection import Intersection
 from utils import Funct
 from utils.traffic_generator import TaskSetGenerator, discover_border_arms_NxM, TrafficGenerator
-from utils.Controller import AStarPlanner, PIBTPlanner, CBSPlanner, BFSPlanner
+from utils.Controller import PIBTPlanner, CBSPlanner, BFSPlanner
 
 
 def _actions_to_paths_job(iid: str, inter: "Intersection"):
@@ -192,11 +192,23 @@ class ENV():
                 if pos in self.event_cells:
                     iid = self.event_cells2iid[pos]
                     check_iids.add(iid)
-
+            
+            # 첫 스텝에서는 현 교차로, 이웃 교차로 여유 공간 카운트 초기화
             if self.time == 1:
+                # 1) available_count 세팅 + 스냅샷 만들기
+                resv = {}
                 for iid, count in self.iid_inside_counts.items():
                     I = self.intersections[iid]
-                    I.reservation_count = count
+                    I.available_count = self.scheduling_capacity - count
+                    resv[iid] = self.scheduling_capacity - count
+
+                # 2) 이웃 available 스냅샷 갱신
+                for iid, I in self.intersections.items():
+                    neigh_map = self.iid_neighbors.get(iid, {})
+                    I.neighbor_available_count = {
+                        d: (resv.get(neigh_map[d], self.scheduling_capacity) if d in neigh_map else self.scheduling_capacity)
+                        for d in I.dirs
+                    }
 
             # 교차로 정지 상태인지 확인
             for iid, members in iid2members.items():
@@ -260,10 +272,10 @@ class ENV():
                 self.deadlock_waiting_iids.discard(iid)
                 candidate_deadlocks.append(iid)
                 
-            # 후보 deadlock 교차로들을 "교차로 내 AMR 수 많은 순"으로 정렬
+            # 후보 deadlock 교차로들을 "교차로 내 AMR 수 적은 순"으로 정렬
             candidate_deadlocks.sort(
                 key=lambda x: self.iid_inside_counts.get(x, 0),
-                reverse=True,
+                reverse=False,
             )
 
             # (3-A-2) 2차 패스: 정렬된 순서대로 actions_to_paths 스케줄 결정
@@ -278,6 +290,10 @@ class ENV():
                 # 용량 초과 시 continue
                 if self.iid_inside_counts.get(iid, 0) > self.scheduling_capacity:
                     I = self.intersections[iid]
+                    self.deadlock_waiting_iids.add(iid)
+                    continue
+
+                if not self._allocate_neighbor_capacity(iid, active_iids):
                     self.deadlock_waiting_iids.add(iid)
                     continue
 
@@ -367,7 +383,7 @@ class ENV():
             cur_pos = amr.pos
             next_pos = amr.next_pos
 
-            # ★ 우선순위 높은 교차로 tip로 진입하려는 경우 → 이 스텝에서는 대기
+            # ★ 우선순위 높은 교차로 tip 밑 15개 초과 교차로로 진입하려는 경우 → 이 스텝에서는 대기
             if self.block_intersection(cur_pos, next_pos, normal_only=True):
                 amr.no_move_steps += 1
                 continue
@@ -376,6 +392,9 @@ class ENV():
             if next_pos not in current_occ:
                 if cur_pos in current_occ and current_occ[cur_pos] == amr.id:
                     del current_occ[cur_pos]
+
+                self._update_available_on_move_success(cur_pos, next_pos)
+
                 amr.move()
                 current_occ[amr.pos] = amr.id
             else:
@@ -442,13 +461,65 @@ class ENV():
         self._check_amr_completion()
 
         return self.make_info()
+    
+
+    def _allocate_neighbor_capacity(self, iid, active_iids):
+        """
+        iid: 스케줄링하려는 deadlock 교차로
+        active_iids: 이미 스케줄/데드락 처리중인 교차로들 (이웃이면 0으로 취급)
+        return: True면 스케줄링 진행 가능, False면 이번 스텝 스킵
+        """
+        CAP = self.scheduling_capacity
+        I = self.intersections[iid]
+
+        # 1) 이웃 교차로별 현재 남은 자리 스냅샷, active_iids에 있으면 0으로 취급
+        neigh_map = self.iid_neighbors.get(iid, {})
+        neigh_available = {}
+        for d, nid in neigh_map.items():
+            if nid in active_iids:
+                neigh_available[d] = 0
+            else:
+                neigh_available[d] = max(0, self.intersections[nid].available_count)
+
+        # 2) 각 방향별로 할당 가능한 최대치 계산
+        inside_count = self.iid_inside_counts.get(iid, 0)
+        total_available = sum(neigh_available.values())
+        if total_available < inside_count:
+            return False # 용량 부족, 스킵
+        
+        # 3) 방향별 최대 탈출 수요 계산
+        exit_need = Counter()
+        for info in I.amr_intent_map.values():
+            d = info.get('exit_arm', None)
+            if d in "NESW":
+                exit_need[d] += 1
+        
+        # 4) 방향별 할당량 계산
+        for d in "NESW":
+            I.neighbor_available_count[d] = 0
+
+        for d, nid in neigh_map.items():
+            need = exit_need.get(d, 0)
+            available = neigh_available.get(d, 0)
+
+            give = min(need, available)
+            if give <= 0:
+                continue
+
+            # deadlock 교차로의 방향별 할당량 기록
+            I.neighbor_available_count[d] = give
+
+            # 이웃 교차로의 남은 자리에서 차감(이번 스텝 예약 효과)
+            J = self.intersections[nid]
+            J.available_count = max(0, J.available_count - give)
+
+        return True
 
     
     def _find_4cycles_from_B(self, A, B):
         """
         B를 포함하는 4-cycle들을 반환.
         cycle 형태: (B, C, D, E) => B-C-D-E-B
-        banned에 포함된 iid는 cycle에서 제외
         """
         cycles = []
         neighbors_B = [x for x in self.iid_neighbors.get(B, {}).values() if x != A]
@@ -460,7 +531,7 @@ class ENV():
                 E = neighbors_B[j]
 
                 # C와 E의 공통 이웃이 D 후보
-                common = self.iid_neighbors.get(C, set()) & self.iid_neighbors.get(E, set())
+                common = set(self.iid_neighbors.get(C, {}).values()) & set(self.iid_neighbors.get(E, {}).values())
                 for D in common:
                     if D in (B, C, E):
                         continue
@@ -490,11 +561,7 @@ class ENV():
             if d not in I.dirs:
                 continue
 
-            # cycle 구성원(C,D,E)도 stalled/active에 있으면 제외
-            banned = set(stalled_iids) | set(active_iids)
-            banned.add(A)
-
-            cycles = self._find_4cycles_from_B(A, B, banned=banned)
+            cycles = self._find_4cycles_from_B(A, B)
             if not cycles:
                 continue
 
@@ -656,6 +723,9 @@ class ENV():
            - 이때 진입하려는 교차로의 우선순위(= deadlock_queue 상 위치)가
              현재 교차로보다 높으면 → True (차단)
 
+        교차로 수용량 초과 시 진입 금지(normal_only=True인 경우):
+          - 진입하려는 교차로의 현재 내부 AMR 수가 스케줄링 수용량 초과 시 → True (차단)
+
         우선순위:
           - deadlock_queue에서 앞에 있을수록 우선순위 ↑ (index 0,1,2,...)
           - deadlock_queue에 없는 교차로는 가장 낮은 우선순위로 취급.
@@ -674,9 +744,11 @@ class ENV():
         entering_iid_set = next_iid_set - cur_iid_set
         entering_iid = next(iter(entering_iid_set))
 
-        # normal_only 모드: 교차로 수용량 초과 시 진입 금지
-        if normal_only and self.iid_inside_counts.get(entering_iid, 0) > self.scheduling_capacity:
-            return True
+        # normal_only 모드: 교차로 스케줄링 수용량 초과 시 진입 금지
+        if normal_only:
+            J = self.intersections[entering_iid]
+            if J.available_count <= 0:
+                return True
 
         # 우선순위(priority) 정책   
         seq = self.deadlock_queue
@@ -698,7 +770,26 @@ class ENV():
         if next_priority < cur_priority:
             return True
 
-        return False        
+        return False
+    
+
+    def _update_available_on_move_success(self, cur_pos, next_pos):
+        CAP = self.scheduling_capacity
+
+        cur_set = set(self.cell2iids.get(tuple(cur_pos), []))
+        nxt_set = set(self.cell2iids.get(tuple(next_pos), []))
+        entering = nxt_set - cur_set   # 새로 들어가는 교차로
+        leaving  = cur_set - nxt_set   # 빠져나가는 교차로
+
+        # leaving: 자리 +1 (상한 CAP)
+        for iid in leaving:
+            I = self.intersections[iid]
+            I.available_count = min(CAP, I.available_count + 1)
+
+        # entering: 자리 -1 (하한 0)
+        for iid in entering:
+            J = self.intersections[iid]
+            J.available_count = max(0, J.available_count - 1) 
 
 
     def _spawn_amrs_from_task_gen(self):
