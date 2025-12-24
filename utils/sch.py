@@ -358,32 +358,112 @@ def schedule(initial_stacks, mode="random", per_stack_quota=None, **kwargs):
     else:
         raise ValueError(f"지원하지 않는 모드입니다: {mode}")
     
+    new_moves = append_explicit_overflow_moves(initial_stacks, moves, scheduler.env.stack_capacity, [0,1,2,3])
+    
     if per_stack_quota is not None:
-        moves = append_overflow_moves(
+        new_moves = append_overflow_moves(
             initial_stacks=initial_stacks,
-            moves=moves,
+            moves=new_moves,
             per_stack_quota=per_stack_quota,
             stack_capacity=scheduler.env.stack_capacity,
         )
     
     elapsed_time = time.time() - start_time
-    return moves, elapsed_time
+    return new_moves, elapsed_time
 
+def append_explicit_overflow_moves(
+    initial_stacks: List[List[int]],
+    base_moves: List[Tuple[int, int]],
+    stack_capacity: int,
+    order=(0, 1, 2, 3),  # N,E,S,W
+) -> List[Tuple[int, int]]:
+    order = list(order)
+    n = len(initial_stacks)
 
-Move = Tuple[int, int]
+    # 1) base_moves를 "엄격하게" 적용해서 solved 상태 스택 만들기 (continue 금지)
+    stacks = deepcopy(initial_stacks)
+    for src, dst in base_moves:
+        if src == dst:
+            continue
+        if not stacks[src]:
+            raise RuntimeError(f"Invalid base_moves: pop empty src={src}")
+        if len(stacks[dst]) >= stack_capacity:
+            raise RuntimeError(f"Invalid base_moves: dst full dst={dst}")
+        stacks[dst].append(stacks[src].pop())
+
+    # 2) 각 타입 총 개수(= need) 계산
+    counts = Counter(item for st in stacks for item in st)
+    need = [counts.get(i, 0) for i in range(n)]
+    cap = stack_capacity
+
+    # ---- 여기부터 너가 준 lens 계산 로직 그대로 ----
+    overflow_types = {i for i, c in enumerate(need) if c > cap}
+
+    if not overflow_types:
+        return base_moves  # overflow 없음
+
+    lens = [0] * n
+    for i in range(n):
+        lens[i] = cap if i in overflow_types else need[i]
+
+    for t in range(n):  # N,E,S,W
+        if t not in overflow_types:
+            continue
+        extra = need[t] - cap
+        for _ in range(extra):
+            cands = [j for j in range(n) if j != t and j not in overflow_types and lens[j] < cap]
+            if not cands:
+                # 둘 곳이 없으면 여기서 포기(그대로 반환)
+                return base_moves
+            min_len = min(lens[j] for j in cands)
+            dst = next(j for j in range(n) if j in cands and lens[j] == min_len)  # 동률이면 NESW
+            lens[dst] += 1
+    # ---- 여기까지가 target_len(= lens) ----
+
+    target_len = lens
+
+    # 3) 현재 길이를 target_len으로 맞추기: surplus -> deficit
+    extra_moves: List[Tuple[int, int]] = []
+
+    def stacks_len():
+        return [len(stacks[i]) for i in range(n)]
+
+    while True:
+        surplus = [i for i in order if i not in overflow_types and len(stacks[i]) > target_len[i]]
+        deficit = [i for i in order if i not in overflow_types and len(stacks[i]) < target_len[i]]
+        if not surplus or not deficit:
+            break
+
+        # src: 가장 많이 초과(동률 order)
+        max_over = max(len(stacks[i]) - target_len[i] for i in surplus)
+        src = next(i for i in order if i in surplus and (len(stacks[i]) - target_len[i]) == max_over)
+
+        # dst: 가장 작은 deficit(동률 order)
+        min_len = min(len(stacks[i]) for i in deficit)
+        dst = next(i for i in order if i in deficit and len(stacks[i]) == min_len)
+
+        # solved 상태에서는 surplus의 top이 overflow 타입이어야 정상
+        if not stacks[src] or stacks[src][-1] not in overflow_types:
+            # 파내기까지는 안 한다(결정론 유지). 이런 케이스면 base_moves 그대로 사용.
+            return base_moves
+
+        # 이동
+        stacks[dst].append(stacks[src].pop())
+        extra_moves.append((src, dst))
+
+    return base_moves + extra_moves
+
 
 def append_overflow_moves(
     initial_stacks: List[List[int]],
-    moves: List[Move],
+    moves: List[Tuple[int, int]],
     per_stack_quota: List[int],        # 예: N=3, E=15, S=15, W=15 (인덱스는 스택 인덱스)
     stack_capacity: int,
-    seed: Optional[int] = None,
-) -> List[Move]:
+) -> List[Tuple[int, int]]:
     """
     solve 결과 moves를 적용한 뒤, 각 스택이 quota를 초과하면
     초과분만큼 top에서 꺼내 다른 스택 top에 얹는 move를 추가한다.
     """
-    rng = random.Random(seed)
 
     stacks = deepcopy(initial_stacks)
 
@@ -396,7 +476,7 @@ def append_overflow_moves(
         stacks[dst].append(stacks[src].pop())
 
     # 2) quota 초과분을 다른 스택으로 이동
-    extra: List[Move] = []
+    extra: List[Tuple[int, int]] = []
 
     # quota는 물리 cap보다 클 수 없게 clamp
     quota = [min(q, stack_capacity) for q in per_stack_quota]
@@ -406,10 +486,10 @@ def append_overflow_moves(
         if not overflow_list:
             break
 
-        # 가장 많이 초과한 스택부터 처리(타이브레이크 랜덤)
+        # 가장 많이 초과한 스택부터 처리(타이브레이크 NESW 순서)
         max_over = max(k for _, k in overflow_list)
         over_srcs = [i for i, k in overflow_list if k == max_over]
-        src = rng.choice(over_srcs)
+        src = over_srcs[0]  # NESW 순서 보장됨
 
         # 받을 수 있는 목적지 후보(물리 cap + quota 둘 다 만족)
         candidates = [
@@ -419,12 +499,12 @@ def append_overflow_moves(
         if not candidates:
             break  # 더 이상 옮길 곳이 없음 -> 여기서 멈춤(상위에서 다른 정책 사용)
 
-        # slack 큰 곳 우선(동률 랜덤)
+        # slack 큰 곳 우선(동률 NESW 순서)
         def slack(j: int):
             return (quota[j] - len(stacks[j]), stack_capacity - len(stacks[j]))
         best_slack = max(slack(j) for j in candidates)
         best = [j for j in candidates if slack(j) == best_slack]
-        dst = rng.choice(best)
+        dst = best[0]  # NESW 순서 보장됨
 
         # top pop -> top push
         ball = stacks[src].pop()

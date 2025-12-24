@@ -32,6 +32,12 @@ class GUI():
         self.root.title("Multi AGV System Simulator")
         self.root.resizable(True, True)
         self.root.configure(background='#000000')
+
+        # [추가] 키보드 단축키 바인딩
+        self.root.bind("<space>", self.toggle_run)
+        self.root.bind("<r>", self.reset_env)
+        self.root.bind("<R>", self.reset_env)
+        self.root.bind("<Escape>", lambda e: self.root.destroy())
         
         # IF GUI mode is running
         self.running_check = False
@@ -384,11 +390,6 @@ class GUI():
     def stop_env(self, event=None):
         self.running_check = False
         self.append_log('Stop Simulation')
-        
-        env = self.env
-
-        for amr in env.amr_list.values():
-            print(f'\nAMR {amr.id} path: {amr.path[amr.path_cursor:]}')
 
     # If reset button is clicked
     def reset_env(self, event = None):
@@ -397,6 +398,13 @@ class GUI():
         self.redrawWindow(self.env.Get_AMR())
         self.make_state_info(self.env.make_info())
         self.append_log('Reset Simulation') 
+
+    # [추가] Space 바 토글 기능
+    def toggle_run(self, event=None):
+        if self.running_check:
+            self.stop_env(event)
+        else:
+            self.start_env(event)
     
     # Append Log
     def append_log(self, msg):

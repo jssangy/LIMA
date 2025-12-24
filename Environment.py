@@ -239,7 +239,28 @@ class ENV():
                     self.deadlock_queue.remove(iid)
 
             # 현재 스케줄 진행 중인 교차로 id 집합
-            active_iids = set(self.deadlock_queue)
+            active_iids = set(self.deadlock_queue) 
+
+
+            # 검증
+            CAP = self.scheduling_capacity
+            for iid, I in self.intersections.items():
+                if iid in self.deadlock_queue:
+                    continue
+                # 이웃 중 스케줄링 중인 교차로가 하나라도 있으면 스킵
+                if any(nid in self.deadlock_queue for nid in self.iid_neighbors.get(iid, {}).values()):
+                    continue
+
+                inside = len(iid2members.get(iid, []))   # == (등록했다면) len(I.amr_intent_map)
+
+                # 초기 생성에서 15 초과면 pass
+                if inside > CAP:
+                    continue
+
+                if I.available_count + inside != CAP:
+                    print(f"[WARN] available mismatch iid={iid} avail={I.available_count} inside={inside} sum={I.available_count+inside} cap={CAP}")
+                    return False           
+
 
             # (3-A) 데드락 체크 및 "스케줄 후보 iid" 수집
             iids_to_schedule: list[str] = []
@@ -293,7 +314,7 @@ class ENV():
                     self.deadlock_waiting_iids.add(iid)
                     continue
 
-                if not self._allocate_neighbor_capacity(iid, active_iids):
+                if not self._allocate_neighbor_capacity(iid):
                     self.deadlock_waiting_iids.add(iid)
                     continue
 
@@ -430,7 +451,6 @@ class ENV():
                 if next_pos in normal_occ_pos:
                     blocked_iids.add(iid)
                     break
-
         
         # -------------------------------------------------------
         # [Phase 3] 스케줄링된 로봇 이동
@@ -463,57 +483,175 @@ class ENV():
         return self.make_info()
     
 
-    def _allocate_neighbor_capacity(self, iid, active_iids):
-        """
-        iid: 스케줄링하려는 deadlock 교차로
-        active_iids: 이미 스케줄/데드락 처리중인 교차로들 (이웃이면 0으로 취급)
-        return: True면 스케줄링 진행 가능, False면 이번 스텝 스킵
-        """
+    def _allocate_neighbor_capacity(self, iid):
         CAP = self.scheduling_capacity
         I = self.intersections[iid]
 
-        # 1) 이웃 교차로별 현재 남은 자리 스냅샷, active_iids에 있으면 0으로 취급
+        dbg = getattr(self, "debug_alloc", True)
+
+        def log(*args):
+            if dbg:
+                print(*args)
+
+        # 1) 이웃 교차로별 현재 남은 자리 스냅샷
         neigh_map = self.iid_neighbors.get(iid, {})
         neigh_available = {}
-        for d, nid in neigh_map.items():
-            if nid in active_iids:
-                neigh_available[d] = 0
+        for d in "NESW":
+            nid = neigh_map.get(d, None)
+            if nid is None:
+                neigh_available[d] = CAP
             else:
                 neigh_available[d] = max(0, self.intersections[nid].available_count)
 
-        # 2) 각 방향별로 할당 가능한 최대치 계산
         inside_count = self.iid_inside_counts.get(iid, 0)
-        total_available = sum(neigh_available.values())
-        if total_available < inside_count:
-            return False # 용량 부족, 스킵
-        
-        # 3) 방향별 최대 탈출 수요 계산
+
+        # 2) 각 방향별 현재 위치 계산
+        initial_need = Counter()
+        for info in I.amr_intent_map.values():
+            d = info.get('current_arm', None)
+            if d in "NESW":
+                initial_need[d] += 1
+
+        # 3) 방향별 탈출 수요 계산
         exit_need = Counter()
         for info in I.amr_intent_map.values():
             d = info.get('exit_arm', None)
             if d in "NESW":
                 exit_need[d] += 1
-        
-        # 4) 방향별 할당량 계산
+
+        # quota는 남은 여유 + 현재 그 방향 점유
+        per_stack_quota = []
         for d in "NESW":
-            I.neighbor_available_count[d] = 0
+            q_total = neigh_available[d] + initial_need.get(d, 0)
+            per_stack_quota.append(q_total)
 
-        for d, nid in neigh_map.items():
-            need = exit_need.get(d, 0)
-            available = neigh_available.get(d, 0)
+        per_stack_quota = [min(q, 5) for q in per_stack_quota]
 
-            give = min(need, available)
-            if give <= 0:
+        log(f"\n[ALLOC] iid={iid} inside={inside_count} "
+            f"amr_intent={len(I.amr_intent_map)} "
+            f"neigh_avail={neigh_available} quota={per_stack_quota} "
+            f"initial_need={dict(initial_need)} exit_need={dict(exit_need)}")
+
+        total_available = sum(neigh_available.values())
+        if total_available < inside_count:
+            log(f"[ALLOC-SKIP] iid={iid} total_available={total_available} < inside={inside_count}")
+            return False
+
+        final_need = self.predict_final_stack_lengths(exit_need, 5, per_stack_quota)
+        if final_need is None:
+            log(f"[ALLOC-SKIP] iid={iid} predict_final_stack_lengths returned None")
+            return False
+
+        log(f"[ALLOC] iid={iid} final_need={final_need}")
+
+        # 4) delta 적용
+        for d in "NESW":
+            delta = final_need[d] - initial_need.get(d, 0)
+
+            nid = neigh_map.get(d, None)
+            if nid is None:
+                I.neighbor_available_count[d] = CAP
+                log(f"[ALLOC] iid={iid} dir={d} nid=None delta={delta} -> skip (neighbor_free fixed {CAP})")
                 continue
 
-            # deadlock 교차로의 방향별 할당량 기록
-            I.neighbor_available_count[d] = give
-
-            # 이웃 교차로의 남은 자리에서 차감(이번 스텝 예약 효과)
             J = self.intersections[nid]
-            J.available_count = max(0, J.available_count - give)
+            before = J.available_count
+            after = before - delta
+
+            # 디버그용 상세 출력
+            log(f"[ALLOC] iid={iid} dir={d} nid={nid} "
+                f"J.avail {before} -> {after}  (delta={delta}, "
+                f"final={final_need[d]}, initial={initial_need.get(d,0)})")
+
+            if after < 0 or after > CAP:
+                # 여기서 한 번 더 컨텍스트 크게 찍고 터뜨리기
+                print("\n[ALLOC-ERROR CONTEXT]")
+                print(f"iid={iid} dir={d} nid={nid}")
+                print(f"CAP={CAP}, inside_count(iid)={inside_count}")
+                print(f"neigh_available={neigh_available}, per_stack_quota={per_stack_quota}")
+                print(f"initial_need={dict(initial_need)}")
+                print(f"exit_need={dict(exit_need)}")
+                print(f"final_need={final_need}")
+                print(f"J.available_count(before)={before}, delta={delta}, result(after)={after}")
+                raise ValueError(
+                    f"Invalid available_count calculation: iid={iid} dir={d} "
+                    f"J_avail={before} delta={delta} result={after}"
+                )
+
+            J.available_count = after
+            I.neighbor_available_count[d] = after
 
         return True
+    
+
+    def predict_final_stack_lengths(
+        self,
+        exit_need: Counter,          # {'N':7,'E':2,'S':2,'W':2} 같은 카운터
+        stack_capacity: int = 5,     # env.stack_capacity
+        per_stack_quota=None,        # [qN,qE,qS,qW] (없으면 cap로 간주)
+        order="NESW",                # tie-break 순서
+    ):
+        # 0) 입력 정리
+        idx = {d:i for i,d in enumerate(order)}
+        need = [exit_need.get(d, 0) for d in order]
+
+        cap = stack_capacity
+        quota = [cap]*4 if per_stack_quota is None else [min(int(q), cap) for q in per_stack_quota]
+
+        # 1) overflow type 계산 (총 개수 > cap)
+        overflow_types = {i for i, c in enumerate(need) if c > cap}
+
+        # 2) solved 상태에서의 "기본 길이" 가정:
+        #    - overflow 타입 스택은 cap까지(가득)
+        #    - 비-overflow 타입 스택은 자기 타입 개수만큼(<=cap)
+        lens = [0]*4
+        for i in range(4):
+            lens[i] = cap if i in overflow_types else need[i]
+
+        # 3) [1단계] 명시적 overflow 배치 룰(최소 길이, 동률 order):
+        #    overflow 타입 t의 초과분(need[t]-cap)을 non-overflow 스택으로 1개씩 배치
+        for t in range(4):  # N,E,S,W 순
+            if t not in overflow_types:
+                continue
+            extra = need[t] - cap
+            for _ in range(extra):
+                # dst 후보: (t 자신 제외) + (overflow 스택 제외) + (cap 미만)
+                cands = [j for j in range(4) if j != t and j not in overflow_types and lens[j] < cap]
+                if not cands:
+                    return None  # 둘 곳이 없음(구조적으로 불가능)
+                min_len = min(lens[j] for j in cands)
+                # 동률이면 order(N,E,S,W) 순으로
+                dst = next(j for j in range(4) if j in cands and lens[j] == min_len)
+                lens[dst] += 1
+
+        # 4) [2단계] 이웃 quota 기반 overflow 배치(append_overflow_moves의 "길이" 버전):
+        #    len[i] > quota[i]인 스택에서 1개 빼서, slack이 가장 큰 스택으로 이동
+        while True:
+            overflow_list = [(i, lens[i] - quota[i]) for i in range(4) if lens[i] > quota[i]]
+            if not overflow_list:
+                break
+
+            max_over = max(k for _, k in overflow_list)
+            over_srcs = [i for i, k in overflow_list if k == max_over]
+            src = over_srcs[0]  # NESW 순 (index 작은 게 먼저)
+
+            cands = [j for j in range(4) if j != src and lens[j] < quota[j] and lens[j] < cap]
+            if not cands:
+                # 더 이상 옮길 곳이 없으면 여기서 종료(append_overflow_moves도 break)
+                break
+
+            def slack(j):
+                return (quota[j] - lens[j], cap - lens[j])
+
+            best_sl = max(slack(j) for j in cands)
+            best = [j for j in cands if slack(j) == best_sl]
+            dst = best[0]  # NESW 순
+
+            lens[src] -= 1
+            lens[dst] += 1
+
+        return {order[i]: lens[i] for i in range(4)}
+
 
     
     def _find_4cycles_from_B(self, A, B):
@@ -781,15 +919,18 @@ class ENV():
         entering = nxt_set - cur_set   # 새로 들어가는 교차로
         leaving  = cur_set - nxt_set   # 빠져나가는 교차로
 
+        if not entering and not leaving:
+            return
+
         # leaving: 자리 +1 (상한 CAP)
         for iid in leaving:
             I = self.intersections[iid]
-            I.available_count = min(CAP, I.available_count + 1)
+            I.available_count = min(I.available_count + 1, CAP)
 
         # entering: 자리 -1 (하한 0)
         for iid in entering:
             J = self.intersections[iid]
-            J.available_count = max(0, J.available_count - 1) 
+            J.available_count = max(0, J.available_count - 1)
 
 
     def _spawn_amrs_from_task_gen(self):

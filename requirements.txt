@@ -2,5 +2,3 @@ numpy
 pygame
 pyglet
 pyyaml
-
-

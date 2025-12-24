@@ -378,10 +378,13 @@ class Intersection:
 
         # 4. 스케줄러 호출
         per_stack_quota = []
-        for d, counts in self.neighbor_available_count.items():
-            per_stack_quota.append(counts)
+        for i, d in enumerate("NESW"):
+            cur_len = len(env.stacks[i])  # = initial_need[d]
+            free = self.neighbor_available_count.get(d, self.scheduling_capacity)  # 이웃 추가 여유
+            q = min(env.stack_capacity, cur_len + free)  # ✅ 핵심
+            per_stack_quota.append(q)
 
-        actions, elapsed_time = schedule(env.stacks, mode="h2", max_iters=1_000_000, per_stack_quota=per_stack_quota)
+        actions, elapsed_time = schedule(env.stacks, mode="h2", max_iters=1_000_000, per_stack_quota=None)
 
         return actions
 
