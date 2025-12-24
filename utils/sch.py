@@ -164,7 +164,8 @@ class StackScheduler:
         """H2: 여러 overflow 색상이 있을 때 해결 조건 확인."""
         for stack_id, stack in enumerate(state):
             if stack_id in overflow_types:
-                # Overflow 색상의 스택은 자기 색상만 포함해야 함
+                if len(stack) != self.env.stack_capacity:  # 또는 stack_capacity 인자로 받기
+                    return False
                 if not all(item == stack_id for item in stack):
                     return False
             else:
@@ -376,140 +377,234 @@ def append_explicit_overflow_moves(
     base_moves: List[Tuple[int, int]],
     stack_capacity: int,
     order=(0, 1, 2, 3),  # N,E,S,W
+    debug: bool = False,
+    show_top_k: int = 8,  # 스택 위쪽 몇 개까지 보여줄지
 ) -> List[Tuple[int, int]]:
     order = list(order)
     n = len(initial_stacks)
 
-    # 1) base_moves를 "엄격하게" 적용해서 solved 상태 스택 만들기 (continue 금지)
+    def fmt_stacks(stacks):
+        # 길이 + top 일부(위쪽 show_top_k개)
+        parts = []
+        for i in range(n):
+            top = stacks[i][-show_top_k:] if show_top_k > 0 else []
+            parts.append(f"{i}:len={len(stacks[i])},top={top}")
+        return " | ".join(parts)
+
+    def dbg(*args):
+        if debug:
+            print(*args)
+
+    dbg(f"\n[EXPL] start cap={stack_capacity} order={order}")
+    dbg(f"[EXPL] initial: {fmt_stacks(initial_stacks)}")
+
+    # 1) base_moves를 엄격 적용해서 solved 스택 만들기
     stacks = deepcopy(initial_stacks)
-    for src, dst in base_moves:
+    for k, (src, dst) in enumerate(base_moves):
         if src == dst:
             continue
         if not stacks[src]:
+            dbg(f"[EXPL-ERR] base move #{k} ({src}->{dst}) pop empty!")
             raise RuntimeError(f"Invalid base_moves: pop empty src={src}")
         if len(stacks[dst]) >= stack_capacity:
+            dbg(f"[EXPL-ERR] base move #{k} ({src}->{dst}) dst full!")
             raise RuntimeError(f"Invalid base_moves: dst full dst={dst}")
-        stacks[dst].append(stacks[src].pop())
 
-    # 2) 각 타입 총 개수(= need) 계산
+        ball = stacks[src].pop()
+        stacks[dst].append(ball)
+
+        if debug and (k < 5 or k % 50 == 0):
+            dbg(f"[EXPL] after base move #{k} ({src}->{dst}) moved={ball}: {fmt_stacks(stacks)}")
+
+    dbg(f"[EXPL] after base moves: {fmt_stacks(stacks)}")
+
+    # 2) 타입 총 개수(need)
     counts = Counter(item for st in stacks for item in st)
     need = [counts.get(i, 0) for i in range(n)]
     cap = stack_capacity
 
-    # ---- 여기부터 너가 준 lens 계산 로직 그대로 ----
+    dbg(f"[EXPL] counts={dict(counts)} need={need}")
+
     overflow_types = {i for i, c in enumerate(need) if c > cap}
+    dbg(f"[EXPL] overflow_types={sorted(list(overflow_types))}")
 
     if not overflow_types:
-        return base_moves  # overflow 없음
+        dbg("[EXPL] no overflow -> return base_moves")
+        return base_moves
 
+    # 3) target_len(lens) 계산
     lens = [0] * n
     for i in range(n):
         lens[i] = cap if i in overflow_types else need[i]
 
-    for t in range(n):  # N,E,S,W
+    dbg(f"[EXPL] lens init={lens}")
+
+    for t in range(n):
         if t not in overflow_types:
             continue
         extra = need[t] - cap
-        for _ in range(extra):
+        dbg(f"[EXPL] overflow type={t} extra={extra}")
+        for r in range(extra):
             cands = [j for j in range(n) if j != t and j not in overflow_types and lens[j] < cap]
+            dbg(f"  [EXPL]  step {r+1}/{extra} cands={cands} lens={lens}")
             if not cands:
-                # 둘 곳이 없으면 여기서 포기(그대로 반환)
+                dbg("  [EXPL]  no candidates -> give up and return base_moves")
                 return base_moves
             min_len = min(lens[j] for j in cands)
-            dst = next(j for j in range(n) if j in cands and lens[j] == min_len)  # 동률이면 NESW
+            dst = next(j for j in range(n) if j in cands and lens[j] == min_len)
             lens[dst] += 1
-    # ---- 여기까지가 target_len(= lens) ----
+            dbg(f"  [EXPL]  choose dst={dst} (min_len={min_len}) -> lens={lens}")
 
     target_len = lens
+    dbg(f"[EXPL] target_len={target_len}")
+    dbg(f"[EXPL] current_len={[len(stacks[i]) for i in range(n)]}")
 
-    # 3) 현재 길이를 target_len으로 맞추기: surplus -> deficit
+    # 4) current -> target 맞추기
     extra_moves: List[Tuple[int, int]] = []
-
-    def stacks_len():
-        return [len(stacks[i]) for i in range(n)]
-
+    step = 0
     while True:
         surplus = [i for i in order if i not in overflow_types and len(stacks[i]) > target_len[i]]
         deficit = [i for i in order if i not in overflow_types and len(stacks[i]) < target_len[i]]
+
         if not surplus or not deficit:
+            dbg(f"[EXPL] done rebalance step={step} surplus={surplus} deficit={deficit}")
             break
 
-        # src: 가장 많이 초과(동률 order)
         max_over = max(len(stacks[i]) - target_len[i] for i in surplus)
         src = next(i for i in order if i in surplus and (len(stacks[i]) - target_len[i]) == max_over)
 
-        # dst: 가장 작은 deficit(동률 order)
         min_len = min(len(stacks[i]) for i in deficit)
         dst = next(i for i in order if i in deficit and len(stacks[i]) == min_len)
 
-        # solved 상태에서는 surplus의 top이 overflow 타입이어야 정상
-        if not stacks[src] or stacks[src][-1] not in overflow_types:
-            # 파내기까지는 안 한다(결정론 유지). 이런 케이스면 base_moves 그대로 사용.
+        top = stacks[src][-1] if stacks[src] else None
+        dbg(f"[EXPL] rebalance step={step} surplus={surplus} deficit={deficit} pick src={src} dst={dst} src_top={top}")
+
+        if not stacks[src] or top not in overflow_types:
+            dbg(f"[EXPL-STOP] src={src} top={top} not overflow -> return base_moves (no digging)")
             return base_moves
 
-        # 이동
-        stacks[dst].append(stacks[src].pop())
+        ball = stacks[src].pop()
+        stacks[dst].append(ball)
         extra_moves.append((src, dst))
+
+        dbg(f"[EXPL] moved {ball} ({src}->{dst}) -> lens now {[len(stacks[i]) for i in range(n)]}")
+        if debug and step < 10:
+            dbg(f"[EXPL] stacks: {fmt_stacks(stacks)}")
+
+        step += 1
+        if step > 1000:
+            dbg("[EXPL-ERR] too many rebalance steps -> break")
+            break
+
+    dbg(f"[EXPL] extra_moves={extra_moves}")
+    dbg(f"[EXPL] final stacks: {fmt_stacks(stacks)}")
 
     return base_moves + extra_moves
 
 
+Move = Tuple[int, int]
+
 def append_overflow_moves(
     initial_stacks: List[List[int]],
-    moves: List[Tuple[int, int]],
-    per_stack_quota: List[int],        # 예: N=3, E=15, S=15, W=15 (인덱스는 스택 인덱스)
+    moves: List[Move],
+    per_stack_quota: List[int],
     stack_capacity: int,
-) -> List[Tuple[int, int]]:
-    """
-    solve 결과 moves를 적용한 뒤, 각 스택이 quota를 초과하면
-    초과분만큼 top에서 꺼내 다른 스택 top에 얹는 move를 추가한다.
-    """
-
+    order=(0, 1, 2, 3),   # NESW 인덱스 순서
+    debug: bool = False,
+    show_top_k: int = 6,
+) -> List[Move]:
     stacks = deepcopy(initial_stacks)
+    n = len(stacks)
+    order = list(order)
+
+    def fmt():
+        parts = []
+        for i in range(n):
+            top = stacks[i][-show_top_k:] if show_top_k > 0 else []
+            parts.append(f"{i}:len={len(stacks[i])},top={top}")
+        return " | ".join(parts)
+
+    def dbg(*args):
+        if debug:
+            print(*args)
+
+    # quota 정규화/검증
+    if len(per_stack_quota) != n:
+        raise ValueError(f"per_stack_quota len {len(per_stack_quota)} != stacks len {n}")
+    quota = [max(0, min(int(q), stack_capacity)) for q in per_stack_quota]
+
+    dbg(f"\n[QOF] start cap={stack_capacity} quota(raw)={per_stack_quota} quota(clamp)={quota}")
+    dbg(f"[QOF] initial: {fmt()}")
 
     # 1) 기존 moves 적용(드라이런)
-    for src, dst in moves:
+    for k, (src, dst) in enumerate(moves):
+        if src == dst:
+            continue
         if not stacks[src]:
+            dbg(f"[QOF-WARN] dryrun move#{k} ({src}->{dst}) pop empty -> skip")
             continue
         if len(stacks[dst]) >= stack_capacity:
+            dbg(f"[QOF-WARN] dryrun move#{k} ({src}->{dst}) dst full -> skip")
             continue
-        stacks[dst].append(stacks[src].pop())
+
+        ball = stacks[src].pop()
+        stacks[dst].append(ball)
+
+        if debug and (k < 5 or k % 50 == 0):
+            dbg(f"[QOF] after dryrun move#{k} ({src}->{dst}) moved={ball}: {fmt()}")
+
+    dbg(f"[QOF] after dryrun moves: {fmt()}")
 
     # 2) quota 초과분을 다른 스택으로 이동
-    extra: List[Tuple[int, int]] = []
-
-    # quota는 물리 cap보다 클 수 없게 clamp
-    quota = [min(q, stack_capacity) for q in per_stack_quota]
+    extra: List[Move] = []
+    step = 0
 
     while True:
-        overflow_list = [(i, len(stacks[i]) - quota[i]) for i in range(len(stacks)) if len(stacks[i]) > quota[i]]
+        overflow_list = [(i, len(stacks[i]) - quota[i]) for i in range(n) if len(stacks[i]) > quota[i]]
         if not overflow_list:
+            dbg(f"[QOF] done step={step} (no overflow)")
             break
 
-        # 가장 많이 초과한 스택부터 처리(타이브레이크 NESW 순서)
+        # src 선택: 초과량 최대, 동률이면 order 순
         max_over = max(k for _, k in overflow_list)
         over_srcs = [i for i, k in overflow_list if k == max_over]
-        src = over_srcs[0]  # NESW 순서 보장됨
+        src = next(i for i in order if i in over_srcs)
 
-        # 받을 수 있는 목적지 후보(물리 cap + quota 둘 다 만족)
+        # dst 후보
         candidates = [
-            j for j in range(len(stacks))
+            j for j in order
             if j != src and len(stacks[j]) < stack_capacity and len(stacks[j]) < quota[j]
         ]
         if not candidates:
-            break  # 더 이상 옮길 곳이 없음 -> 여기서 멈춤(상위에서 다른 정책 사용)
+            dbg(f"[QOF-STOP] step={step} overflow_list={overflow_list} src={src} candidates=EMPTY -> break")
+            break
 
-        # slack 큰 곳 우선(동률 NESW 순서)
+        # dst 선택: slack 최대, 동률 order 순
         def slack(j: int):
             return (quota[j] - len(stacks[j]), stack_capacity - len(stacks[j]))
-        best_slack = max(slack(j) for j in candidates)
-        best = [j for j in candidates if slack(j) == best_slack]
-        dst = best[0]  # NESW 순서 보장됨
 
-        # top pop -> top push
+        best_sl = max(slack(j) for j in candidates)
+        best = [j for j in candidates if slack(j) == best_sl]
+        dst = next(j for j in order if j in best)
+
+        top = stacks[src][-1] if stacks[src] else None
+        dbg(f"[QOF] step={step} overflow_list={overflow_list}")
+        dbg(f"      pick src={src}(top={top},len={len(stacks[src])},quota={quota[src]}) "
+            f"-> dst={dst}(len={len(stacks[dst])},quota={quota[dst]}) slack={slack(dst)}")
+
         ball = stacks[src].pop()
         stacks[dst].append(ball)
         extra.append((src, dst))
+
+        dbg(f"[QOF]      moved {ball} ({src}->{dst}) -> {fmt()}")
+
+        step += 1
+        if step > 2000:
+            dbg("[QOF-ERR] too many steps -> break")
+            break
+
+    dbg(f"[QOF] extra_moves={extra}")
+    dbg(f"[QOF] final (dryrun+quota): {fmt()}")
 
     return moves + extra
 

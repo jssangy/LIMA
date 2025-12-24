@@ -39,6 +39,7 @@ class Intersection:
         self.scheduling_capacity = 15                                                       # 스케줄링이 가능한 최대 AMR 수
         self.available_count = 15                                                           # 교차로 내 AMR 여유 공간 개수
         self.neighbor_available_count = {d: self.scheduling_capacity for d in "NESW"}       # {N: 15, E: 15, S: 15, W: 15} 인접 교차로별 여유 공간 개수
+        self.stack_quota = [self.scheduling_capacity for _ in "NESW"]                       # [15, 15, 15, 15] 방향별 스택 할당량
 
 
     def reset(self):
@@ -377,14 +378,7 @@ class Intersection:
         )
 
         # 4. 스케줄러 호출
-        per_stack_quota = []
-        for i, d in enumerate("NESW"):
-            cur_len = len(env.stacks[i])  # = initial_need[d]
-            free = self.neighbor_available_count.get(d, self.scheduling_capacity)  # 이웃 추가 여유
-            q = min(env.stack_capacity, cur_len + free)  # ✅ 핵심
-            per_stack_quota.append(q)
-
-        actions, elapsed_time = schedule(env.stacks, mode="h2", max_iters=1_000_000, per_stack_quota=None)
+        actions, elapsed_time = schedule(env.stacks, mode="h2", max_iters=1_000_000, per_stack_quota=self.stack_quota)
 
         return actions
 

@@ -487,7 +487,7 @@ class ENV():
         CAP = self.scheduling_capacity
         I = self.intersections[iid]
 
-        dbg = getattr(self, "debug_alloc", True)
+        dbg = getattr(self, "debug_alloc", False)
 
         def log(*args):
             if dbg:
@@ -526,6 +526,7 @@ class ENV():
             per_stack_quota.append(q_total)
 
         per_stack_quota = [min(q, 5) for q in per_stack_quota]
+        I.stack_quota = per_stack_quota
 
         log(f"\n[ALLOC] iid={iid} inside={inside_count} "
             f"amr_intent={len(I.amr_intent_map)} "
