@@ -83,7 +83,8 @@ class ENV():
             if lE > 0: h_lens.append(lE)
             if lW > 0: h_lens.append(lW)            
         Lv = max(v_lens) if v_lens else 0
-        Lh = max(h_lens) if h_lens else 0        
+        Lh = max(h_lens) if h_lens else 0
+        
         # 4-way intersection assumed: 2 vertical arms, 2 horizontal arms
         lengths = sorted([Lv, Lv, Lh, Lh])
         self.scheduling_capacity = sum(lengths[:3])        

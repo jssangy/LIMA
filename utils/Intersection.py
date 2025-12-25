@@ -8,7 +8,7 @@ from utils.env import StackRearrangementEnv
 
 
 class Intersection:
-    def __init__(self, intersection_data, present_dirs, scheduling_capacity):
+    def __init__(self, intersection_data, present_dirs):
         self.center_x, self.center_y, self.len_N, self.len_E, self.len_S, self.len_W = intersection_data
         self.id = f'x{self.center_x}y{self.center_y}'
 
@@ -36,8 +36,8 @@ class Intersection:
         self.paths = {}                 # {amr_id: [(x,y), ...]}
         self.target_exits = {}          # {amr_id: (x,y)}  # 각 AMR의 "원래" 출구 tip 좌표
 
-        self.scheduling_capacity = scheduling_capacity                                         # 스케줄링이 가능한 최대 AMR 수
-        self.available_count = scheduling_capacity                                             # 교차로 내 AMR 여유 공간 개수
+        self.scheduling_capacity = 15                                                       # 스케줄링이 가능한 최대 AMR 수
+        self.available_count = 15                                                           # 교차로 내 AMR 여유 공간 개수
         self.neighbor_available_count = {d: self.scheduling_capacity for d in self.dirs}       # {N: 15, E: 15, S: 15, W: 15} 인접 교차로별 여유 공간 개수
         self.stack_quota = [self.scheduling_capacity for _ in self.dirs]                       # [15, 15, 15, 15] 방향별 스택 할당량
 
