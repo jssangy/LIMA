@@ -1,6 +1,5 @@
 import os
 import json
-import math
 import random
 import numpy as np
 from collections import defaultdict, Counter
@@ -10,7 +9,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from utils.AMR import AMR
 from utils.Intersection import Intersection
 from utils import Funct
-from utils.traffic_generator import TaskSetGenerator, discover_border_arms_NxM, TrafficGenerator
+from utils.traffic_generator import TaskSetGenerator
 from utils.Controller import PIBTPlanner, CBSPlanner, BFSPlanner
 
 
@@ -28,7 +27,7 @@ def _actions_to_paths_job(iid: str, inter: "Intersection"):
 
 
 class ENV():
-    def __init__(self, prob_path, max_arm_len_h=5, max_arm_len_v=5, num_amrs=500, max_steps=1024, running_opt=0, traffic_mode='task', workers=8):
+    def __init__(self, prob_path, density, max_steps, workers):
         super().__init__()
         """환경 초기화"""
         base_dir = os.path.dirname(prob_path)
@@ -37,19 +36,17 @@ class ENV():
         map_path = os.path.join(base_dir, data['mapFile'])
         self.goal = set()
 
-        self.scheduler_pool = ProcessPoolExecutor(max_workers=8)
+        self.scheduler_pool = ProcessPoolExecutor(max_workers=workers)
 
         self.time = 0
         
         self.map = self._load_map(map_path)
-        self.walkable_tiles = np.count_nonzero(self.map == 0)
+        walkable_tiles = np.count_nonzero(self.map == 0) - len(self.goal)
+        num_amrs = int((walkable_tiles * density) / 100)
         print(f"\nMap width: {self.map.shape[1]}, Map height: {self.map.shape[0]}")
-        print(f"Walkable tiles (value 0): {self.walkable_tiles - len(self.goal)}")
+        print(f"Walkable tiles (value 0): {walkable_tiles}")
         print(f"Number of AMRs to spawn: {num_amrs}")
-        print(f"Density: {num_amrs / (self.walkable_tiles - len(self.goal)) * 100:.2f}%")
-
-        self.max_arm_len_h = max_arm_len_h
-        self.max_arm_len_v = max_arm_len_v
+        print(f"Density: {density:.2f}%")
         processed_intersections = self._find_intersections_and_build_graph()
         
         self.time = 0
@@ -75,8 +72,22 @@ class ENV():
 
         # 교차로별 현재 AMR 수 (step마다 갱신)
         self.iid_inside_counts: dict[str, int] = defaultdict(int)
-        # 스케줄링이 가능한 수용량
-        self.scheduling_capacity = 15
+        
+        # 모든 교차로가 동일 크기라고 가정하고, 4방향 교차로 기준 가장 짧은 3개 엣지의 합을 용량으로 설정
+        v_lens = []
+        h_lens = []
+        for inter in processed_intersections.values():
+            _, _, lN, lE, lS, lW = inter['data']
+            if lN > 0: v_lens.append(lN)
+            if lS > 0: v_lens.append(lS)
+            if lE > 0: h_lens.append(lE)
+            if lW > 0: h_lens.append(lW)            
+        Lv = max(v_lens) if v_lens else 0
+        Lh = max(h_lens) if h_lens else 0        
+        # 4-way intersection assumed: 2 vertical arms, 2 horizontal arms
+        lengths = sorted([Lv, Lv, Lh, Lh])
+        self.scheduling_capacity = sum(lengths[:3])        
+        print(f"Auto-configured scheduling_capacity: {self.scheduling_capacity}")
 
         # 각 셀이 어느 교차로에 속하는지 맵핑
         self.cell2iids: Dict[tuple[int, int], list[str]] = defaultdict(list)
@@ -111,17 +122,8 @@ class ENV():
         self.iid2sched: dict[str, set[int]] = defaultdict(set)
         self.deadlock_waiting_iids = set()
 
-        self.traffic_mode = traffic_mode
-
         # TaskGenerator
-        if self.traffic_mode == 'task':
-            self.task_generator = TaskSetGenerator(self.map, num_tasks=num_amrs, goal_positions=self.goal)
-
-        # Traffic Generator
-        elif self.traffic_mode == 'traffic':
-            arms = discover_border_arms_NxM(self.intersections)
-            self.traffic_generator = TrafficGenerator(arms)
-            self.traffic_generator.set_arm_gate(lambda iid, d: self.is_arm_outgoing_clear(iid, d))
+        self.task_generator = TaskSetGenerator(self.map, num_tasks=num_amrs, goal_positions=self.goal)
 
         # Color mapping
         self.color_map = Funct.Color_dict(6).dic
@@ -139,19 +141,13 @@ class ENV():
         self.time = 0
         self.amr_list.clear()
         
-        if self.traffic_mode == 'task':
-            self.task_generator.start_new_episode()
-        elif self.traffic_mode == 'traffic':
-            self.traffic_generator.start_new_episode()
+        self.task_generator.start_new_episode()
 
         # 모든 교차로의 내부 상태 초기화
         for I in self.intersections.values():
             I.reset()
 
-        if self.traffic_mode == 'task':
-            self._spawn_amrs_from_task_gen()
-        elif self.traffic_mode == 'traffic':
-            self._spawn_amrs_from_stream_gen()
+        self._spawn_amrs_from_task_gen()
 
         self.iid_inside_counts.clear()
         self.deadlock_queue = []
@@ -168,7 +164,7 @@ class ENV():
     def step(self):
         self.time += 1
 
-        if self.traffic_mode == 'task' and self.task_generator.is_episode_done():
+        if self.task_generator.is_episode_done():
             return False
 
         # 1. 스케줄러 로직 (데드락 감지 및 해결)
@@ -253,7 +249,7 @@ class ENV():
 
                 inside = len(iid2members.get(iid, []))   # == (등록했다면) len(I.amr_intent_map)
 
-                # 초기 생성에서 15 초과면 pass
+                # 초기 생성에서 scheduling capacity 초과면 pass
                 if inside > CAP:
                     continue
 
@@ -386,8 +382,7 @@ class ENV():
                     continue
 
                 for amr in edge_amrs:
-                    self.build_and_insert_cycle_path(amr, iid, *cycle)          
-
+                    self.build_and_insert_cycle_path(amr, iid, *cycle)   
 
         # 2. AMR 이동
         # (A) 현재 위치 점유 맵 초기화
@@ -404,7 +399,7 @@ class ENV():
             cur_pos = amr.pos
             next_pos = amr.next_pos
 
-            # ★ 우선순위 높은 교차로 tip 밑 15개 초과 교차로로 진입하려는 경우 → 이 스텝에서는 대기
+            # ★ 우선순위 높은 교차로 tip 밑 scheduling capacity 초과 교차로로 진입하려는 경우 → 이 스텝에서는 대기
             if self.block_intersection(cur_pos, next_pos, normal_only=True):
                 amr.no_move_steps += 1
                 continue
@@ -533,7 +528,7 @@ class ENV():
             f"neigh_avail={neigh_available} quota={per_stack_quota} "
             f"initial_need={dict(initial_need)} exit_need={dict(exit_need)}")
 
-        total_available = sum(neigh_available.values())
+        total_available = sum(per_stack_quota)
         if total_available < inside_count:
             log(f"[ALLOC-SKIP] iid={iid} total_available={total_available} < inside={inside_count}")
             return False
@@ -563,21 +558,6 @@ class ENV():
             log(f"[ALLOC] iid={iid} dir={d} nid={nid} "
                 f"J.avail {before} -> {after}  (delta={delta}, "
                 f"final={final_need[d]}, initial={initial_need.get(d,0)})")
-
-            if after < 0 or after > CAP:
-                # 여기서 한 번 더 컨텍스트 크게 찍고 터뜨리기
-                print("\n[ALLOC-ERROR CONTEXT]")
-                print(f"iid={iid} dir={d} nid={nid}")
-                print(f"CAP={CAP}, inside_count(iid)={inside_count}")
-                print(f"neigh_available={neigh_available}, per_stack_quota={per_stack_quota}")
-                print(f"initial_need={dict(initial_need)}")
-                print(f"exit_need={dict(exit_need)}")
-                print(f"final_need={final_need}")
-                print(f"J.available_count(before)={before}, delta={delta}, result(after)={after}")
-                raise ValueError(
-                    f"Invalid available_count calculation: iid={iid} dir={d} "
-                    f"J_avail={before} delta={delta} result={after}"
-                )
 
             J.available_count = after
             I.neighbor_available_count[d] = after
@@ -969,10 +949,7 @@ class ENV():
                 pi_pct = amr_obj.path_integrity_ratio()
                 self.completed_path_integrities.append(pi_pct)
                 self.completed_amr_steps.append(amr_obj.steps)
-            if self.traffic_mode == 'task':
-                self.task_generator.complete_task(amr_id)
-            elif self.traffic_mode == 'traffic':
-                self.traffic_generator.complete_task(amr_id)
+            self.task_generator.complete_task(amr_id)
             del self.amr_list[amr_id]
 
 
@@ -1098,11 +1075,13 @@ class ENV():
         centers = (np.argwhere(match_any) + 1).tolist()
         return centers
         
-    def _ray_len(self, r, c, dr, dc, max_len=None):
+    def _ray_len(self, r, c, dr, dc):
         H, W = self.map.shape
         length = 0
         rr, cc = r + dr, c + dc
         while 0 <= rr < H and 0 <= cc < W and self.map[rr][cc] == 0:
+            if (cc, rr) in self.goal:
+                break
             if dr != 0:
                 left_wall  = (cc - 1 < 0) or (self.map[rr][cc - 1] == 1)
                 right_wall = (cc + 1 >= W) or (self.map[rr][cc + 1] == 1)
@@ -1113,8 +1092,6 @@ class ENV():
                 if not (up_wall and down_wall): break
 
             length += 1
-            if max_len is not None and length >= max_len:
-                break
             rr += dr
             cc += dc
         return length
@@ -1125,10 +1102,10 @@ class ENV():
 
         center_xy_to_data = {}
         for c, r in centers_xy:
-            len_N = self._ray_len(r, c, -1, 0, max_len=self.max_arm_len_v)
-            len_S = self._ray_len(r, c,  1, 0, max_len=self.max_arm_len_v)
-            len_E = self._ray_len(r, c,  0, 1, max_len=self.max_arm_len_h)
-            len_W = self._ray_len(r, c,  0,-1, max_len=self.max_arm_len_h)
+            len_N = self._ray_len(r, c, -1, 0)
+            len_S = self._ray_len(r, c,  1, 0)
+            len_E = self._ray_len(r, c,  0, 1)
+            len_W = self._ray_len(r, c,  0,-1)
 
             # ★ 사거리/삼거리 허용: 팔이 3개 이상 존재해야 교차로 인정
             present = {d for d, L in zip("NESW", [len_N, len_E, len_S, len_W]) if L > 0}
@@ -1267,10 +1244,7 @@ class ENV():
         'task' 모드와 'traffic' 모드를 명시적으로 구분하여 처리합니다.
         """
         # --- 2. 모드에 따라 통계 정보 계산 ---
-        if self.traffic_mode == 'traffic':
-            progress = self.traffic_generator.get_progress()
-        elif self.traffic_mode == 'task':
-            progress = self.task_generator.get_progress()
+        progress = self.task_generator.get_progress()
         completed_tasks = progress.get('completed_total', 0)
         total_tasks = progress.get('spawned_total', 0)
 

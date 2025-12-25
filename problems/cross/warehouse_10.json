@@ -1,5 +1,5 @@
 {
-    "mapFile": "maps/warehouse-20-40-10-2-1.map",
+    "mapFile": "maps/warehouse_10.map",
     "agentFile": "agents/cross_1.agents",
     "teamSize": 1,
     "taskFile": "tasks/cross.tasks",

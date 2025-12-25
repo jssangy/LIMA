@@ -252,61 +252,7 @@ class GUI():
 
                 font = self.font_renderer(self.zoom_level * 0.8)
                 text_surface = font.render(str(priority + 1), True, (255,255,0))
-                self.win.blit(text_surface, (px + 5, py + 5))
-
-        # Disperse overlay
-        disperse_obj = getattr(self.env, 'disperse_iid', None)
-
-        # 새 구조: dict[root_iid, set[교차로들]]
-        if isinstance(disperse_obj, dict):
-            drawn: set[str] = set()
-
-            for root_iid, group in disperse_obj.items():
-                # root 교차로 중심 (grid 좌표 기준)
-                root_inter = self.env.intersections.get(root_iid)
-                if not root_inter:
-                    continue
-                rcx, rcy = root_inter.center_x, root_inter.center_y
-
-                # 그룹에 속한 각 교차로 처리
-                for iid in group:
-                    # root 자신은 사각형 그리지 않음
-                    if iid == root_iid:
-                        continue
-                    if iid in drawn:
-                        continue
-
-                    I = self.env.intersections.get(iid)
-                    if not I:
-                        continue
-
-                    x_min, x_max = I.center_x - I.len_W, I.center_x + I.len_E
-                    y_min, y_max = I.center_y - I.len_N, I.center_y + I.len_S
-                    px, py = self.map_to_screen(x_min, y_min)
-                    p_width  = (x_max - x_min + 1) * self.zoom_level
-                    p_height = (y_max - y_min + 1) * self.zoom_level
-
-                    # 이웃 교차로: 흰색 사각형
-                    pygame.draw.rect(self.win, (255, 255, 255), (px, py, p_width, p_height), 3)
-
-                    # root가 어느 방향에 있는지 계산 (grid 좌표 비교)
-                    cx, cy = I.center_x, I.center_y
-                    dx = rcx - cx
-                    dy = rcy - cy
-
-                    if abs(dx) > abs(dy):
-                        # 수평 방향이 더 크면 좌/우 화살표
-                        arrow = ">" if dx > 0 else "<"
-                    else:
-                        # 수직 방향이 더 크거나 같으면 상/하 화살표
-                        arrow = "v" if dy > 0 else "^"
-
-                    # 화살표 문자 렌더링 (deadlock 숫자랑 비슷한 위치)
-                    font = self.font_renderer(self.zoom_level * 0.8)
-                    text_surface = font.render(arrow, True, (255, 0, 255))  # 마젠타 색상
-                    self.win.blit(text_surface, (px + 5, py + 5))
-
-                    drawn.add(iid)
+                self.win.blit(text_surface, (px + 5, py + 5))        
 
         pygame.display.flip()
 
