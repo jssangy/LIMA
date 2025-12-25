@@ -352,35 +352,63 @@ class Intersection:
         
     
     def plan_action(self):
-        # 1. 현재 상태 스냅샷 (ID 기반)
+        # 1) 스냅샷
         current_stacks, targets = self.build_stacks_from_snapshot()
-        dirs = self.dirs
+        dirs = list(self.dirs)  # present dirs만 (삼거리면 3개)
 
-        # 2. 데이터 변환 (AMR ID → Target Index)
-        # 방향(N, E, S, W)을 Solver용 인덱스(0, 1, 2, 3)로 변환
+        n = len(dirs)
         dir_to_idx = {d: i for i, d in enumerate(dirs)}
 
-        # sch.py에 전달할 raw input (리스트의 리스트)
+        # 2) AMR ID -> target index 변환 (None/이상값 방어)
         solver_input_stacks = []
         for d in dirs:
             stack_content = []
             for aid in current_stacks[d]:
                 target_dir = targets.get(aid)
+                if target_dir not in dir_to_idx:
+                    target_dir = d  # fallback: 현재 팔로 둠
                 stack_content.append(dir_to_idx[target_dir])
             solver_input_stacks.append(stack_content)
 
-        # 3. StackRearrangementEnv 객체 생성 및 정의
-        capacity = max(self.len_N, self.len_E, self.len_S, self.len_W)
-        env = StackRearrangementEnv(
-            num_stacks=len(dirs),
-            stack_capacity=capacity,
-            stacks=solver_input_stacks
+        # 3) 스택별 물리 cap = 방향별 lane 길이
+        lane_caps = [len(self.lane_coords[d]) for d in dirs]
+
+        # 4) quota가 있으면 cap을 더 줄여서(=min) "중간 상태도" 절대 넘치지 않게
+        quota = getattr(self, "stack_quota", None)
+        if quota is None:
+            cap_eff = lane_caps
+            quota_eff = None
+        else:
+            # quota가 dict일 수도 있으니 방어
+            if isinstance(quota, dict):
+                quota_list = [int(quota.get(d, lane_caps[i])) for i, d in enumerate(dirs)]
+            else:
+                quota_list = [int(x) for x in quota]
+                if len(quota_list) != n:
+                    raise ValueError(f"stack_quota length mismatch: {len(quota_list)} != {n}")
+
+            cap_eff = [min(lane_caps[i], quota_list[i]) for i in range(n)]
+            quota_eff = [min(quota_list[i], cap_eff[i]) for i in range(n)]  # cap을 넘지 않게
+
+        # 5) 안전 체크(현재 스냅샷이 물리 cap을 이미 넘으면 여기서 바로 잡기)
+        for i in range(n):
+            if len(solver_input_stacks[i]) > lane_caps[i]:
+                raise RuntimeError(
+                    f"snapshot overflow: dir={dirs[i]} stack={len(solver_input_stacks[i])} lane_len={lane_caps[i]}"
+                )
+
+        # 6) 스케줄러 호출 (★ 스택별 cap 전달이 핵심)
+        actions, _ = schedule(
+            initial_stacks=solver_input_stacks,
+            mode="h2",
+            max_iters=1_000_000,
+            stack_capacities=cap_eff,     # ★ per-stack cap
+            per_stack_quota=quota_eff,    # 있으면 같이 (없으면 None)
+            order=list(range(n)),         # 삼거리/사거리 모두 OK
         )
 
-        # 4. 스케줄러 호출
-        actions, elapsed_time = schedule(env.stacks, mode="h2", max_iters=1_000_000, per_stack_quota=self.stack_quota)
-
         return actions
+
 
 
     def build_stacks_from_snapshot(self):
