@@ -3,7 +3,7 @@ import json
 import random
 import numpy as np
 from collections import defaultdict, Counter
-from typing import Dict
+from typing import Dict, Sequence, Union, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from utils.AMR import AMR
@@ -72,23 +72,17 @@ class ENV():
 
         # 교차로별 현재 AMR 수 (step마다 갱신)
         self.iid_inside_counts: dict[str, int] = defaultdict(int)
-        
-        # 모든 교차로가 동일 크기라고 가정하고, 4방향 교차로 기준 가장 짧은 3개 엣지의 합을 용량으로 설정
-        v_lens = []
-        h_lens = []
-        for inter in processed_intersections.values():
-            _, _, lN, lE, lS, lW = inter['data']
-            if lN > 0: v_lens.append(lN)
-            if lS > 0: v_lens.append(lS)
-            if lE > 0: h_lens.append(lE)
-            if lW > 0: h_lens.append(lW)            
-        Lv = max(v_lens) if v_lens else 0
-        Lh = max(h_lens) if h_lens else 0
-        
-        # 4-way intersection assumed: 2 vertical arms, 2 horizontal arms
-        lengths = sorted([Lv, Lv, Lh, Lh])
-        self.scheduling_capacity = sum(lengths[:3])        
-        print(f"Auto-configured scheduling_capacity: {self.scheduling_capacity}")
+
+        # 교차로별 scheduling capacity 저장
+        self.iid_scheduling_capacity: dict[str, int] = {}
+
+        for iid, I in self.intersections.items():
+            arm_lens = [len(I.lane_coords[d]) for d in I.dirs]
+            cap_i = sum(arm_lens) - max(arm_lens)            
+            I.scheduling_capacity = cap_i
+            self.iid_scheduling_capacity[iid] = cap_i
+            I.scheduling_capacity = cap_i
+            I.available_count = cap_i
 
         # 각 셀이 어느 교차로에 속하는지 맵핑
         self.cell2iids: Dict[tuple[int, int], list[str]] = defaultdict(list)
@@ -196,16 +190,22 @@ class ENV():
                 resv = {}
                 for iid, count in self.iid_inside_counts.items():
                     I = self.intersections[iid]
-                    I.available_count = self.scheduling_capacity - count
-                    resv[iid] = self.scheduling_capacity - count
+                    cap_i = self.iid_scheduling_capacity[iid]
+                    I.available_count = cap_i - count
+                    resv[iid] = cap_i - count
 
                 # 2) 이웃 available 스냅샷 갱신
+                INF = 1e9
                 for iid, I in self.intersections.items():
                     neigh_map = self.iid_neighbors.get(iid, {})
-                    I.neighbor_available_count = {
-                        d: (resv.get(neigh_map[d], self.scheduling_capacity) if d in neigh_map else self.scheduling_capacity)
-                        for d in I.dirs
-                    }
+                    I.neighbor_available_count = {}
+
+                    for d in I.dirs:
+                        nid = neigh_map.get(d, None)
+                        if nid is None:
+                            I.neighbor_available_count[d] = INF
+                        else:
+                            I.neighbor_available_count[d] = resv[nid]
 
             # 교차로 정지 상태인지 확인
             for iid, members in iid2members.items():
@@ -236,28 +236,7 @@ class ENV():
                     self.deadlock_queue.remove(iid)
 
             # 현재 스케줄 진행 중인 교차로 id 집합
-            active_iids = set(self.deadlock_queue) 
-
-
-            # 검증
-            CAP = self.scheduling_capacity
-            for iid, I in self.intersections.items():
-                if iid in self.deadlock_queue:
-                    continue
-                # 이웃 중 스케줄링 중인 교차로가 하나라도 있으면 스킵
-                if any(nid in self.deadlock_queue for nid in self.iid_neighbors.get(iid, {}).values()):
-                    continue
-
-                inside = len(iid2members.get(iid, []))   # == (등록했다면) len(I.amr_intent_map)
-
-                # 초기 생성에서 scheduling capacity 초과면 pass
-                if inside > CAP:
-                    continue
-
-                if I.available_count + inside != CAP:
-                    print(f"[WARN] available mismatch iid={iid} avail={I.available_count} inside={inside} sum={I.available_count+inside} cap={CAP}")
-                    return False           
-
+            active_iids = set(self.deadlock_queue)
 
             # (3-A) 데드락 체크 및 "스케줄 후보 iid" 수집
             iids_to_schedule: list[str] = []
@@ -305,8 +284,11 @@ class ENV():
                     self.deadlock_waiting_iids.add(iid)
                     continue
 
+                I = self.intersections[iid]
+                cap_i = self.iid_scheduling_capacity[iid]
+
                 # 용량 초과 시 continue
-                if self.iid_inside_counts.get(iid, 0) > self.scheduling_capacity:
+                if self.iid_inside_counts.get(iid, 0) > cap_i:
                     I = self.intersections[iid]
                     self.deadlock_waiting_iids.add(iid)
                     continue
@@ -479,160 +461,153 @@ class ENV():
         return self.make_info()
     
 
-    def _allocate_neighbor_capacity(self, iid):
-        CAP = self.scheduling_capacity
+    def _allocate_neighbor_capacity(self, iid: str) -> bool:
         I = self.intersections[iid]
+        dirs = list(I.dirs)
 
-        dbg = getattr(self, "debug_alloc", False)
-
-        def log(*args):
-            if dbg:
-                print(*args)
-
-        # 1) 이웃 교차로별 현재 남은 자리 스냅샷
         neigh_map = self.iid_neighbors.get(iid, {})
+        INF = 10**9
+
+        # 이웃 교차로 여유
         neigh_available = {}
-        for d in "NESW":
-            nid = neigh_map.get(d, None)
+        for d in dirs:
+            nid = neigh_map.get(d)
             if nid is None:
-                neigh_available[d] = CAP
+                neigh_available[d] = INF
             else:
-                neigh_available[d] = max(0, self.intersections[nid].available_count)
+                neigh_available[d] = max(0, int(self.intersections[nid].available_count))
 
-        inside_count = self.iid_inside_counts.get(iid, 0)
+        inside_count = int(self.iid_inside_counts.get(iid, 0))
 
-        # 2) 각 방향별 현재 위치 계산
         initial_need = Counter()
-        for info in I.amr_intent_map.values():
-            d = info.get('current_arm', None)
-            if d in "NESW":
-                initial_need[d] += 1
-
-        # 3) 방향별 탈출 수요 계산
         exit_need = Counter()
         for info in I.amr_intent_map.values():
-            d = info.get('exit_arm', None)
-            if d in "NESW":
-                exit_need[d] += 1
+            cur = info.get("current_arm")
+            nxt = info.get("exit_arm")
+            if cur in dirs:
+                initial_need[cur] += 1
+            if nxt in dirs:
+                exit_need[nxt] += 1
 
-        # quota는 남은 여유 + 현재 그 방향 점유
+        # ★ 방향별 cap: 교차로 팔 길이 그대로
+        cap_list = [len(I.lane_coords[d]) for d in dirs]
+
+        # quota도 cap을 넘지 않게 (물리 제한)
         per_stack_quota = []
-        for d in "NESW":
-            q_total = neigh_available[d] + initial_need.get(d, 0)
-            per_stack_quota.append(q_total)
+        for i, d in enumerate(dirs):
+            cap_d = cap_list[i]
+            q_total = int(neigh_available[d]) + int(initial_need.get(d, 0))
+            per_stack_quota.append(min(q_total, cap_d))
 
-        per_stack_quota = [min(q, 5) for q in per_stack_quota]
         I.stack_quota = per_stack_quota
 
-        log(f"\n[ALLOC] iid={iid} inside={inside_count} "
-            f"amr_intent={len(I.amr_intent_map)} "
-            f"neigh_avail={neigh_available} quota={per_stack_quota} "
-            f"initial_need={dict(initial_need)} exit_need={dict(exit_need)}")
-
-        total_available = sum(per_stack_quota)
-        if total_available < inside_count:
-            log(f"[ALLOC-SKIP] iid={iid} total_available={total_available} < inside={inside_count}")
+        if sum(per_stack_quota) < inside_count:
             return False
 
-        final_need = self.predict_final_stack_lengths(exit_need, 5, per_stack_quota)
+        final_need = self.predict_final_stack_lengths(
+            exit_need=exit_need,
+            stack_capacities=cap_list,          # ★ 여기!
+            per_stack_quota=per_stack_quota,
+            order=dirs,
+        )
         if final_need is None:
-            log(f"[ALLOC-SKIP] iid={iid} predict_final_stack_lengths returned None")
             return False
 
-        log(f"[ALLOC] iid={iid} final_need={final_need}")
-
-        # 4) delta 적용
-        for d in "NESW":
-            delta = final_need[d] - initial_need.get(d, 0)
-
-            nid = neigh_map.get(d, None)
+        # delta 적용
+        for d in dirs:
+            delta = int(final_need[d]) - int(initial_need.get(d, 0))
+            nid = neigh_map.get(d)
             if nid is None:
-                I.neighbor_available_count[d] = CAP
-                log(f"[ALLOC] iid={iid} dir={d} nid=None delta={delta} -> skip (neighbor_free fixed {CAP})")
+                I.neighbor_available_count[d] = INF
                 continue
-
             J = self.intersections[nid]
-            before = J.available_count
-            after = before - delta
-
-            # 디버그용 상세 출력
-            log(f"[ALLOC] iid={iid} dir={d} nid={nid} "
-                f"J.avail {before} -> {after}  (delta={delta}, "
-                f"final={final_need[d]}, initial={initial_need.get(d,0)})")
-
-            J.available_count = after
-            I.neighbor_available_count[d] = after
+            J.available_count = int(J.available_count) - delta
+            I.neighbor_available_count[d] = int(J.available_count)
 
         return True
     
 
     def predict_final_stack_lengths(
         self,
-        exit_need: Counter,          # {'N':7,'E':2,'S':2,'W':2} 같은 카운터
-        stack_capacity: int = 5,     # env.stack_capacity
-        per_stack_quota=None,        # [qN,qE,qS,qW] (없으면 cap로 간주)
-        order="NESW",                # tie-break 순서
+        exit_need: Counter,                             # {'N':7,'E':2,...}
+        stack_capacities: Union[int, Sequence[int]] = 5,# ★ int 또는 [cap0,cap1,...]
+        per_stack_quota: Optional[Sequence[int]] = None,# ★ [q0,q1,...] (없으면 cap로)
+        order: Union[str, Sequence[str]] = "NESW",      # ★ "SEW" 또는 ['S','E','W']
     ):
-        # 0) 입력 정리
-        idx = {d:i for i,d in enumerate(order)}
-        need = [exit_need.get(d, 0) for d in order]
+        # 0) order 정리
+        order_list = list(order) if isinstance(order, str) else list(order)
+        n = len(order_list)
+        if n == 0:
+            return {}
 
-        cap = stack_capacity
-        quota = [cap]*4 if per_stack_quota is None else [min(int(q), cap) for q in per_stack_quota]
+        # 1) cap 정리 (스택별)
+        if isinstance(stack_capacities, int):
+            caps = [int(stack_capacities)] * n
+        else:
+            caps = [int(x) for x in stack_capacities]
+            if len(caps) != n:
+                return None
 
-        # 1) overflow type 계산 (총 개수 > cap)
-        overflow_types = {i for i, c in enumerate(need) if c > cap}
+        # 2) need / quota 정리
+        need = [int(exit_need.get(d, 0)) for d in order_list]
 
-        # 2) solved 상태에서의 "기본 길이" 가정:
-        #    - overflow 타입 스택은 cap까지(가득)
-        #    - 비-overflow 타입 스택은 자기 타입 개수만큼(<=cap)
-        lens = [0]*4
-        for i in range(4):
-            lens[i] = cap if i in overflow_types else need[i]
+        if per_stack_quota is None:
+            quota = caps[:]  # 기본은 cap
+        else:
+            q = [int(x) for x in per_stack_quota]
+            if len(q) != n:
+                return None
+            quota = [max(0, min(q[i], caps[i])) for i in range(n)]  # quota는 cap 넘지 않게
 
-        # 3) [1단계] 명시적 overflow 배치 룰(최소 길이, 동률 order):
-        #    overflow 타입 t의 초과분(need[t]-cap)을 non-overflow 스택으로 1개씩 배치
-        for t in range(4):  # N,E,S,W 순
+        # 3) overflow type: need[i] > caps[i]
+        overflow_types = {i for i in range(n) if need[i] > caps[i]}
+
+        # 4) solved 상태에서의 기본 길이 가정
+        lens = [0] * n
+        for i in range(n):
+            lens[i] = caps[i] if i in overflow_types else need[i]
+
+        # 5) [1단계] overflow 초과분 분배 (비-overflow 스택 위에 얹는 모델)
+        for t in range(n):  # order 순서가 tie-break
             if t not in overflow_types:
                 continue
-            extra = need[t] - cap
+
+            extra = need[t] - caps[t]
             for _ in range(extra):
-                # dst 후보: (t 자신 제외) + (overflow 스택 제외) + (cap 미만)
-                cands = [j for j in range(4) if j != t and j not in overflow_types and lens[j] < cap]
+                cands = [j for j in range(n)
+                        if j != t and j not in overflow_types and lens[j] < caps[j]]
                 if not cands:
-                    return None  # 둘 곳이 없음(구조적으로 불가능)
+                    return None
+
                 min_len = min(lens[j] for j in cands)
-                # 동률이면 order(N,E,S,W) 순으로
-                dst = next(j for j in range(4) if j in cands and lens[j] == min_len)
+                dst = next(j for j in range(n) if j in cands and lens[j] == min_len)  # tie: order
                 lens[dst] += 1
 
-        # 4) [2단계] 이웃 quota 기반 overflow 배치(append_overflow_moves의 "길이" 버전):
-        #    len[i] > quota[i]인 스택에서 1개 빼서, slack이 가장 큰 스택으로 이동
+        # 6) [2단계] quota 맞추기: lens[i] > quota[i]면 다른 곳으로 이동
+        #    (못 맞추면 None 반환해서 allocate가 스킵하도록)
         while True:
-            overflow_list = [(i, lens[i] - quota[i]) for i in range(4) if lens[i] > quota[i]]
-            if not overflow_list:
+            over = [(i, lens[i] - quota[i]) for i in range(n) if lens[i] > quota[i]]
+            if not over:
                 break
 
-            max_over = max(k for _, k in overflow_list)
-            over_srcs = [i for i, k in overflow_list if k == max_over]
-            src = over_srcs[0]  # NESW 순 (index 작은 게 먼저)
+            max_over = max(k for _, k in over)
+            src = next(i for i in range(n) if (lens[i] - quota[i]) == max_over)  # tie: order
 
-            cands = [j for j in range(4) if j != src and lens[j] < quota[j] and lens[j] < cap]
+            cands = [j for j in range(n)
+                    if j != src and lens[j] < quota[j] and lens[j] < caps[j]]
             if not cands:
-                # 더 이상 옮길 곳이 없으면 여기서 종료(append_overflow_moves도 break)
-                break
+                return None
 
             def slack(j):
-                return (quota[j] - lens[j], cap - lens[j])
+                return (quota[j] - lens[j], caps[j] - lens[j])
 
             best_sl = max(slack(j) for j in cands)
-            best = [j for j in cands if slack(j) == best_sl]
-            dst = best[0]  # NESW 순
+            dst = next(j for j in range(n) if j in cands and slack(j) == best_sl)  # tie: order
 
             lens[src] -= 1
             lens[dst] += 1
 
-        return {order[i]: lens[i] for i in range(4)}
+        return {order_list[i]: lens[i] for i in range(n)}
 
 
     
@@ -894,8 +869,6 @@ class ENV():
     
 
     def _update_available_on_move_success(self, cur_pos, next_pos):
-        CAP = self.scheduling_capacity
-
         cur_set = set(self.cell2iids.get(tuple(cur_pos), []))
         nxt_set = set(self.cell2iids.get(tuple(next_pos), []))
         entering = nxt_set - cur_set   # 새로 들어가는 교차로
@@ -907,7 +880,7 @@ class ENV():
         # leaving: 자리 +1 (상한 CAP)
         for iid in leaving:
             I = self.intersections[iid]
-            I.available_count = min(I.available_count + 1, CAP)
+            I.available_count = min(I.available_count + 1, I.scheduling_capacity)
 
         # entering: 자리 -1 (하한 0)
         for iid in entering:

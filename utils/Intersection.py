@@ -36,10 +36,10 @@ class Intersection:
         self.paths = {}                 # {amr_id: [(x,y), ...]}
         self.target_exits = {}          # {amr_id: (x,y)}  # 각 AMR의 "원래" 출구 tip 좌표
 
-        self.scheduling_capacity = 15                                                       # 스케줄링이 가능한 최대 AMR 수
-        self.available_count = 15                                                           # 교차로 내 AMR 여유 공간 개수
-        self.neighbor_available_count = {d: self.scheduling_capacity for d in self.dirs}       # {N: 15, E: 15, S: 15, W: 15} 인접 교차로별 여유 공간 개수
-        self.stack_quota = [self.scheduling_capacity for _ in self.dirs]                       # [15, 15, 15, 15] 방향별 스택 할당량
+        self.scheduling_capacity = 0                               # 스케줄링이 가능한 최대 AMR 수
+        self.available_count = 0                                   # 교차로 내 AMR 여유 공간 개수
+        self.neighbor_available_count = {}                         # {N: 15, E: 15, S: 15, W: 15} 인접 교차로별 여유 공간 개수
+        self.stack_quota = []                                      # [15, 15, 15, 15] 방향별 스택 할당량
 
 
     def reset(self):
