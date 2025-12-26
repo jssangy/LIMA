@@ -20,7 +20,6 @@ _CACHE_READER_PATH = None
 try:
     import cpp_sch
     _HAS_CPP = True
-    print("C++ 스케줄러 모듈 로드됨.")
 except Exception:
     _HAS_CPP = False
 

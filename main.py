@@ -5,12 +5,12 @@ from Environment import ENV
 
 def main():
     parser = argparse.ArgumentParser(description="Run simulations and log ENV.make_info() to CSV.")
-    parser.add_argument("--prob", type=str, default="warehouse_10_20")
+    parser.add_argument("--prob", type=str, default="warehouse_1")
     parser.add_argument("--algo", type=int, default=0, choices=[0,1,2,3,4],
                         help="0=BFS, 1=A*, 2=D*, 3=PIBT, 4=CBS")
     parser.add_argument("--density", type=int, default=40, 
                         help="Percentage(%) of AMRs in the environment.")
-    parser.add_argument("--num-amrs", type=int, default=0,
+    parser.add_argument("--num-amrs", type=int, default=9,
                         help="If >0, overrides density to set the number of AMRs directly.")
     parser.add_argument("--max-steps", type=int, default=100000)
     parser.add_argument("--workers", type=int, default=8)
