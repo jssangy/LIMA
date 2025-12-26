@@ -30,7 +30,7 @@ def _actions_to_paths_job(iid, inter, cache_db_path):
 
 
 class ENV():
-    def __init__(self, prob_path, density, max_steps, workers):
+    def __init__(self, prob_path, density, num_amrs, max_steps, workers, cache_db_path):
         super().__init__()
         """환경 초기화"""
         base_dir = os.path.dirname(prob_path)
@@ -46,11 +46,15 @@ class ENV():
         self.map = self._load_map(map_path)
         bbox = self._get_goal_bbox(margin=0)  # 필요하면 margin 조절
         walkable_tiles = self._count_walkable_in_bbox(bbox, exclude_goals=True)
-        num_amrs = int((walkable_tiles * density) / 100)
-        print(f"\nMap width: {self.map.shape[1]}, Map height: {self.map.shape[0]}")
-        print(f"Walkable tiles (value 0): {walkable_tiles}")
-        print(f"Number of AMRs to spawn: {num_amrs}")
-        print(f"Density: {density:.2f}%")
+        if num_amrs > 0:
+            self.num_amrs = num_amrs
+            density = ( self.num_amrs / walkable_tiles ) * 100
+        else:
+            self.num_amrs = int((walkable_tiles * density) / 100)
+        # print(f"\nMap width: {self.map.shape[1]}, Map height: {self.map.shape[0]}")
+        # print(f"Walkable tiles (value 0): {walkable_tiles}")
+        # print(f"Number of AMRs to spawn: {self.num_amrs}")
+        # print(f"Density: {density:.2f}%")
         processed_intersections = self._find_intersections_and_build_graph()
         
         self.time = 0
@@ -122,12 +126,12 @@ class ENV():
         self.deadlock_waiting_iids = set()
 
         # TaskGenerator
-        self.task_generator = TaskSetGenerator(self.map, num_tasks=num_amrs, goal_positions=self.goal, start_in_goal_bbox=True, bbox_margin=0)
+        self.task_generator = TaskSetGenerator(self.map, num_tasks=self.num_amrs, goal_positions=self.goal, start_in_goal_bbox=True, bbox_margin=0)
 
         # Color mapping
         self.color_map = Funct.Color_dict(6).dic
 
-        self.use_scheduler = False
+        self.use_scheduler = True
 
         self.completed_amr_steps = []
 
@@ -137,7 +141,7 @@ class ENV():
 
         self.end_centers = [] # debug용
 
-        self.cache_db_path = "./cache/schedule_cache.sqlite"
+        self.cache_db_path = cache_db_path
         self.cache_writer = CacheWriter(self.cache_db_path)  # 여기서 DB 파일/테이블 생성됨(중요!)
         self.cache_lookups = 0
         self.cache_hits = 0
@@ -175,7 +179,7 @@ class ENV():
         
         if self.end_centers:
             for iid, amr_id in self.end_centers:
-                print(f"[DEBUG] Time {self.time}: AMR {amr_id} ended at center of intersection {iid}.")
+                # print(f"[DEBUG] Time {self.time}: AMR {amr_id} ended at center of intersection {iid}.")
                 return False
 
         # 1. 스케줄러 로직 (데드락 감지 및 해결)
@@ -344,9 +348,9 @@ class ENV():
                 if cache_hit:
                     self.cache_hits += 1
 
-                if self.cache_lookups % 100 == 0:  # 100번마다 출력(원하는 주기로)
-                    rate = 100.0 * self.cache_hits / self.cache_lookups
-                    print(f"[CACHE] lookups={self.cache_lookups} hits={self.cache_hits} hit_rate={rate:.2f}%")
+                # if self.cache_lookups % 100 == 0:  # 100번마다 출력(원하는 주기로)
+                #     rate = 100.0 * self.cache_hits / self.cache_lookups
+                #     print(f"[CACHE] lookups={self.cache_lookups} hits={self.cache_hits} hit_rate={rate:.2f}%")
 
                 if cache_wb is not None:
                     key, blob = cache_wb
