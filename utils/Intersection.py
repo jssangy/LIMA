@@ -37,8 +37,6 @@ class Intersection:
         self.neighbor_available_count = {}                         # {N: 15, E: 15, S: 15, W: 15} 인접 교차로별 여유 공간 개수
         self.stack_quota = []                                      # [15, 15, 15, 15] 방향별 스택 할당량
 
-        self.end_center  = []
-
 
     def reset(self):
         self.amr_intent_map = {}
@@ -244,26 +242,35 @@ class Intersection:
             cap = len(lanes[d])
             target_lanes[d] = filled + [None] * (cap - len(filled))
 
-        # 2) 센터 AMR 배치(front 삽입)
+        # 2) 센터 AMR 배치(front 삽입)  ✅ 수정 버전
         center_id = pos2aid.get(center, None)
         if center_id is not None:
             center_rec = self.amr_intent_map.get(center_id, {})
             exit_dir = center_rec.get('exit_arm')
 
-            def occ(d): return sum(1 for x in target_lanes[d] if x is not None)
+            def occ(d): 
+                return sum(1 for x in target_lanes[d] if x is not None)
+
+            # ★ 빈자리 있는 팔만 후보로
+            counts = {d: occ(d) for d in dirs}
+            cands = [d for d in dirs if counts[d] < len(target_lanes[d])]
 
             host = None
-            if exit_dir in dirs and occ(exit_dir) < len(target_lanes[exit_dir]):
+
+            # 1) exit_dir에 빈자리 있으면 최우선
+            if exit_dir in dirs and exit_dir in cands:
                 host = exit_dir
-            else:
-                counts = {d: occ(d) for d in dirs}
-                min_count = min(counts.values()) if counts else 0
-                for d in dirs:  # NESW 타이브레이크
-                    if counts[d] == min_count and occ(d) < len(target_lanes[d]):
+
+            # 2) 아니면 "빈자리 있는 팔들(cands)" 중 점유 최소를 고름 (NESW 타이브레이크)
+            elif cands:
+                min_count = min(counts[d] for d in cands)
+                for d in dirs:  # dirs 순서가 tie-break
+                    if d in cands and counts[d] == min_count:
                         host = d
                         break
-            if host is not None:
-                target_lanes[host] = [center_id] + target_lanes[host][:-1]
+
+            # 3) host가 있으면 front로 편입(우측 쉬프트)
+            target_lanes[host] = [center_id] + target_lanes[host][:-1]                
 
         # -------------------------------
         # 3) lanes vs target_lanes → 동기화 경로 생성
@@ -554,5 +561,4 @@ class Intersection:
                     pass
             else:
                 # 중앙이 경로의 마지막인 경우 (드물지만 가능) -> 그대로 둠
-                self.end_center.append((self.id, aid))
                 pass

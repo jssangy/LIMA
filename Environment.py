@@ -25,8 +25,7 @@ def _actions_to_paths_job(iid, inter, cache_db_path):
     """
     inter.cache_db_path = cache_db_path
     short_paths, target_exits, cache_wb, cache_hit = inter.actions_to_paths()
-    end_center = inter.end_center
-    return iid, short_paths, target_exits, end_center, cache_wb, cache_hit
+    return iid, short_paths, target_exits, cache_wb, cache_hit
 
 
 class ENV():
@@ -139,8 +138,6 @@ class ENV():
 
         self.time_ms = []
 
-        self.end_centers = [] # debug용
-
         self.cache_db_path = cache_db_path
         self.cache_writer = CacheWriter(self.cache_db_path)  # 여기서 DB 파일/테이블 생성됨(중요!)
         self.cache_lookups = 0
@@ -168,6 +165,9 @@ class ENV():
         self.completed_path_integrities.clear()
         self.time_ms.clear()
 
+        self.cache_lookups = 0
+        self.cache_hits = 0
+
         return
 
     
@@ -176,11 +176,6 @@ class ENV():
 
         if self.task_generator.is_episode_done():
             return False
-        
-        if self.end_centers:
-            for iid, amr_id in self.end_centers:
-                # print(f"[DEBUG] Time {self.time}: AMR {amr_id} ended at center of intersection {iid}.")
-                return False
 
         # 1. 스케줄러 로직 (데드락 감지 및 해결)
         if self.use_scheduler:
@@ -342,7 +337,7 @@ class ENV():
                 iid = futures[fut]
                 iid_ret, short_paths, target_exits = None, None, None
                 # _actions_to_paths_job이 (iid, short_paths, target_exits)를 반환한다고 가정
-                iid_ret, short_paths, target_exits, end_centers, cache_wb, cache_hit = fut.result()
+                iid_ret, short_paths, target_exits, cache_wb, cache_hit = fut.result()
 
                 self.cache_lookups += 1
                 if cache_hit:
@@ -355,9 +350,6 @@ class ENV():
                 if cache_wb is not None:
                     key, blob = cache_wb
                     self.cache_writer.put_blob(key, blob)
-
-
-                self.end_centers = end_centers # debug용
 
                 
 

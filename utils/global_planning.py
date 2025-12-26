@@ -2,12 +2,9 @@ import heapq
 from typing import Dict, Tuple, Iterable, Optional, Set, List, Sequence
 import random
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.collections import LineCollection
-import matplotlib.colors as mcolors
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from bisect import bisect_left, bisect_right
+from bisect import bisect_left
 
 # A* Algorithm
 class AStar:
@@ -556,92 +553,6 @@ class BFS:
             if 0 <= nx < self.W and 0 <= ny < self.H and self.map[ny, nx] == 0:
                 neighbors.append((nx, ny))
         return neighbors  
-
-    def _plot_one_dir_lines(self, dir_tag: str, save_path: str | None = None):
-        """
-        dir_tag: 'N','S','W','E'
-        - 배경 흰색
-        - heat=0 엣지는 안 그림(= 흰색 유지)
-        - heat 높을수록 더 붉게
-        """
-        dir2idx = {"N": 0, "S": 1, "W": 2, "E": 3}
-        idx = dir2idx[dir_tag]
-
-        H, W = self.H, self.W
-
-        def next_pos(x, y):
-            if dir_tag == "N": return x, y - 1
-            if dir_tag == "S": return x, y + 1
-            if dir_tag == "W": return x - 1, y
-            if dir_tag == "E": return x + 1, y
-            raise ValueError(dir_tag)
-
-        segments = []
-        values = []
-
-        for y in range(H):
-            for x in range(W):
-                v = float(self.edge_heat[idx, y, x])
-                if v <= 0:
-                    continue  # ✅ heat 없으면 아예 안 그림(흰 배경 유지)
-
-                if self.map is not None and self.map[y, x] == 1:
-                    continue
-
-                nx, ny = next_pos(x, y)
-                if not (0 <= nx < W and 0 <= ny < H):
-                    continue
-                if self.map is not None and self.map[ny, nx] == 1:
-                    continue
-
-                segments.append([(x, y), (nx, ny)])
-                values.append(v)
-
-        if not values:
-            print(f"[plot] {dir_tag}: heat가 0이라 그릴 게 없습니다.")
-            return
-
-        values = np.asarray(values, dtype=np.float32)
-
-        # ✅ 대비 강화: 퍼센타일 스케일 + 비선형 정규화
-        vmin = np.percentile(values, 5)
-        vmax = np.percentile(values, 99)
-        if vmax <= vmin:
-            vmin = float(values.min())
-            vmax = float(values.max())
-
-        # gamma < 1 이면 작은 값도 더 “잘 보이게” 강조됨
-        norm = mcolors.PowerNorm(gamma=0.5, vmin=vmin, vmax=vmax)
-
-        lc = LineCollection(
-            segments,
-            array=values,
-            cmap="Reds",       # ✅ 흰→분홍→빨강
-            norm=norm,
-            linewidths=1.8,
-            alpha=1.0,
-        )
-
-        fig, ax = plt.subplots(figsize=(8, 8), facecolor="white")
-        ax.set_facecolor("white")  # ✅ 배경 흰색
-        ax.add_collection(lc)
-
-        ax.set_xlim(-0.5, W - 0.5)
-        ax.set_ylim(H - 0.5, -0.5)
-        ax.set_aspect("equal")
-
-        title = {"N": "N (Up)", "S": "S (Down)", "W": "W (Left)", "E": "E (Right)"}[dir_tag]
-        ax.set_title(f"Edge heat: {title} (white bg / red high)")
-        ax.set_xlabel("x")
-        ax.set_ylabel("y")
-
-        cbar = fig.colorbar(lc, ax=ax, fraction=0.046, pad=0.04)
-        cbar.set_label("edge heat")
-
-        if save_path:
-            plt.savefig(save_path, dpi=200, bbox_inches="tight", facecolor="white")
-
-        plt.show()
 
     def plot_edge_heat(self, save_prefix: str | None = None):
         """

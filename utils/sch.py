@@ -17,6 +17,13 @@ Move = Tuple[int, int]
 _CACHE_READER = None
 _CACHE_READER_PATH = None
 
+try:
+    import cpp_sch
+    _HAS_CPP = True
+    print("C++ 스케줄러 모듈 로드됨.")
+except Exception:
+    _HAS_CPP = False
+
 
 def _get_cache_reader(db_path: str) -> CacheReader:
     global _CACHE_READER, _CACHE_READER_PATH
@@ -85,7 +92,21 @@ class StackScheduler:
     # =========================================================================
     # H2 (IDA*)
     # =========================================================================
-    def solve_h2(
+    def solve_h2(self, max_iters=100_000, use_deterministic_move=True):
+        if _HAS_CPP:
+            # self.caps(스택별 cap 리스트) 기반이면 그대로 넘기고,
+            # 아직 단일 cap이면 [cap]*n 형태로 만들어서 넘기면 됨
+            caps = getattr(self, "caps", None)
+            if caps is None:
+                # 구버전(단일 cap)일 때
+                caps = [self.env.stack_capacity] * len(self.env.stacks)
+            return cpp_sch.solve_h2_base(self.env.stacks, caps, max_iters, use_deterministic_move)
+
+        # fallback: 기존 파이썬 구현
+        return self._solve_h2_python(max_iters=max_iters, use_deterministic_move=use_deterministic_move)
+    
+
+    def _solve_h2_python(
         self,
         max_iters: int = 100_000,
         use_deterministic_move: bool = USE_DETERMINISTIC_MOVE,

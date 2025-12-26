@@ -2,3 +2,4 @@ numpy
 pygame
 pyglet
 pyyaml
+pybind11
