@@ -6,12 +6,24 @@ from typing import List, Tuple, Optional, Dict, Sequence, Union
 import random
 import time
 
-from utils.env import StackRearrangementEnv  # ← 네가 수정한 env.py(가변 cap 지원)로 맞춰줘
+from utils.env import StackRearrangementEnv 
+from utils.schedule_cache import CacheReader, make_cache_key, encode_actions, decode_actions
 
 DEBUG = False
 USE_DETERMINISTIC_MOVE = True
 
 Move = Tuple[int, int]
+
+_CACHE_READER = None
+_CACHE_READER_PATH = None
+
+
+def _get_cache_reader(db_path: str) -> CacheReader:
+    global _CACHE_READER, _CACHE_READER_PATH
+    if _CACHE_READER is None or _CACHE_READER_PATH != db_path:
+        _CACHE_READER_PATH = db_path
+        _CACHE_READER = CacheReader(db_path)  # mode=ro로 열리는 Reader
+    return _CACHE_READER
 
 
 def _normalize_caps(stack_capacities: Union[int, Sequence[int]], n: int) -> List[int]:
@@ -275,15 +287,22 @@ class StackScheduler:
 
 def schedule(
     initial_stacks: List[List[int]],
-    mode: str = "random",
-    stack_capacities: Union[int, Sequence[int]] = 5,
+    stack_capacities: Union[int, Sequence[int]],
     per_stack_quota: Optional[Sequence[int]] = None,
     order: Optional[Sequence[int]] = None,
+    *,
+    cache_db_path: Optional[str] = None,
+    max_iters: int = 1_000_000,
     **kwargs,
 ):
     """
+    - 캐시 key: (initial_stacks, stack_capacities)만 사용
+    - 캐시 value: solve_h2()가 만든 base_moves만 저장/로드
+    - per_stack_quota는 캐시에 안 넣고, 매번 후처리로만 적용(가벼움)
+
     Returns:
-        (moves, elapsed_time)
+        (final_moves, elapsed_time, cache_writeback)
+        cache_writeback: None 또는 (key_bytes, blob_bytes)  # 메인에서만 put
     """
     n = len(initial_stacks)
     caps = _normalize_caps(stack_capacities, n)
@@ -295,36 +314,50 @@ def schedule(
         if len(order) != n:
             raise ValueError(f"order len {len(order)} != stacks len {n}")
 
-    scheduler = StackScheduler(initial_stacks, stack_capacities=caps)
     start_time = time.time()
 
-    if mode == "random":
-        moves = scheduler.solve_random(**kwargs)
-    elif mode == "h2":
-        moves = scheduler.solve_h2(**kwargs)
-    else:
-        raise ValueError(f"지원하지 않는 모드입니다: {mode}")
+    base_moves = None
+    writeback = None
 
-    # (선택) overflow 분배를 “결정적으로” 맞추고 싶으면 유지
-    new_moves = append_explicit_overflow_moves(
+    # 1) 캐시 read-only 조회
+    key = None
+    cache_hit = False
+    if cache_db_path:
+        key = make_cache_key(initial_stacks=initial_stacks, stack_capacities=caps)
+        reader = _get_cache_reader(cache_db_path)
+        blob = reader.get_blob(key)  # bytes or None
+        if blob is not None:
+            base_moves = decode_actions(blob)
+            cache_hit = True
+
+    # 2) miss면 solve_h2() 실행 (가장 비싼 부분)
+    if base_moves is None:
+        scheduler = StackScheduler(initial_stacks, stack_capacities=caps)
+        base_moves = scheduler.solve_h2(max_iters=max_iters, **kwargs)
+        cache_hit = False
+
+        if cache_db_path and key is not None:
+            writeback = (key, encode_actions(base_moves))  # 메인이 저장
+
+    # 3) 후처리(가벼움) — 기존 schedule()과 동일
+    moves = append_explicit_overflow_moves(
         initial_stacks=initial_stacks,
-        base_moves=moves,
+        base_moves=base_moves,
         stack_capacities=caps,
         order=order,
     )
 
-    # (선택) quota까지 맞추고 싶으면 유지 (quota는 cap을 넘지 않게 clamp)
     if per_stack_quota is not None:
-        new_moves = append_overflow_moves(
+        moves = append_overflow_moves(
             initial_stacks=initial_stacks,
-            moves=new_moves,
+            moves=moves,
             per_stack_quota=list(per_stack_quota),
             stack_capacities=caps,
             order=order,
         )
 
     elapsed_time = time.time() - start_time
-    return new_moves, elapsed_time
+    return moves, elapsed_time, writeback, cache_hit
 
 
 def append_explicit_overflow_moves(

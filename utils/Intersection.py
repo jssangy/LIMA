@@ -1,10 +1,6 @@
-import random
 from itertools import chain
-from copy import deepcopy
-from collections import deque
 
 from utils.sch import schedule
-from utils.env import StackRearrangementEnv
 
 
 class Intersection:
@@ -40,6 +36,8 @@ class Intersection:
         self.available_count = 0                                   # 교차로 내 AMR 여유 공간 개수
         self.neighbor_available_count = {}                         # {N: 15, E: 15, S: 15, W: 15} 인접 교차로별 여유 공간 개수
         self.stack_quota = []                                      # [15, 15, 15, 15] 방향별 스택 할당량
+
+        self.end_center  = []
 
 
     def reset(self):
@@ -352,63 +350,37 @@ class Intersection:
         
     
     def plan_action(self):
-        # 1) 스냅샷
         current_stacks, targets = self.build_stacks_from_snapshot()
-        dirs = list(self.dirs)  # present dirs만 (삼거리면 3개)
-
+        dirs = list(self.dirs)
         n = len(dirs)
         dir_to_idx = {d: i for i, d in enumerate(dirs)}
 
-        # 2) AMR ID -> target index 변환 (None/이상값 방어)
         solver_input_stacks = []
         for d in dirs:
             stack_content = []
             for aid in current_stacks[d]:
                 target_dir = targets.get(aid)
                 if target_dir not in dir_to_idx:
-                    target_dir = d  # fallback: 현재 팔로 둠
+                    target_dir = d
                 stack_content.append(dir_to_idx[target_dir])
             solver_input_stacks.append(stack_content)
 
-        # 3) 스택별 물리 cap = 방향별 lane 길이
         lane_caps = [len(self.lane_coords[d]) for d in dirs]
 
-        # 4) quota가 있으면 cap을 더 줄여서(=min) "중간 상태도" 절대 넘치지 않게
-        quota = getattr(self, "stack_quota", None)
-        if quota is None:
-            cap_eff = lane_caps
-            quota_eff = None
-        else:
-            # quota가 dict일 수도 있으니 방어
-            if isinstance(quota, dict):
-                quota_list = [int(quota.get(d, lane_caps[i])) for i, d in enumerate(dirs)]
-            else:
-                quota_list = [int(x) for x in quota]
-                if len(quota_list) != n:
-                    raise ValueError(f"stack_quota length mismatch: {len(quota_list)} != {n}")
-
-            cap_eff = [min(lane_caps[i], quota_list[i]) for i in range(n)]
-            quota_eff = [min(quota_list[i], cap_eff[i]) for i in range(n)]  # cap을 넘지 않게
-
-        # 5) 안전 체크(현재 스냅샷이 물리 cap을 이미 넘으면 여기서 바로 잡기)
-        for i in range(n):
-            if len(solver_input_stacks[i]) > lane_caps[i]:
-                raise RuntimeError(
-                    f"snapshot overflow: dir={dirs[i]} stack={len(solver_input_stacks[i])} lane_len={lane_caps[i]}"
-                )
-
-        # 6) 스케줄러 호출 (★ 스택별 cap 전달이 핵심)
-        actions, _ = schedule(
+        actions, elapsed_time, wb, hit = schedule(
             initial_stacks=solver_input_stacks,
-            mode="h2",
+            stack_capacities=lane_caps,
+            per_stack_quota=self.stack_quota,
+            order=list(range(n)),
+            cache_db_path=getattr(self, "cache_db_path", None),  # 워커는 read-only
             max_iters=1_000_000,
-            stack_capacities=cap_eff,     # ★ per-stack cap
-            per_stack_quota=quota_eff,    # 있으면 같이 (없으면 None)
-            order=list(range(n)),         # 삼거리/사거리 모두 OK
         )
 
-        return actions
+        # 메인에 넘길 writeback만 저장(Intersection는 DB 접근 안 함)
+        self.cache_writeback = wb
+        self.cache_hit = hit
 
+        return actions
 
 
     def build_stacks_from_snapshot(self):
@@ -480,7 +452,7 @@ class Intersection:
         # 중앙을 지나지 않는 로봇 삭제 & 중앙 통과 후 경로 절삭
         self._post_process_paths(targets)
 
-        return self.paths, self.target_exits
+        return self.paths, self.target_exits, getattr(self, 'cache_writeback', None), getattr(self, 'cache_hit', False)
 
 
     def _record_snapshot(self, inter_sim, center_amr_id):
@@ -582,5 +554,5 @@ class Intersection:
                     pass
             else:
                 # 중앙이 경로의 마지막인 경우 (드물지만 가능) -> 그대로 둠
-                print(f"[{self.id}] AMR {aid} path ends at center; no exit cell found.")
+                self.end_center.append((self.id, aid))
                 pass

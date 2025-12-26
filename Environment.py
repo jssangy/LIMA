@@ -9,11 +9,12 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from utils.AMR import AMR
 from utils.Intersection import Intersection
 from utils import Funct
-from utils.traffic_generator import TaskSetGenerator
+from utils.task_generator import TaskSetGenerator
 from utils.Controller import PIBTPlanner, CBSPlanner, BFSPlanner
+from utils.schedule_cache import CacheWriter
 
 
-def _actions_to_paths_job(iid: str, inter: "Intersection"):
+def _actions_to_paths_job(iid, inter, cache_db_path):
     """
     서브 프로세스에서 실행할 함수.
     
@@ -22,8 +23,10 @@ def _actions_to_paths_job(iid: str, inter: "Intersection"):
     반환:
       (iid, short_paths, target_exits)
     """
-    short_paths, target_exits = inter.actions_to_paths()
-    return iid, short_paths, target_exits
+    inter.cache_db_path = cache_db_path
+    short_paths, target_exits, cache_wb, cache_hit = inter.actions_to_paths()
+    end_center = inter.end_center
+    return iid, short_paths, target_exits, end_center, cache_wb, cache_hit
 
 
 class ENV():
@@ -41,7 +44,8 @@ class ENV():
         self.time = 0
         
         self.map = self._load_map(map_path)
-        walkable_tiles = np.count_nonzero(self.map == 0) - len(self.goal)
+        bbox = self._get_goal_bbox(margin=0)  # 필요하면 margin 조절
+        walkable_tiles = self._count_walkable_in_bbox(bbox, exclude_goals=True)
         num_amrs = int((walkable_tiles * density) / 100)
         print(f"\nMap width: {self.map.shape[1]}, Map height: {self.map.shape[0]}")
         print(f"Walkable tiles (value 0): {walkable_tiles}")
@@ -118,7 +122,7 @@ class ENV():
         self.deadlock_waiting_iids = set()
 
         # TaskGenerator
-        self.task_generator = TaskSetGenerator(self.map, num_tasks=num_amrs, goal_positions=self.goal)
+        self.task_generator = TaskSetGenerator(self.map, num_tasks=num_amrs, goal_positions=self.goal, start_in_goal_bbox=True, bbox_margin=0)
 
         # Color mapping
         self.color_map = Funct.Color_dict(6).dic
@@ -130,6 +134,13 @@ class ENV():
         self.completed_path_integrities: list[float] = []
 
         self.time_ms = []
+
+        self.end_centers = [] # debug용
+
+        self.cache_db_path = "./cache/schedule_cache.sqlite"
+        self.cache_writer = CacheWriter(self.cache_db_path)  # 여기서 DB 파일/테이블 생성됨(중요!)
+        self.cache_lookups = 0
+        self.cache_hits = 0
 
 
     def reset(self):        
@@ -161,6 +172,11 @@ class ENV():
 
         if self.task_generator.is_episode_done():
             return False
+        
+        if self.end_centers:
+            for iid, amr_id in self.end_centers:
+                print(f"[DEBUG] Time {self.time}: AMR {amr_id} ended at center of intersection {iid}.")
+                return False
 
         # 1. 스케줄러 로직 (데드락 감지 및 해결)
         if self.use_scheduler:
@@ -188,9 +204,9 @@ class ENV():
             if self.time == 1:
                 # 1) available_count 세팅 + 스냅샷 만들기
                 resv = {}
-                for iid, count in self.iid_inside_counts.items():
-                    I = self.intersections[iid]
+                for iid, I in self.intersections.items():
                     cap_i = self.iid_scheduling_capacity[iid]
+                    count = self.iid_inside_counts.get(iid, 0)
                     I.available_count = cap_i - count
                     resv[iid] = cap_i - count
 
@@ -314,7 +330,7 @@ class ENV():
             for iid in iids_to_schedule:
                 I = self.intersections[iid]
                 # 프로세스 풀에 job 제출
-                fut = self.scheduler_pool.submit(_actions_to_paths_job, iid, I)
+                fut = self.scheduler_pool.submit(_actions_to_paths_job, iid, I, self.cache_db_path)
                 futures[fut] = iid
 
             # 결과 수집 및 경로 반영
@@ -322,7 +338,24 @@ class ENV():
                 iid = futures[fut]
                 iid_ret, short_paths, target_exits = None, None, None
                 # _actions_to_paths_job이 (iid, short_paths, target_exits)를 반환한다고 가정
-                iid_ret, short_paths, target_exits = fut.result()
+                iid_ret, short_paths, target_exits, end_centers, cache_wb, cache_hit = fut.result()
+
+                self.cache_lookups += 1
+                if cache_hit:
+                    self.cache_hits += 1
+
+                if self.cache_lookups % 100 == 0:  # 100번마다 출력(원하는 주기로)
+                    rate = 100.0 * self.cache_hits / self.cache_lookups
+                    print(f"[CACHE] lookups={self.cache_lookups} hits={self.cache_hits} hit_rate={rate:.2f}%")
+
+                if cache_wb is not None:
+                    key, blob = cache_wb
+                    self.cache_writer.put_blob(key, blob)
+
+
+                self.end_centers = end_centers # debug용
+
+                
 
                 # 스케줄 경로를 AMR 경로에 삽입
                 for amr_id, short_path in short_paths.items():
@@ -886,6 +919,44 @@ class ENV():
         for iid in entering:
             J = self.intersections[iid]
             J.available_count = max(0, J.available_count - 1)
+
+
+    def _get_goal_bbox(self, margin: int = 0):
+        if not self.goal:
+            return None
+
+        xs = [x for x, _ in self.goal]
+        ys = [y for _, y in self.goal]
+        x_min, x_max = min(xs) - margin, max(xs) + margin
+        y_min, y_max = min(ys) - margin, max(ys) + margin
+
+        H, W = self.map.shape
+        x_min = max(0, x_min + 1); x_max = min(W - 1, x_max - 1)
+        y_min = max(0, y_min + 1); y_max = min(H - 1, y_max - 1)
+        return x_min, y_min, x_max, y_max
+
+
+    def _count_walkable_in_bbox(self, bbox, exclude_goals: bool = True) -> int:
+        if bbox is None:
+            # goal 없으면 전체로 fallback (원하면 0으로 해도 됨)
+            total = int(np.count_nonzero(self.map == 0))
+            if exclude_goals:
+                total -= len(set(self.goal))
+            return total
+
+        x_min, y_min, x_max, y_max = bbox
+        area = self.map[y_min:y_max + 1, x_min:x_max + 1]
+        walkable = int(np.count_nonzero(area == 0))
+
+        if exclude_goals:
+            goal_set = set(self.goal)
+            goals_in_bbox = sum(
+                1 for (x, y) in goal_set
+                if x_min < x <= x_max and y_min <= y <= y_max and self.map[y][x] == 0
+            )
+            walkable -= goals_in_bbox
+
+        return walkable
 
 
     def _spawn_amrs_from_task_gen(self):
