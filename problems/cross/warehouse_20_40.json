@@ -1,8 +1,0 @@
-{
-    "mapFile": "maps/warehouse_20_40.map",
-    "agentFile": "agents/cross_1.agents",
-    "teamSize": 1,
-    "taskFile": "tasks/cross.tasks",
-    "numTasksReveal": 1.0,
-    "version": "2024 LoRR"
-}

@@ -55,6 +55,7 @@ class Intersection:
         exit_arm_direction = None
         exit_cell = None
 
+        # 정방향으로 탐색
         for i in range(amr.path_cursor, len(path) - 1):
             if path[i] == center:
                 next_pos_index = i + 1
@@ -93,6 +94,8 @@ class Intersection:
         if self.check_cycle_deadlock():
             return True
         if self.check_center_deadlock():
+            return True
+        if self.check_swap_deadlock():
             return True
         return False
 
@@ -197,6 +200,31 @@ class Intersection:
             if cur == center_exit and nxt is not None and nxt != cur:
                 self.is_deadlock = True
                 return True
+
+        self.is_deadlock = False
+        return False
+    
+
+    def check_swap_deadlock(self):
+        for rec1 in self.amr_intent_map.values():
+            cur1 = rec1.get('current_arm')
+            nxt1 = rec1.get('exit_arm')
+            amr1_pos = rec1.get('amr_obj').pos
+            amr1_next_pos = rec1.get('amr_obj').next_pos
+
+            for rec2 in self.amr_intent_map.values():
+                if rec1 == rec2:
+                    continue
+                cur2 = rec2.get('current_arm')
+                nxt2 = rec2.get('exit_arm')
+                amr2_pos = rec2.get('amr_obj').pos
+                amr2_next_pos = rec2.get('amr_obj').next_pos
+                rec2_tip_cell = self.target_exits.get(rec2.get('amr_obj').id)
+
+                if (amr1_pos == rec2_tip_cell and cur1 != nxt1 and cur2 == nxt2) \
+                    or (amr1_pos == amr2_next_pos and amr2_pos == amr1_next_pos):
+                    self.is_deadlock = True
+                    return True
 
         self.is_deadlock = False
         return False

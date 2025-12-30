@@ -1,14 +1,23 @@
 __pycache__/
-*.pyc
-
-wandb/
 
 .vscode/
 
 .DS_Store
 
-artifacts/
+assets/
 
-logs/
+bench_h2/
 
-runs/
+bfs_cbs_density10_summary/
+
+build/
+
+cache/
+
+map/
+
+module/
+
+*.so
+
+*.csv#

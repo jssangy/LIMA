@@ -1,5 +1,4 @@
 import os
-import json
 import random
 import numpy as np
 from collections import defaultdict, Counter
@@ -9,8 +8,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from utils.AMR import AMR
 from utils.Intersection import Intersection
 from utils import Funct
-from utils.task_generator import TaskSetGenerator
-from utils.Controller import PIBTPlanner, CBSPlanner, BFSPlanner
+from utils.task_generator import RandomGenerator, ScenGenerator
+from utils.Controller import BFSPlanner, CBSPlanner
 from utils.schedule_cache import CacheWriter
 
 
@@ -29,14 +28,19 @@ def _actions_to_paths_job(iid, inter, cache_db_path):
 
 
 class ENV():
-    def __init__(self, prob_path, density, num_amrs, max_steps, workers, cache_db_path):
+    def __init__(self, map_path, density, num_amrs, max_steps, planner, workers, cache_db_path, task_mode, scen_path, seed):
         super().__init__()
         """환경 초기화"""
-        base_dir = os.path.dirname(prob_path)
-        with open(prob_path, 'r') as f:
-            data = json.load(f)
-        map_path = os.path.join(base_dir, data['mapFile'])
         self.goal = set()
+
+        self.seed = seed
+
+        if self.seed != 0:
+            self.py_rng = random.Random(seed)
+            self.np_rng = np.random.default_rng(seed)
+        else:
+            self.py_rng = random.Random()
+            self.np_rng = np.random.default_rng()
 
         self.scheduler_pool = ProcessPoolExecutor(max_workers=workers)
 
@@ -44,7 +48,7 @@ class ENV():
         
         self.map = self._load_map(map_path)
         bbox = self._get_goal_bbox(margin=0)  # 필요하면 margin 조절
-        walkable_tiles = self._count_walkable_in_bbox(bbox, exclude_goals=True)
+        walkable_tiles = self._count_walkable_in_bbox(bbox)
         if num_amrs > 0:
             self.num_amrs = num_amrs
             density = ( self.num_amrs / walkable_tiles ) * 100
@@ -69,8 +73,12 @@ class ENV():
 
         self.center_xs = sorted({I.center_x for I in self.intersections.values()})
         self.center_ys = sorted({I.center_y for I in self.intersections.values()})
-        self.planner = BFSPlanner(self.map, self.center_xs, self.center_ys)
-            
+
+        if planner == "bfs":
+            self.planner = BFSPlanner(self.map, self.center_xs, self.center_ys, self.py_rng)
+        elif planner == "cbs":
+            self.planner = CBSPlanner(self.map, seed=self.seed, time_limit=60.0, center_xs=self.center_xs, center_ys=self.center_ys,)
+
         # 교차로 간 이웃 맵핑
         self.iid_neighbors: dict[str, dict[str, str]] = {
             iid: dict(inter_info.get("neighbors", {}))
@@ -125,7 +133,10 @@ class ENV():
         self.deadlock_waiting_iids = set()
 
         # TaskGenerator
-        self.task_generator = TaskSetGenerator(self.map, num_tasks=self.num_amrs, goal_positions=self.goal, start_in_goal_bbox=True, bbox_margin=0)
+        if task_mode == "random":
+            self.task_generator = RandomGenerator(self.map, num_tasks=self.num_amrs, goal_positions=self.goal, seed=self.seed)
+        else:
+            self.task_generator = ScenGenerator(scen_path=scen_path, num_tasks=self.num_amrs)
 
         # Color mapping
         self.color_map = Funct.Color_dict(6).dic
@@ -144,7 +155,14 @@ class ENV():
         self.cache_hits = 0
 
 
-    def reset(self):        
+    def reset(self):       
+        if self.seed != 0:
+            self.py_rng = random.Random(self.seed)
+            self.np_rng = np.random.default_rng(self.seed)
+        else:
+            self.py_rng = random.Random()
+            self.np_rng = np.random.default_rng()
+
         self.time = 0
         self.amr_list.clear()
         
@@ -174,7 +192,10 @@ class ENV():
     def step(self):
         self.time += 1
 
-        if self.task_generator.is_episode_done():
+        if self.task_generator.is_episode_done() or self.time > self.max_steps:
+            return False
+        
+        if self.amr_list and all(amr.no_move_steps >= 10 for amr in self.amr_list.values()):
             return False
 
         # 1. 스케줄러 로직 (데드락 감지 및 해결)
@@ -230,7 +251,7 @@ class ENV():
                     stalled_iids.add(iid)
 
             # deadlock_waiting_iids도 항상 체크 대상에 포함
-            check_iids |= self.deadlock_waiting_iids
+            check_iids |= self.deadlock_waiting_iids | stalled_iids
 
             # (2-1) 잠금 해제 체크 (Deadlock 해제 시도)
             for iid in list(self.deadlock_queue):
@@ -332,26 +353,29 @@ class ENV():
                 fut = self.scheduler_pool.submit(_actions_to_paths_job, iid, I, self.cache_db_path)
                 futures[fut] = iid
 
-            # 결과 수집 및 경로 반영
+            # 1) 결과를 먼저 전부 수집 (여기서는 절대 경로 반영/캐시 put 하지 않기)
+            buf = []
             for fut in as_completed(futures):
                 iid = futures[fut]
-                iid_ret, short_paths, target_exits = None, None, None
-                # _actions_to_paths_job이 (iid, short_paths, target_exits)를 반환한다고 가정
                 iid_ret, short_paths, target_exits, cache_wb, cache_hit = fut.result()
+                buf.append((iid, iid_ret, short_paths, target_exits, cache_wb, cache_hit))
 
+            # 2) 적용 순서를 고정 (iid 기준)
+            buf.sort(key=lambda x: x[0])  # x[0] == iid
+
+            # 3) 이제부터 "결과 반영 + 캐시 커밋"을 고정 순서로 수행
+            for iid, iid_ret, short_paths, target_exits, cache_wb, cache_hit in buf:
                 self.cache_lookups += 1
                 if cache_hit:
                     self.cache_hits += 1
 
-                # if self.cache_lookups % 100 == 0:  # 100번마다 출력(원하는 주기로)
+                # if self.cache_lookups % 100 == 0:
                 #     rate = 100.0 * self.cache_hits / self.cache_lookups
                 #     print(f"[CACHE] lookups={self.cache_lookups} hits={self.cache_hits} hit_rate={rate:.2f}%")
 
                 if cache_wb is not None:
                     key, blob = cache_wb
-                    self.cache_writer.put_blob(key, blob)
-
-                
+                    self.cache_writer.put_blob(key, blob)   
 
                 # 스케줄 경로를 AMR 경로에 삽입
                 for amr_id, short_path in short_paths.items():
@@ -694,11 +718,11 @@ class ENV():
         if not candidates:
             return None, None, None
 
-        d, B, cycles = random.choice(candidates)
-        cycle = random.choice(cycles)
+        d, B, cycles = self.py_rng.choice(candidates)
+        cycle = self.py_rng.choice(cycles)
 
         # 방향(시계/반시계) 랜덤 뒤집기
-        if random.random() < 0.5:
+        if self.py_rng.random() < 0.5:
             B, C, D, E = cycle
             cycle = (B, E, D, C)
 
@@ -918,47 +942,69 @@ class ENV():
 
 
     def _get_goal_bbox(self, margin: int = 0):
+        """
+        goal들의 x 범위를 bbox로 잡되, y는 전체 높이로 둔다.
+        반환: (x_min, y_min=0, x_max, y_max=H-1)
+        """
         if not self.goal:
             return None
 
         xs = [x for x, _ in self.goal]
-        ys = [y for _, y in self.goal]
-        x_min, x_max = min(xs) - margin, max(xs) + margin
-        y_min, y_max = min(ys) - margin, max(ys) + margin
+        x_min = min(xs) - margin
+        x_max = max(xs) + margin
 
         H, W = self.map.shape
-        x_min = max(0, x_min + 1); x_max = min(W - 1, x_max - 1)
-        y_min = max(0, y_min + 1); y_max = min(H - 1, y_max - 1)
-        return x_min, y_min, x_max, y_max
+        x_min = max(0, x_min)
+        x_max = min(W - 1, x_max)
+
+        return x_min, 0, x_max, H - 1
 
 
-    def _count_walkable_in_bbox(self, bbox, exclude_goals: bool = True) -> int:
+    def _count_walkable_in_bbox(self, bbox) -> int:
+        """
+        LaCAM 스타일:
+        - x 범위만 사용
+        - 경계 미포함: x_min < x < x_max
+        - goal 타일은 제외
+        """
+        H, W = self.map.shape
+
+        # bbox 없으면 전체 map에서 walkable(0) 카운트 - goal(0인 것만) 제외
         if bbox is None:
-            # goal 없으면 전체로 fallback (원하면 0으로 해도 됨)
-            total = int(np.count_nonzero(self.map == 0))
-            if exclude_goals:
-                total -= len(set(self.goal))
-            return total
+            walkable = int(np.count_nonzero(self.map == 0))
+            goal_set = set(self.goal)
+            goals_on_walkable = sum(
+                1 for (x, y) in goal_set
+                if 0 <= x < W and 0 <= y < H and self.map[y][x] == 0
+            )
+            return walkable - goals_on_walkable
 
-        x_min, y_min, x_max, y_max = bbox
-        area = self.map[y_min:y_max + 1, x_min:x_max + 1]
+        x_min, _, x_max, _ = bbox
+
+        # 경계 미포함: (x_min+1) ~ (x_max-1)
+        left = x_min + 1
+        right = x_max          # python slice end는 미포함이라 x < x_max가 됨
+
+        if left >= right:
+            return 0
+
+        # 모든 y에 대해 x 구간만 카운트
+        area = self.map[:, left:right]
         walkable = int(np.count_nonzero(area == 0))
 
-        if exclude_goals:
-            goal_set = set(self.goal)
-            goals_in_bbox = sum(
-                1 for (x, y) in goal_set
-                if x_min < x <= x_max and y_min <= y <= y_max and self.map[y][x] == 0
-            )
-            walkable -= goals_in_bbox
+        # goal 제외(내부 구간에 있는 goal만)
+        goal_set = set(self.goal)
+        goals_in_range = sum(
+            1 for (x, y) in goal_set
+            if left <= x < right and 0 <= y < H and self.map[y][x] == 0
+        )
 
-        return walkable
-
+        return walkable - goals_in_range
 
     def _spawn_amrs_from_task_gen(self):
         """
         [이름 변경 및 Task 모드 전용]
-        TaskSetGenerator로부터 새로운 AMR을 받아 환경에 추가.
+        RandomGenerator로부터 새로운 AMR을 받아 환경에 추가.
         """
         gen = self.task_generator
         if not gen or not gen.should_spawn_next():
@@ -1301,8 +1347,6 @@ class ENV():
         all_pi = self.completed_path_integrities + active_pi
         avg_pi = float(np.mean(all_pi)) if all_pi else 0.0
 
-        avg_ms = float(np.mean(self.time_ms)) if self.time_ms else 0.0
-
         # --- 3. 현재 활성화된 AMR들의 상세 정보 수집 ---
         active_amr_details = {}
         for amr_id, amr_obj in self.amr_list.items():
@@ -1316,6 +1360,5 @@ class ENV():
             "throughput": throughput,
             "active_amrs": active_amr_details,
             "avg_path_integrity": avg_pi,
-            "avg_inference_time": avg_ms,
             "time": self.time,
         }

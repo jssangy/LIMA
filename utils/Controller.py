@@ -1,156 +1,16 @@
-from utils.global_planning import AStar, PIBT, BFS, CBS
+import random
+from typing import Dict, Optional, Tuple, List
+import numpy as np
 
-class AStarPlanner:
-    def __init__(self, map_data):
-        """
-        맵 데이터를 기반으로 경로 계획기(Planner)를 초기화합니다.
-        """
-        self.map = map_data
+from utils.global_planning import BFS, CBS
 
-    def plan_for_new_amrs(self, amr_list):
-        """
-        [이름 변경 및 역할 명확화]
-        경로가 없는 새로운 AMR에 대해서만 경로를 계산하고 주입합니다.
-        """
-        for amr in amr_list.values():
-            # 경로가 이미 있는 AMR은 건너뜁니다.
-            if amr.path:
-                continue
-
-            self.calculate_and_set_path(amr)
-
-    def replan_all(self, amr_list):
-        """
-        [신규] 모든 AMR의 경로를 강제로 다시 계산하고 주입합니다.
-        """
-        for amr in amr_list.values():
-            # 경로 존재 여부와 상관없이 무조건 다시 계산합니다.
-            amr.reset()
-            self.calculate_and_set_path(amr)
-
-    def calculate_and_set_path(self, amr):
-        """
-        [신규] A* 경로 계산 및 주입 로직을 별도 함수로 분리 (코드 중복 방지)
-        """
-        start_pos = amr.pos
-        goal_pos = amr.goal
-
-        if start_pos == goal_pos:
-            path = [start_pos]
-        else:
-            planner = AStar(self.map, start_pos, goal_pos)
-            try:
-                planner.compute_shortest_path()
-                path = planner.extract_path()
-            except Exception as e:
-                print(f"Error during path planning for AMR {amr.id} from {start_pos} to {goal_pos}: {e}")
-                path = [start_pos]
-        
-        amr.set_path(path)
-
-class PIBTPlanner:
-    def __init__(self, map_data):
-        """
-        맵 데이터를 기반으로 PIBT 플래너를 초기화합니다.
-        """
-        self.map = map_data
-
-    def plan_for_new_amrs(self, amr_list):
-        pass
-
-    def replan_all(self, amr_list):
-        pass
-
-    def caculate_and_set_path(self, amr):
-        pass
-
-class CBSPlanner:
-    def __init__(self, map_data):
-        """
-        맵 데이터를 기반으로 CBS 플래너를 초기화합니다.
-        """
-        self.map = map_data
-
-    def plan_for_new_amrs(self, amr_list):
-        """
-        [역할 정의]
-        CBS는 전역 플래너이므로, 새로운 AMR이 추가되면 모든 AMR의 경로를
-        다시 계산해야 충돌 없음을 보장할 수 있습니다.
-        따라서 이 함수는 replan_all 함수를 호출합니다.
-        """
-        # 경로가 없는 AMR이 있는지 확인
-        for amr in amr_list.values():
-            # 경로가 이미 있는 AMR은 건너뜁니다.
-            if amr.path:
-                continue
-            else:
-                self.replan_all(amr_list)
-                break
-
-        # needs_replan = any(not amr.path for amr in amr_list.values())
-        
-        # if needs_replan:
-        #     print("CBS Planner: 새로운 AMR이 감지되어 모든 에이전트의 경로를 다시 계산합니다.")
-        #     self.replan_all(amr_list)
-
-    def replan_all(self, amr_list):
-        """
-        [역할 정의]
-        현재 있는 모든 AMR에 대해 CBS 알고리즘을 실행하여
-        충돌 없는 전체 경로를 계산하고 각 AMR에 주입합니다.
-        """
-        if not amr_list:
-            print("CBS Planner: 경로를 계산할 AMR이 없습니다.")
-            return
-
-        agents_to_plan = {}
-        for amr in amr_list.values():
-            # 각 AMR의 상태를 초기화합니다.
-            # amr.reset()
-            start_pos = (int(amr.pos[0]), int(amr.pos[1]))
-            goal_pos = (int(amr.goal[0]), int(amr.goal[1]))
-            # solver에 필요한 데이터를 준비합니다.
-            agents_to_plan[amr.id] = {'start': start_pos, 'goal': goal_pos}
-
-        # 2. CBS solver 초기화 및 실행
-        cbs_solver = CBS(self.map, agents_to_plan)
-        timeout_seconds = 10.0  # 필요시 이 시간(초)을 조절하세요.
-        print('Trying to calculate within', timeout_seconds, 'seconds...')
-        solution = cbs_solver.solve(time_limit=timeout_seconds)
-
-        # 3. 반환된 solution을 기반으로 각 AMR에 경로 설정
-        if solution:
-            # 모든 AMR에 대해 계산된 경로를 주입
-            for amr_id, path in solution.items():
-                if amr_id in amr_list:
-                    amr_list[amr_id].set_path(path)
-                    print('amr 번호', amr_id, '/ 경로:', path)
-            
-            # solution에 포함되지 않은 AMR이 있을 경우 (드문 경우), 현재 위치에 머무르도록 설정
-            for amr in amr_list.values():
-                if not amr.path:
-                    amr.set_path([amr.pos])
-        else:
-            print("CBS Planner: 해결책을 찾지 못했습니다.")
-            # 해결책을 못 찾은 경우, 모든 AMR은 오류 방지를 위해 현재 위치에 머무르는 경로를 가짐
-            for amr in amr_list.values():
-                amr.set_path([amr.pos])
-
-
-    def calculate_and_set_path(self, amr):
-        """
-        [역할 정의]
-        이 메서드는 단일 에이전트에 대한 경로 계산을 의미하지만, CBS는
-        다중 에이전트를 동시에 고려하는 전역 플래너이므로 이 메서드는 사용하지 않습니다.
-        """
-        pass
 
 class BFSPlanner:
-    def __init__(self, map_data, center_xs, center_ys):
+    def __init__(self, map_data, center_xs, center_ys, rng=None):
         """
         맵 데이터를 기반으로 BFS 기반 거리장 플래너를 초기화합니다.
         """
-        self.planner = BFS(map_data)
+        self.planner = BFS(map_data, rng)
         self.center_xs = center_xs
         self.center_ys = center_ys
 
@@ -182,3 +42,159 @@ class BFSPlanner:
         BFS(거리장) 플래너를 사용하여 start에서 goal까지의 경로를 계산합니다.
         """
         return self.planner.plan_path(start, goal)
+    
+
+Pos = Tuple[int, int]  # (x, y)
+
+class CBSPlanner:
+    def __init__(
+        self,
+        map_data: np.ndarray,
+        *,
+        seed: int = 7,
+        time_limit: float = 10.0,
+        center_xs: Optional[List[int]] = None,
+        center_ys: Optional[List[int]] = None,
+        trim_after_goal: bool = True,
+        fallback: str = "bfs",  # "bfs" or "stay"
+    ):
+        """
+        - map_data: 0 = free, 1 = obstacle (LIMA map 형식 가정)
+        - time_limit: CBS 제한시간(초)
+        - trim_after_goal: goal 도착 이후 padding 제거(환경에서 goal 도착 시 제거한다면 True 추천)
+        - fallback: CBS 실패 시 대체 ("bfs"=각자 BFS 최단경로, "stay"=제자리)
+        """
+        self.map = map_data
+        self.time_limit = float(time_limit)
+        self.trim_after_goal = bool(trim_after_goal)
+        self.fallback = fallback
+
+        self.center_xs = center_xs or []
+        self.center_ys = center_ys or []
+
+        self.rng = random.Random(seed)
+        self.bfs = BFS(map_data, rng=self.rng)  # plan_path 용/실패시 fallback 용
+
+        # 디버깅/벤치마크용 상태
+        self.last_conflicts: Optional[int] = None
+        self.last_solved: Optional[bool] = None
+
+        # "새 AMR 들어왔는지" 체크용
+        self._known_ids: set[int] = set()
+
+    # ---- ENV 호환 (LIMA에서 planner.plan_path를 쓰는 곳이 있음) ----
+    def plan_path(self, start: Pos, goal: Pos) -> List[Pos]:
+        if self.center_xs and self.center_ys:
+            return self.bfs.plan_path_highway(start, goal, self.center_xs, self.center_ys)
+        return self.bfs.plan_path(start, goal)
+
+    # ---- ENV가 spawn 후 호출 ----
+    def plan_for_new_amrs(self, amr_list: Dict[int, object]) -> None:
+        """
+        새 AMR이 추가되었거나, path가 없는 AMR이 있으면 전체 재계획.
+        """
+        if not amr_list:
+            return
+
+        cur_ids = set(amr_list.keys())
+        needs_replan = (cur_ids != self._known_ids) or any(
+            not getattr(amr, "path", None) for amr in amr_list.values()
+        )
+
+        if needs_replan:
+            self.replan_all(amr_list)
+            self._known_ids = cur_ids
+
+    def replan_all(self, amr_list: Dict[int, object]) -> None:
+        if not amr_list:
+            return
+
+        # 1) CBS 입력 구성: 순서 고정(재현성)
+        agents_to_plan: Dict[int, Dict[str, Pos]] = {}
+        for aid in sorted(amr_list.keys()):
+            amr = amr_list[aid]
+            sx, sy = int(amr.pos[0]), int(amr.pos[1])   # (x,y) 가정
+            gx, gy = int(amr.goal[0]), int(amr.goal[1])
+            agents_to_plan[aid] = {"start": (sx, sy), "goal": (gx, gy)}
+
+        # 2) CBS 실행
+        solver = CBS(self.map, agents_to_plan)
+
+        # CBS 내부 agent_ids도 정렬해두면 더 안전
+        solver.agent_ids = sorted(agents_to_plan.keys())
+
+        sol = solver.solve(time_limit=self.time_limit)
+        if sol is None:
+            self.last_solved = False
+            self.last_conflicts = None
+            self._apply_fallback(amr_list)
+            return
+
+        # 3) timeout이면 conflicts가 남은 해를 반환할 수 있음 → conflicts로 성공/실패 판단
+        conflicts = solver.find_all_conflicts(sol)
+        self.last_conflicts = conflicts
+        self.last_solved = (conflicts == 0)
+
+        # (벤치마크에서 "CBS 성공"은 conflicts==0 인 경우만 True로 기록 추천)
+        # 환경에서라도 conflicts>0이면 '완전한 CBS 해'가 아니니 로그 남기는 게 좋음.
+        if conflicts > 0:
+            print(f"[CBSPlanner] WARNING: solution has {conflicts} conflicts (timeout/best-so-far).")
+
+        # 4) AMR에 경로 주입 (필요하면 goal 도착까지만 trim)
+        for aid, path in sol.items():
+            if aid not in amr_list:
+                continue
+
+            amr = amr_list[aid]
+            goal = (int(amr.goal[0]), int(amr.goal[1]))
+
+            new_path = self._normalize_path(path)
+            if self.trim_after_goal:
+                new_path = self._trim_at_first_goal(new_path, goal)
+
+            self._set_amr_path(amr, new_path)
+
+        # 혹시 sol에 누락된 AMR이 있으면 fallback
+        for aid, amr in amr_list.items():
+            if not getattr(amr, "path", None):
+                self._set_amr_path(amr, self._fallback_path(amr))
+
+    # ---- 내부 유틸 ----
+    def _normalize_path(self, path: List[Pos]) -> List[Pos]:
+        # numpy int 등이 섞일 수 있으니 tuple(int,int)로 정규화
+        return [(int(x), int(y)) for (x, y) in path] if path else []
+
+    def _trim_at_first_goal(self, path: List[Pos], goal: Pos) -> List[Pos]:
+        if not path:
+            return path
+        for t, p in enumerate(path):
+            if p == goal:
+                return path[: t + 1]
+        return path
+
+    def _set_amr_path(self, amr: object, path: List[Pos]) -> None:
+        # 프로젝트 AMR 구현에 따라 set_path가 있으면 그걸 쓰는 게 안전
+        if hasattr(amr, "set_path"):
+            amr.set_path(path)
+            return
+
+        # 없으면 최소한의 필드 세팅(프로젝트에 맞게 조정 가능)
+        amr.path = path
+        amr.path_cursor = 0
+        amr.next_pos = path[1] if len(path) > 1 else (path[0] if path else tuple(amr.pos))
+
+    def _fallback_path(self, amr: object) -> List[Pos]:
+        start = (int(amr.pos[0]), int(amr.pos[1]))
+        goal = (int(amr.goal[0]), int(amr.goal[1]))
+        if self.fallback == "stay":
+            return [start]
+        p = self.plan_path(start, goal)
+        return p if p else [start]
+
+    def _apply_fallback(self, amr_list: Dict[int, object]) -> None:
+        for amr in amr_list.values():
+            self._set_amr_path(amr, self._fallback_path(amr))
+
+    # CBS는 전역 플래너라 단일 계산은 보통 안 씀. 그래도 env 호환용으로 제공.
+    def calculate_and_set_path(self, amr: object) -> None:
+        self._set_amr_path(amr, self._fallback_path(amr))

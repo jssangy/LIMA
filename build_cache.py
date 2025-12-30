@@ -157,8 +157,8 @@ def main():
     parser.add_argument("--density", type=int, default=10,
                         help="num_amrs가 0일 때만 의미 있음(ENV가 density로 계산하는 경우 대비)")
     parser.add_argument("--num-amrs", type=int, nargs="+",
-                        default=[9, 10, 11, 12, 13, 14],
-                        help="예: --num-amrs 9 10 11 12 13 14")
+                        default=[13, 14],
+                        help="예: --num-amrs 13 14")
 
     # episodes는 '각 num_amrs 그룹당' 총 에피소드 수
     parser.add_argument("--episodes", type=int, default=10_000_000)
@@ -167,7 +167,7 @@ def main():
     parser.add_argument("--env-workers", type=int, default=1)
 
     # 바깥쪽 병렬 ENV 러너 총 개수
-    parser.add_argument("--procs", type=int, default=12)
+    parser.add_argument("--procs", type=int, default=8)
 
     parser.add_argument("--cache-db", type=str, default="./cache/schedule_cache.sqlite")
     parser.add_argument("--queue-max", type=int, default=100)

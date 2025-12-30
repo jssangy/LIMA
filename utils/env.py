@@ -1,6 +1,5 @@
 from collections import Counter
 from typing import List, Optional, Sequence, Union
-import random
 
 
 class StackRearrangementEnv:
@@ -64,56 +63,6 @@ class StackRearrangementEnv:
 
     def max_cap(self) -> int:
         return max(self.stack_capacities) if self.stack_capacities else 0
-
-    def reset(self, seed: Optional[int] = None) -> None:
-        """
-        랜덤 초기화(디버그용).
-        예전엔 (num_stacks-1)*stack_capacity로 '한 스택 비워두기'였는데,
-        가변 cap에서는 '가장 큰 스택 하나를 비워두는' 형태로 일반화:
-            total_items = sum(caps) - max(caps)
-        """
-        rng = random.Random(seed)
-
-        if self.num_stacks == 0:
-            self.stacks = []
-            return
-
-        total_items = max(0, sum(self.stack_capacities) - max(self.stack_capacities))
-
-        if total_items == 0:
-            self.stacks = [[] for _ in range(self.num_stacks)]
-            return
-
-        # 색상(0..num_stacks-1)별 무작위 분포
-        weights = [rng.random() for _ in range(self.num_stacks)]
-        total_weight = sum(weights)
-
-        counts = []
-        allocated = 0
-        for i in range(self.num_stacks):
-            if i == self.num_stacks - 1:
-                count = total_items - allocated
-            else:
-                count = int(weights[i] / total_weight * total_items)
-                allocated += count
-            counts.append(max(0, count))
-
-        items = []
-        for color in range(self.num_stacks):
-            items.extend([color] * counts[color])
-
-        rng.shuffle(items)
-
-        self.stacks = [[] for _ in range(self.num_stacks)]
-        available = self.stack_capacities[:]  # 스택별 남은 슬롯
-
-        for item in items:
-            candidates = [i for i, rem in enumerate(available) if rem > 0]
-            if not candidates:
-                break
-            slot = rng.choice(candidates)
-            self.stacks[slot].append(item)
-            available[slot] -= 1
 
     def peek(self, stack_id: int) -> Optional[int]:
         s = self.stacks[stack_id]
@@ -208,10 +157,3 @@ class StackRearrangementEnv:
 
         print("".join(fmt("=====") for _ in range(self.num_stacks)))
         print("".join(fmt(f"S{i}({self.cap(i)})") for i in range(self.num_stacks)))
-
-
-if __name__ == "__main__":
-    # 예시: 스택별 cap이 다른 경우
-    env = StackRearrangementEnv(stack_capacities=[3, 5, 2], stacks=[[], [], []])
-    env.reset(seed=0)
-    env.visualize()

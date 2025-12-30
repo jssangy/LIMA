@@ -19,7 +19,7 @@ class Task:
         return {"id": self.id, "start_pos": self.start_pos, "goal_pos": self.goal_pos}
 
 
-class TaskSetGenerator:
+class RandomGenerator:
     """
     에피소드 시작 시 한 번에 task_set을 만들고, get_next_task_pair()에서 딱 한 번 반환하는 형태.
 
@@ -195,14 +195,13 @@ class TaskSetGenerator:
         if not self.goal_candidates:
             return None
 
+        # goal의 x 범위만 사용
         xs = [x for x, _ in self.goal_candidates]
-        ys = [y for _, y in self.goal_candidates]
         x_min = min(xs) - self.bbox_margin
         x_max = max(xs) + self.bbox_margin
-        y_min = min(ys) - self.bbox_margin
-        y_max = max(ys) + self.bbox_margin
 
-        return self._clamp_bbox((x_min, y_min, x_max, y_max))
+        # y는 전체(0 ~ H-1)
+        return self._clamp_bbox((x_min, 0, x_max, self.H - 1))
 
     def _clamp_bbox(self, bbox: BBox) -> BBox:
         x_min, y_min, x_max, y_max = bbox
@@ -237,9 +236,9 @@ class TaskSetGenerator:
                 if x == 0 or x == self.W - 1 or y == 0 or y == self.H - 1:
                     continue
 
-            # bbox 내부만 허용(옵션)
+            # bbox 필터: y는 포함, x는 "경계 미포함"
             if bbox is not None:
-                if not (x_min <= x <= x_max and y_min <= y <= y_max):
+                if not (x_min < x < x_max and y_min <= y <= y_max):
                     continue
 
             # goal 좌표 제외(기본)
@@ -249,6 +248,7 @@ class TaskSetGenerator:
             cands.append((x, y))
 
         return cands
+
 
     def _resolve_goal_candidates(self, goal_positions: Optional[Iterable[Coord]]) -> List[Coord]:
         # 1) 입력 goals 우선
@@ -298,3 +298,108 @@ class TaskSetGenerator:
                 border.add((self.W - 1, y))
 
         return list(border)
+
+
+class ScenGenerator:
+    """
+    LaCAM .scen 파일 기반 Task generator.
+
+    .scen 포맷(예):
+      version 1
+      0 <map_path> <W> <H> <sx> <sy> <gx> <gy> 0
+
+    동작:
+    - start_new_episode() 시 task_set을 준비
+    - get_next_task_pair() 호출 시 한 번에 전부 spawn (TaskSetGenerator와 동일한 "1회 스폰" 패턴)
+    - num_tasks가 주어지면 .scen의 앞에서부터 num_tasks개만 사용 (LaCAM의 -N과 동일 개념)
+    - offset을 주면 앞에서 offset개는 건너뛰고 사용
+    """
+
+    def __init__(self, scen_path: str, num_tasks: Optional[int] = None, offset: int = 0):
+        self.scen_path = scen_path
+        self.num_tasks = None if num_tasks is None else max(0, int(num_tasks))
+        self.offset = max(0, int(offset))
+
+        # raw records: List[(sx,sy,gx,gy)]
+        self._records: List[Tuple[int, int, int, int]] = self._load_scen(self.scen_path)
+
+        # ENV가 기대하는 상태 변수들
+        self.agv_id_counter = 0
+        self.completed_total = 0
+        self.spawned_once = False
+        self.task_set: List[Dict] = []
+
+    def _load_scen(self, scen_path: str) -> List[Tuple[int, int, int, int]]:
+        records: List[Tuple[int, int, int, int]] = []
+        with open(scen_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                if line.lower().startswith("version"):
+                    continue
+
+                parts = line.split()
+                # bucket map W H sx sy gx gy opt  -> 최소 9개
+                if len(parts) < 9:
+                    continue
+
+                sx = int(parts[4])
+                sy = int(parts[5])
+                gx = int(parts[6])
+                gy = int(parts[7])
+
+                records.append((sx, sy, gx, gy))
+        return records
+
+    # -----------------------
+    # ENV에서 호출되는 API
+    # -----------------------
+    def start_new_episode(self, reset_ids: bool = True) -> None:
+        if reset_ids:
+            self.agv_id_counter = 0
+        self.completed_total = 0
+        self.spawned_once = False
+        self.task_set = []
+
+        # offset/limit 적용 (LaCAM처럼 "앞에서부터 N개" 사용)
+        recs = self._records[self.offset:]
+        if self.num_tasks is not None:
+            recs = recs[: self.num_tasks]
+
+        # id는 0..N-1로 재부여(ENV 내부에서 쓰기 편하게)
+        for i, (sx, sy, gx, gy) in enumerate(recs):
+            self.task_set.append({
+                "id": i,
+                "start_pos": (sx, sy),
+                "goal_pos": (gx, gy),
+            })
+
+    def should_spawn_next(self) -> bool:
+        return (not self.spawned_once) and bool(self.task_set)
+
+    def get_next_task_pair(self, current_time: int) -> List[Dict]:
+        if self.should_spawn_next():
+            self.spawned_once = True
+            return list(self.task_set)
+        return []
+
+    def complete_task(self, agv_id: int) -> None:
+        self.completed_total += 1
+
+    def is_episode_done(self) -> bool:
+        # task가 없으면 즉시 종료(무한루프 방지)
+        if not self.task_set:
+            return True
+        return self.spawned_once and (self.completed_total >= len(self.task_set))
+
+    def get_progress(self) -> Dict:
+        spawned_count = len(self.task_set) if self.spawned_once else 0
+        active = spawned_count - self.completed_total
+        return {
+            "spawned_total": spawned_count,
+            "completed_total": self.completed_total,
+            "active_agvs": active,
+            "max_agvs": len(self.task_set),
+            "total_tasks": len(self.task_set),
+        }
