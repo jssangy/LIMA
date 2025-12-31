@@ -9,28 +9,26 @@ import statistics
 
 MAPS = ["cross-30-30", "warehouse-10-20", "warehouse-20-40"]
 
-# planner -> results folder name (assets/{map}/{folder}/...)
 PLANNER_DIR = {
-    "cbs": "results_lima_cbs",
-    "bfs": "results_lima_bfs",
-    "bfs_highpass": "results_lima",   # 너가 말한 bfs_highpass 결과 폴더
+    "CBS": "results_lima_cbs",
+    "BFS": "results_lima_bfs",
+    "DoR": "results_lima",
 }
 
-PLANNERS = ["cbs", "bfs", "bfs_highpass"]
+PLANNERS = ["CBS", "BFS", "DoR"]
 SCEN_IDXS = list(range(10))
 
 
-def read_first_row_csv(path: str) -> dict | None:
+def read_first_row_csv(path: str):
     try:
         with open(path, "r", newline="", encoding="utf-8") as f:
             r = csv.DictReader(f)
-            row = next(r, None)
-            return row
+            return next(r, None)
     except FileNotFoundError:
         return None
 
 
-def to_float(x) -> float | None:
+def to_float(x):
     if x is None:
         return None
     try:
@@ -42,23 +40,35 @@ def to_float(x) -> float | None:
         return None
 
 
+def write_csv(path: str, fieldnames: list[str], rows: list[dict]):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(rows)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--density", type=int, default=10, help="target density to summarize (default: 10)")
-    ap.add_argument("--out", type=str, default="throughput_summary.csv")
-    ap.add_argument("--skip-missing", action="store_true",
-                    help="if set, missing files are ignored silently (default: warn)")
+    ap.add_argument("--density", type=int, default=10)
+    ap.add_argument("--out-box", type=str, default="throughput_boxplot.csv")
+    ap.add_argument("--out-sum", type=str, default="throughput_summary.csv")
+    ap.add_argument("--skip-missing", action="store_true")
     args = ap.parse_args()
 
-    rows_out = []
+    # ✅ 박스플롯용: 시나리오 단위 원자료
+    box_rows = []
+
+    # ✅ 요약용: mean/min/max
+    sum_rows = []
+
     for map_name in MAPS:
         for planner in PLANNERS:
             folder = PLANNER_DIR[planner]
             results_dir = os.path.join("assets", map_name, folder)
 
-            thr_list: list[float] = []
+            thr_list = []
             found = 0
-            missing = 0
 
             for scen_idx in SCEN_IDXS:
                 file_name = f"{map_name}_{args.density}_s{scen_idx}.csv"
@@ -66,7 +76,6 @@ def main():
 
                 row = read_first_row_csv(path)
                 if row is None:
-                    missing += 1
                     if not args.skip_missing:
                         print(f"[WARN] missing: {path}")
                     continue
@@ -76,44 +85,57 @@ def main():
                     print(f"[WARN] invalid throughput in: {path} (value={row.get('throughput')})")
                     continue
 
+                # --- 박스플롯용 원자료 저장 ---
+                box_rows.append({
+                    "map": map_name,
+                    "planner": planner,
+                    "density": args.density,
+                    "scen_idx": scen_idx,
+                    "throughput": thr,
+                })
+
                 thr_list.append(thr)
                 found += 1
 
+            # --- 요약 저장(원하면) ---
             if found == 0:
-                # 아무 파일도 못 읽었으면 빈 값으로 기록
-                rows_out.append({
+                sum_rows.append({
                     "map": map_name,
                     "planner": planner,
+                    "density": args.density,
                     "throughput_mean": "",
                     "throughput_min": "",
                     "throughput_max": "",
                     "n_files": 0,
                 })
-                continue
+            else:
+                sum_rows.append({
+                    "map": map_name,
+                    "planner": planner,
+                    "density": args.density,
+                    "throughput_mean": f"{statistics.mean(thr_list):.6f}",
+                    "throughput_min": f"{min(thr_list):.6f}",
+                    "throughput_max": f"{max(thr_list):.6f}",
+                    "n_files": found,
+                })
 
-            rows_out.append({
-                "map": map_name,
-                "planner": planner,
-                "throughput_mean": f"{statistics.mean(thr_list):.6f}",
-                "throughput_min": f"{min(thr_list):.6f}",
-                "throughput_max": f"{max(thr_list):.6f}",
-                "n_files": found,  # 참고용(원하면 제거 가능)
-            })
-
-            print(f"[{map_name} | {planner}] density={args.density} "
-                  f"n={found} mean/min/max="
-                  f"{statistics.mean(thr_list):.6f}/"
-                  f"{min(thr_list):.6f}/"
-                  f"{max(thr_list):.6f}")
+                print(f"[{map_name} | {planner}] density={args.density} n={found} "
+                      f"mean/min/max={statistics.mean(thr_list):.6f}/{min(thr_list):.6f}/{max(thr_list):.6f}")
 
     # 저장
-    out_fields = ["map", "planner", "throughput_mean", "throughput_min", "throughput_max", "n_files"]
-    with open(args.out, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=out_fields)
-        w.writeheader()
-        w.writerows(rows_out)
+    write_csv(
+        args.out_box,
+        fieldnames=["map", "planner", "density", "scen_idx", "throughput"],
+        rows=box_rows,
+    )
+    write_csv(
+        args.out_sum,
+        fieldnames=["map", "planner", "density", "throughput_mean", "throughput_min", "throughput_max", "n_files"],
+        rows=sum_rows,
+    )
 
-    print(f"\nSaved: {args.out}")
+    print(f"\nSaved boxplot data: {args.out_box}")
+    print(f"Saved summary data : {args.out_sum}")
 
 
 if __name__ == "__main__":
