@@ -18,11 +18,11 @@ module/
 
 *.csv#
 
-bench_solve_h2_time.py
-bench_success_rate.py
-bfs_cbs_lima_test.py
-build_cache.py
-cbs_test.py
-lima_test.py
-make_throughput_summary.py
-read_cache.py
+/bench_solve_h2_time.py
+/bench_success_rate.py
+/bfs_cbs_lima_test.py
+/build_cache.py
+/cbs_test.py
+/lima_test.py
+/make_throughput_summary.py
+/read_cache.py
