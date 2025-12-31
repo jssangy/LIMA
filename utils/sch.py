@@ -27,7 +27,7 @@ def _get_cache_reader(db_path: str) -> CacheReader:
     global _CACHE_READER, _CACHE_READER_PATH
     if _CACHE_READER is None or _CACHE_READER_PATH != db_path:
         _CACHE_READER_PATH = db_path
-        _CACHE_READER = CacheReader(db_path)  # mode=ro로 열리는 Reader
+        _CACHE_READER = CacheReader(db_path)  # Reader opened in mode=ro
     return _CACHE_READER
 
 
@@ -43,7 +43,7 @@ def _normalize_caps(stack_capacities: Union[int, Sequence[int]], n: int) -> List
 
 
 class StackScheduler:
-    """초기 스택 상태만 받아 스케줄(move 시퀀스)을 생성."""
+    """Generates a schedule (move sequence) by receiving only the initial stack state."""
 
     def __init__(
         self,
@@ -54,7 +54,7 @@ class StackScheduler:
         n = len(initial_stacks)
         caps = _normalize_caps(stack_capacities, n)
 
-        # env는 스택별 cap을 그대로 사용
+        # env uses the per-stack capacity as is
         self.env = StackRearrangementEnv(
             stacks=deepcopy(initial_stacks),
             stack_capacities=caps,
@@ -67,11 +67,11 @@ class StackScheduler:
     # =========================================================================
     def solve_h2(self, max_iters=100_000, use_deterministic_move=True):
         if _HAS_CPP:
-            # self.caps(스택별 cap 리스트) 기반이면 그대로 넘기고,
-            # 아직 단일 cap이면 [cap]*n 형태로 만들어서 넘기면 됨
+            # If based on self.caps (per-stack capacity list), pass it as is,
+            # if it's still a single cap, pass it as [cap]*n
             caps = getattr(self, "caps", None)
             if caps is None:
-                # 구버전(단일 cap)일 때
+                # For old version (single cap)
                 caps = [self.env.stack_capacity] * len(self.env.stacks)
             return cpp_sch.solve_h2_base(self.env.stacks, caps, max_iters, use_deterministic_move)
 
@@ -89,13 +89,13 @@ def schedule(
     **kwargs,
 ):
     """
-    - 캐시 key: (initial_stacks, stack_capacities)만 사용
-    - 캐시 value: solve_h2()가 만든 base_moves만 저장/로드
-    - per_stack_quota는 캐시에 안 넣고, 매번 후처리로만 적용(가벼움)
+    - Cache key: uses only (initial_stacks, stack_capacities)
+    - Cache value: stores/loads only base_moves created by solve_h2()
+    - per_stack_quota is not cached, applied only as post-processing every time (lightweight)
 
     Returns:
         (final_moves, elapsed_time, cache_writeback)
-        cache_writeback: None 또는 (key_bytes, blob_bytes)  # 메인에서만 put
+        cache_writeback: None or (key_bytes, blob_bytes)  # put only in main
     """
     n = len(initial_stacks)
     caps = _normalize_caps(stack_capacities, n)
@@ -112,7 +112,7 @@ def schedule(
     base_moves = None
     writeback = None
 
-    # 1) 캐시 read-only 조회
+    # 1) Cache read-only lookup
     key = None
     cache_hit = False
     if cache_db_path:
@@ -123,16 +123,16 @@ def schedule(
             base_moves = decode_actions(blob)
             cache_hit = True
 
-    # 2) miss면 solve_h2() 실행 (가장 비싼 부분)
+    # 2) If miss, execute solve_h2() (most expensive part)
     if base_moves is None:
         scheduler = StackScheduler(initial_stacks, stack_capacities=caps)
         base_moves = scheduler.solve_h2(max_iters=max_iters, **kwargs)
         cache_hit = False
 
         if cache_db_path and key is not None:
-            writeback = (key, encode_actions(base_moves))  # 메인이 저장
+            writeback = (key, encode_actions(base_moves))  # Main saves it
 
-    # 3) 후처리(가벼움) — 기존 schedule()과 동일
+    # 3) Post-processing (lightweight) — same as existing schedule()
     moves = append_explicit_overflow_moves(
         initial_stacks=initial_stacks,
         base_moves=base_moves,
@@ -166,7 +166,7 @@ def append_explicit_overflow_moves(
 
     stacks = deepcopy(initial_stacks)
 
-    # 1) base_moves 적용 (cap[dst] 검사)
+    # 1) Apply base_moves (check cap[dst])
     for (src, dst) in base_moves:
         if src == dst:
             continue
@@ -178,7 +178,7 @@ def append_explicit_overflow_moves(
         ball = stacks[src].pop()
         stacks[dst].append(ball)
 
-    # 2) 타입 개수(need)
+    # 2) Number of types (need)
     counts = Counter(item for st in stacks for item in st)
     need = [counts.get(i, 0) for i in range(n)]
 
@@ -186,7 +186,7 @@ def append_explicit_overflow_moves(
     if not overflow_types:
         return base_moves
 
-    # 3) target_len 계산 (cap_i 기반)
+    # 3) Calculate target_len (based on cap_i)
     lens = [0] * n
     for i in range(n):
         lens[i] = caps[i] if i in overflow_types else need[i]
@@ -198,7 +198,7 @@ def append_explicit_overflow_moves(
         for _ in range(extra):
             cands = [j for j in range(n) if j != t and j not in overflow_types and lens[j] < caps[j]]
             if not cands:
-                # 더 이상 분배 불가면 base_moves 그대로
+                # If no more distribution is possible, return base_moves as is
                 return base_moves
             min_len = min(lens[j] for j in cands)
             dst = next(j for j in order if j in cands and lens[j] == min_len)
@@ -206,7 +206,7 @@ def append_explicit_overflow_moves(
 
     target_len = lens
 
-    # 4) 현재 길이를 target_len으로 맞추기 (비-overflow 스택들만)
+    # 4) Match current length to target_len (only for non-overflow stacks)
     extra_moves: List[Move] = []
     step = 0
     while True:
@@ -223,7 +223,7 @@ def append_explicit_overflow_moves(
 
         top = stacks[src][-1] if stacks[src] else None
         if (not stacks[src]) or (top not in overflow_types):
-            # “digging”은 안 하므로 여기서 포기
+            # Since we don't do "digging", give up here
             return base_moves
 
         if len(stacks[dst]) >= caps[dst]:
@@ -255,12 +255,12 @@ def append_overflow_moves(
     if len(per_stack_quota) != n:
         raise ValueError(f"per_stack_quota len {len(per_stack_quota)} != stacks len {n}")
 
-    # quota는 cap을 넘지 않게 clamp
+    # Clamp quota so it doesn't exceed cap
     quota = [max(0, min(int(per_stack_quota[i]), caps[i])) for i in range(n)]
 
     stacks = deepcopy(initial_stacks)
 
-    # 1) moves 드라이런 적용 (cap[dst] 검사)
+    # 1) Apply moves dry-run (check cap[dst])
     for (src, dst) in moves:
         if src == dst:
             continue
@@ -271,7 +271,7 @@ def append_overflow_moves(
         ball = stacks[src].pop()
         stacks[dst].append(ball)
 
-    # 2) quota 초과분을 slack 큰 곳으로 이동
+    # 2) Move quota excess to locations with large slack
     extra: List[Move] = []
     step = 0
 

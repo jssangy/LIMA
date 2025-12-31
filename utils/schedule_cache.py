@@ -18,7 +18,7 @@ def make_cache_key(
     stack_capacities: Sequence[int],
 ) -> bytes:
     """
-    key는 solve_h2()의 입력을 결정하는 최소 정보만:
+    key contains only the minimum information that determines the input of solve_h2():
       - initial_stacks
       - stack_capacities
     """
@@ -30,8 +30,8 @@ def make_cache_key(
     return hashlib.blake2b(b, digest_size=16).digest()  # 16 bytes
 
 
-# (src,dst) 한 move를 1바이트로 저장: (src<<4 | dst)
-# src,dst는 0~15 범위여야 함 (삼/사거리 OK)
+# Store one (src,dst) move as 1 byte: (src<<4 | dst)
+# src,dst must be in range 0~15 (3-way/4-way intersection OK)
 def encode_actions(actions) -> bytes:
     raw = bytearray()
     for (src, dst) in actions:
@@ -48,8 +48,8 @@ def decode_actions(blob: bytes):
 
 class CacheReader:
     """
-    워커용: read-only로만 연다.
-    (메인 프로세스가 CacheWriter로 DB 파일을 먼저 만들어둬야 mode=ro가 성공함)
+    For workers: opens in read-only mode.
+    (The main process must first create the DB file with CacheWriter for mode=ro to succeed)
     """
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -80,7 +80,7 @@ class CacheReader:
 
 
 class CacheWriter:
-    """메인용: write 전담"""
+    """For main: dedicated to writing"""
     def __init__(self, db_path: str):
         d = os.path.dirname(db_path)
         if d:
@@ -97,5 +97,6 @@ class CacheWriter:
             self.conn.execute("INSERT OR REPLACE INTO cache(k,v) VALUES(?,?)", (key, blob))
             self.conn.commit()
         except sqlite3.OperationalError:
-            # 캐시는 best-effort
+            # Cache is best-effort
+            pass
             pass

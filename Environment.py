@@ -15,11 +15,11 @@ from utils.schedule_cache import CacheWriter
 
 def _actions_to_paths_job(iid, inter, cache_db_path):
     """
-    서브 프로세스에서 실행할 함수.
+    Function to be executed in a sub-process.
     
-    - iid: 교차로 ID (문자열)
-    - inter: Intersection 객체 (해당 프로세스에서만 사용하는 복사본)
-    반환:
+    - iid: Intersection ID (string)
+    - inter: Intersection object (copy used only in this process)
+    Returns:
       (iid, short_paths, target_exits)
     """
     inter.cache_db_path = cache_db_path
@@ -30,7 +30,7 @@ def _actions_to_paths_job(iid, inter, cache_db_path):
 class ENV():
     def __init__(self, map_path, density, num_amrs, max_steps, planner, workers, cache_db_path, task_mode, scen_path, seed):
         super().__init__()
-        """환경 초기화"""
+        """Initialize environment"""
         self.goal = set()
 
         self.seed = seed
@@ -47,7 +47,7 @@ class ENV():
         self.time = 0
         
         self.map = self._load_map(map_path)
-        bbox = self._get_goal_bbox(margin=0)  # 필요하면 margin 조절
+        bbox = self._get_goal_bbox(margin=0)  # Adjust margin if necessary
         walkable_tiles = self._count_walkable_in_bbox(bbox)
         if num_amrs > 0:
             self.num_amrs = num_amrs
@@ -79,16 +79,16 @@ class ENV():
         elif planner == "cbs":
             self.planner = CBSPlanner(self.map, seed=self.seed, time_limit=60.0, center_xs=self.center_xs, center_ys=self.center_ys,)
 
-        # 교차로 간 이웃 맵핑
+        # Neighbor mapping between intersections
         self.iid_neighbors: dict[str, dict[str, str]] = {
             iid: dict(inter_info.get("neighbors", {}))
             for iid, inter_info in processed_intersections.items()
         }
 
-        # 교차로별 현재 AMR 수 (step마다 갱신)
+        # Current number of AMRs per intersection (updated every step)
         self.iid_inside_counts: dict[str, int] = defaultdict(int)
 
-        # 교차로별 scheduling capacity 저장
+        # Store scheduling capacity per intersection
         self.iid_scheduling_capacity: dict[str, int] = {}
 
         for iid, I in self.intersections.items():
@@ -99,16 +99,16 @@ class ENV():
             I.scheduling_capacity = cap_i
             I.available_count = cap_i
 
-        # 각 셀이 어느 교차로에 속하는지 맵핑
+        # Mapping which intersection each cell belongs to
         self.cell2iids: Dict[tuple[int, int], list[str]] = defaultdict(list)
 
-        # 이벤트 셀들 (교차로 중심 + 레인 끝)
+        # Event cells (intersection center + lane ends)
         self.event_center_cells = set()
         self.event_tip_cells = set()
         self.event_cells = set()
         self.event_cells2iid = {}
 
-        # 맵핑 구축
+        # Build mapping
         for iid, I in self.intersections.items():
             center = (I.center_x, I.center_y)
 
@@ -127,7 +127,7 @@ class ENV():
                 self.event_tip_cells.add(end_cell)
                 self.event_cells2iid[end_cell] = iid
 
-        # 데드락 상태인 교차로
+        # Intersections in deadlock state
         self.deadlock_queue = []
         self.iid2sched: dict[str, set[int]] = defaultdict(set)
         self.deadlock_waiting_iids = set()
@@ -150,7 +150,7 @@ class ENV():
         self.time_ms = []
 
         self.cache_db_path = cache_db_path
-        self.cache_writer = CacheWriter(self.cache_db_path)  # 여기서 DB 파일/테이블 생성됨(중요!)
+        self.cache_writer = CacheWriter(self.cache_db_path)  # DB file/table created here (Important!)
         self.cache_lookups = 0
         self.cache_hits = 0
 
@@ -168,7 +168,7 @@ class ENV():
         
         self.task_generator.start_new_episode()
 
-        # 모든 교차로의 내부 상태 초기화
+        # Initialize internal state of all intersections
         for I in self.intersections.values():
             I.reset()
 
@@ -198,9 +198,9 @@ class ENV():
         if self.amr_list and all(amr.no_move_steps >= 10 for amr in self.amr_list.values()):
             return False
 
-        # 1. 스케줄러 로직 (데드락 감지 및 해결)
+        # 1. Scheduler logic (deadlock detection and resolution)
         if self.use_scheduler:
-            # (1) 교차로별 멤버 확인
+            # (1) Check members per intersection
             check_iids = set()
             iid2members: dict[str, list[int]] = defaultdict(list)
             stalled_iids = set()
@@ -209,20 +209,20 @@ class ENV():
             for amr_id, amr_obj in self.amr_list.items():
                 pos = tuple(amr_obj.pos)
                 
-                # 현재 위치가 어떤 교차로 영역에 속하는지 확인
+                # Check which intersection area the current position belongs to
                 if pos in self.cell2iids:
                     for iid in self.cell2iids[pos]:
                         iid2members[iid].append(amr_id)
                         self.iid_inside_counts[iid] += 1
                         
-                # 데드락 체크가 필요한지 확인 (center + tip)
+                # Check if deadlock check is needed (center + tip)
                 if pos in self.event_cells:
                     iid = self.event_cells2iid[pos]
                     check_iids.add(iid)
             
-            # 첫 스텝에서는 현 교차로, 이웃 교차로 여유 공간 카운트 초기화
+            # In the first step, initialize free space counts for current and neighboring intersections
             if self.time == 1:
-                # 1) available_count 세팅 + 스냅샷 만들기
+                # 1) Set available_count + create snapshot
                 resv = {}
                 for iid, I in self.intersections.items():
                     cap_i = self.iid_scheduling_capacity[iid]
@@ -230,7 +230,7 @@ class ENV():
                     I.available_count = cap_i - count
                     resv[iid] = cap_i - count
 
-                # 2) 이웃 available 스냅샷 갱신
+                # 2) Update neighbor available snapshot
                 INF = 1e9
                 for iid, I in self.intersections.items():
                     neigh_map = self.iid_neighbors.get(iid, {})
@@ -243,17 +243,17 @@ class ENV():
                         else:
                             I.neighbor_available_count[d] = resv[nid]
 
-            # 교차로 정지 상태인지 확인
+            # Check if intersection is in a stalled state
             for iid, members in iid2members.items():
                 if not members:
                     continue
                 if all(self.amr_list[aid].no_move_steps >= 1 for aid in members):
                     stalled_iids.add(iid)
 
-            # deadlock_waiting_iids도 항상 체크 대상에 포함
+            # Always include deadlock_waiting_iids in the check targets
             check_iids |= self.deadlock_waiting_iids | stalled_iids
 
-            # (2-1) 잠금 해제 체크 (Deadlock 해제 시도)
+            # (2-1) Unlock check (Attempt to resolve deadlock)
             for iid in list(self.deadlock_queue):
                 scheduled_members = self.iid2sched[iid]
                 still_active = False
@@ -271,10 +271,10 @@ class ENV():
                 if not still_active:
                     self.deadlock_queue.remove(iid)
 
-            # 현재 스케줄 진행 중인 교차로 id 집합
+            # Set of intersection IDs currently being scheduled
             active_iids = set(self.deadlock_queue)
 
-            # (3-A) 데드락 체크 및 "스케줄 후보 iid" 수집
+            # (3-A) Deadlock check and collect "schedule candidate iid"
             iids_to_schedule: list[str] = []
             candidate_deadlocks: list[str] = []
 
@@ -282,40 +282,40 @@ class ENV():
                 I = self.intersections[iid]
                 I.reset()
 
-                # 해당 교차로 영역에 있는 모든 AMR 등록
+                # Register all AMRs in the intersection area
                 for amr_id in iid2members.get(iid, []):
                     amr_obj = self.amr_list[amr_id]
                     I.register_amr(amr_obj)                
 
-                # 3-1) 데드락 여부 판단
+                # 3-1) Determine if deadlock exists
                 is_deadlock = I.check_deadlock()
                 if not is_deadlock:
-                    # 더 이상 데드락 아니면 pending 후보에서 제거
+                    # If no longer in deadlock, remove from pending candidates
                     self.deadlock_waiting_iids.discard(iid)
                     continue
                 
-                # 3-2) 이웃 교차로가 스케줄 중이면 이번 스텝엔 스킵, 대신 pending에 등록
+                # 3-2) If neighbor intersection is being scheduled, skip this step and register in pending
                 if self.has_active_neighbor(iid):
                     self.deadlock_waiting_iids.add(iid)
                     continue
 
-                # 여기까지 왔으면:
-                #  - 해당 iid는 현재 데드락 상태
-                #  - 이웃 active 교차로 없음 → 이번 스텝에서 스케줄 시작 가능
+                # If we reached here:
+                #  - This iid is currently in a deadlock state
+                #  - No active neighbor intersections -> scheduling can start in this step
                 self.deadlock_waiting_iids.discard(iid)
                 candidate_deadlocks.append(iid)
                 
-            # 후보 deadlock 교차로들을 "교차로 내 AMR 수 적은 순"으로 정렬
+            # Sort candidate deadlock intersections by "ascending order of AMR count within the intersection"
             candidate_deadlocks.sort(
                 key=lambda x: self.iid_inside_counts.get(x, 0),
                 reverse=False,
             )
 
-            # (3-A-2) 2차 패스: 정렬된 순서대로 actions_to_paths 스케줄 결정
+            # (3-A-2) Second pass: Determine actions_to_paths schedule in sorted order
             for iid in candidate_deadlocks:
-                # 2차 패스 시점에는 앞에서 스케줄/분산이 진행되어
-                # deadlock_queue가 바뀌었을 수 있으므로,
-                # 이웃 active 상태를 다시 한 번 확인
+                # At the time of the second pass, scheduling/distribution may have progressed,
+                # so the deadlock_queue might have changed,
+                # so check the neighbor active state once more.
                 if self.has_active_neighbor(iid):
                     self.deadlock_waiting_iids.add(iid)
                     continue
@@ -323,7 +323,7 @@ class ENV():
                 I = self.intersections[iid]
                 cap_i = self.iid_scheduling_capacity[iid]
 
-                # 용량 초과 시 continue
+                # Continue if capacity is exceeded
                 if self.iid_inside_counts.get(iid, 0) > cap_i:
                     I = self.intersections[iid]
                     self.deadlock_waiting_iids.add(iid)
@@ -333,37 +333,37 @@ class ENV():
                     self.deadlock_waiting_iids.add(iid)
                     continue
 
-                # 여기까지 왔으면:
-                #  - 해당 iid는 데드락 상태
-                #  - 이웃 active 교차로 없음 → 이번 스텝에서 스케줄 시작 가능
+                # If we reached here:
+                #  - This iid is currently in a deadlock state
+                #  - No active neighbor intersections -> scheduling can start in this step
                 self.deadlock_waiting_iids.discard(iid)
 
                 if iid not in active_iids:
                     self.deadlock_queue.append(iid)
                     active_iids.add(iid)
 
-                # 이 교차로에 대해 actions_to_paths 실행
+                # Execute actions_to_paths for this intersection
                 iids_to_schedule.append(iid)
 
-            # (3-B) iids_to_schedule에 대해서 I.actions_to_paths() 병렬 실행
+            # (3-B) Parallel execution of I.actions_to_paths() for iids_to_schedule
             futures = {}
             for iid in iids_to_schedule:
                 I = self.intersections[iid]
-                # 프로세스 풀에 job 제출
+                # Submit job to process pool
                 fut = self.scheduler_pool.submit(_actions_to_paths_job, iid, I, self.cache_db_path)
                 futures[fut] = iid
 
-            # 1) 결과를 먼저 전부 수집 (여기서는 절대 경로 반영/캐시 put 하지 않기)
+            # 1) Collect all results first (do not reflect absolute paths or put in cache here)
             buf = []
             for fut in as_completed(futures):
                 iid = futures[fut]
                 iid_ret, short_paths, target_exits, cache_wb, cache_hit = fut.result()
                 buf.append((iid, iid_ret, short_paths, target_exits, cache_wb, cache_hit))
 
-            # 2) 적용 순서를 고정 (iid 기준)
+            # 2) Fix application order (based on iid)
             buf.sort(key=lambda x: x[0])  # x[0] == iid
 
-            # 3) 이제부터 "결과 반영 + 캐시 커밋"을 고정 순서로 수행
+            # 3) From now on, perform "result reflection + cache commit" in fixed order
             for iid, iid_ret, short_paths, target_exits, cache_wb, cache_hit in buf:
                 self.cache_lookups += 1
                 if cache_hit:
@@ -377,7 +377,7 @@ class ENV():
                     key, blob = cache_wb
                     self.cache_writer.put_blob(key, blob)   
 
-                # 스케줄 경로를 AMR 경로에 삽입
+                # Insert scheduled path into AMR path
                 for amr_id, short_path in short_paths.items():
                     if amr_id in self.amr_list:
                         amr_obj = self.amr_list[amr_id]
@@ -420,27 +420,27 @@ class ENV():
                 for amr in edge_amrs:
                     self.build_and_insert_cycle_path(amr, iid, *cycle)   
 
-        # 2. AMR 이동
-        # (A) 현재 위치 점유 맵 초기화
+        # 2. AMR Movement
+        # (A) Initialize current position occupancy map
         current_occ = {amr.pos: amr.id for amr in self.amr_list.values()}
 
-        # (B) 그룹 분리
+        # (B) Group separation
         normal_amrs = [a for a in self.amr_list.values() if a.scheduling == 0]
         scheduled_amrs = [a for a in self.amr_list.values() if a.scheduling > 0]
 
         # -------------------------------------------------------
-        # [Phase 1] 일반 로봇(Normal AMR) 먼저 이동
+        # [Phase 1] Normal AMRs move first
         # -------------------------------------------------------
         for amr in normal_amrs:
             cur_pos = amr.pos
             next_pos = amr.next_pos
 
-            # ★ 우선순위 높은 교차로 tip 밑 scheduling capacity 초과 교차로로 진입하려는 경우 → 이 스텝에서는 대기
+            # ★ If entering a high-priority intersection tip or an intersection exceeding scheduling capacity -> wait in this step
             if self.block_intersection(cur_pos, next_pos, normal_only=True):
                 amr.no_move_steps += 1
                 continue
 
-            # 기존 충돌/점유 체크
+            # Existing collision/occupancy check
             if next_pos not in current_occ:
                 if cur_pos in current_occ and current_occ[cur_pos] == amr.id:
                     del current_occ[cur_pos]
@@ -453,17 +453,17 @@ class ENV():
                 amr.no_move_steps += 1
 
         # -------------------------------------------------------
-        # [Phase 2] 스케줄링 차단 여부 확인 (Blocking Check)
-        # 일반 로봇들이 자리를 잡은 후, 스케줄링된 로봇들이 갈 수 있는지 확인
+        # [Phase 2] Scheduling blocking check
+        # After normal robots have settled, check if scheduled robots can move
         # -------------------------------------------------------
-        # 현재 일반 로봇들의 위치 집합
+        # Current set of normal robot positions
         normal_occ_pos = {amr.pos for amr in normal_amrs}
 
-        # 차단된 교차로 ID 식별
+        # Identify blocked intersection IDs
         blocked_iids = set()
 
         for iid, members in self.iid2sched.items():
-            # ✅ 순회는 snapshot(list)로, 수정은 원본 set(members)에
+            # ✅ Iterate using a snapshot (list), modify the original set (members)
             for mid in list(members):
                 amr = self.amr_list.get(mid, None)
                 if amr is None:
@@ -473,23 +473,23 @@ class ENV():
                 cur_pos = amr.pos
                 next_pos = amr.next_pos
 
-                # 우선순위가 높은 교차로의 끝으로 진입하려는 경우 차단
+                # Block if entering the end of a high-priority intersection
                 if self.block_intersection(cur_pos, next_pos, normal_only=False):
                     blocked_iids.add(iid)
                     break
 
-                # 다음 위치가 일반 로봇에 의해 점유된 경우 차단
+                # Block if the next position is occupied by a normal robot
                 if next_pos in normal_occ_pos:
                     blocked_iids.add(iid)
                     break
         
         # -------------------------------------------------------
-        # [Phase 3] 스케줄링된 로봇 이동
+        # [Phase 3] Scheduled robot movement
         # -------------------------------------------------------
         for amr in scheduled_amrs:
-            # 내가 속한 스케줄이 차단되었는지 확인
+            # Check if the schedule I belong to is blocked
             is_blocked = False
-            # 역추적: 내가 어느 iid에 속해있는지 확인 (iid2sched 순회)
+            # Backtrack: Check which iid I belong to (iterate iid2sched)
             for iid, members in self.iid2sched.items():
                 if amr.id in members:
                     if iid in blocked_iids:
@@ -497,18 +497,18 @@ class ENV():
                     break
             
             if is_blocked:
-                # 그룹 전체가 대기해야 하므로 건너뜀
+                # Skip because the entire group must wait
                 amr.no_move_steps += 1
                 continue
 
-            # 이동 수행
+            # Perform movement
             if amr.pos in current_occ and current_occ[amr.pos] == amr.id:
                 del current_occ[amr.pos]
             amr.move()
             current_occ[amr.pos] = amr.id
 
 
-        # 3. 완료 체크 및 정보 반환
+        # 3. Check completion and return info
         self._check_amr_completion()
 
         return self.make_info()
@@ -521,7 +521,7 @@ class ENV():
         neigh_map = self.iid_neighbors.get(iid, {})
         INF = 10**9
 
-        # 이웃 교차로 여유
+        # Neighbor intersection free space
         neigh_available = {}
         for d in dirs:
             nid = neigh_map.get(d)
@@ -542,10 +542,10 @@ class ENV():
             if nxt in dirs:
                 exit_need[nxt] += 1
 
-        # ★ 방향별 cap: 교차로 팔 길이 그대로
+        # ★ Capacity per direction: same as intersection arm length
         cap_list = [len(I.lane_coords[d]) for d in dirs]
 
-        # quota도 cap을 넘지 않게 (물리 제한)
+        # Ensure quota does not exceed capacity (physical limit)
         per_stack_quota = []
         for i, d in enumerate(dirs):
             cap_d = cap_list[i]
@@ -559,14 +559,14 @@ class ENV():
 
         final_need = self.predict_final_stack_lengths(
             exit_need=exit_need,
-            stack_capacities=cap_list,          # ★ 여기!
+            stack_capacities=cap_list,          # ★ here!
             per_stack_quota=per_stack_quota,
             order=dirs,
         )
         if final_need is None:
             return False
 
-        # delta 적용
+        # Apply delta
         for d in dirs:
             delta = int(final_need[d]) - int(initial_need.get(d, 0))
             nid = neigh_map.get(d)
@@ -583,17 +583,17 @@ class ENV():
     def predict_final_stack_lengths(
         self,
         exit_need: Counter,                             # {'N':7,'E':2,...}
-        stack_capacities: Union[int, Sequence[int]] = 5,# ★ int 또는 [cap0,cap1,...]
-        per_stack_quota: Optional[Sequence[int]] = None,# ★ [q0,q1,...] (없으면 cap로)
-        order: Union[str, Sequence[str]] = "NESW",      # ★ "SEW" 또는 ['S','E','W']
+        stack_capacities: Union[int, Sequence[int]] = 5,# ★ int or [cap0,cap1,...]
+        per_stack_quota: Optional[Sequence[int]] = None,# ★ [q0,q1,...] (if none, use cap)
+        order: Union[str, Sequence[str]] = "NESW",      # ★ "SEW" or ['S','E','W']
     ):
-        # 0) order 정리
+        # 0) Organize order
         order_list = list(order) if isinstance(order, str) else list(order)
         n = len(order_list)
         if n == 0:
             return {}
 
-        # 1) cap 정리 (스택별)
+        # 1) Organize cap (per stack)
         if isinstance(stack_capacities, int):
             caps = [int(stack_capacities)] * n
         else:
@@ -601,27 +601,27 @@ class ENV():
             if len(caps) != n:
                 return None
 
-        # 2) need / quota 정리
+        # 2) Organize need / quota
         need = [int(exit_need.get(d, 0)) for d in order_list]
 
         if per_stack_quota is None:
-            quota = caps[:]  # 기본은 cap
+            quota = caps[:]  # Default is cap
         else:
             q = [int(x) for x in per_stack_quota]
             if len(q) != n:
                 return None
-            quota = [max(0, min(q[i], caps[i])) for i in range(n)]  # quota는 cap 넘지 않게
+            quota = [max(0, min(q[i], caps[i])) for i in range(n)]  # Ensure quota does not exceed cap
 
         # 3) overflow type: need[i] > caps[i]
         overflow_types = {i for i in range(n) if need[i] > caps[i]}
 
-        # 4) solved 상태에서의 기본 길이 가정
+        # 4) Assume default length in solved state
         lens = [0] * n
         for i in range(n):
             lens[i] = caps[i] if i in overflow_types else need[i]
 
-        # 5) [1단계] overflow 초과분 분배 (비-overflow 스택 위에 얹는 모델)
-        for t in range(n):  # order 순서가 tie-break
+        # 5) [Step 1] Distribute overflow excess (model of placing on top of non-overflow stacks)
+        for t in range(n):  # order sequence is tie-break
             if t not in overflow_types:
                 continue
 
@@ -636,8 +636,8 @@ class ENV():
                 dst = next(j for j in range(n) if j in cands and lens[j] == min_len)  # tie: order
                 lens[dst] += 1
 
-        # 6) [2단계] quota 맞추기: lens[i] > quota[i]면 다른 곳으로 이동
-        #    (못 맞추면 None 반환해서 allocate가 스킵하도록)
+        # 6) [Step 2] Adjust quota: if lens[i] > quota[i], move to another location
+        #    (If unable to adjust, return None so allocate skips)
         while True:
             over = [(i, lens[i] - quota[i]) for i in range(n) if lens[i] > quota[i]]
             if not over:
@@ -666,19 +666,19 @@ class ENV():
     
     def _find_4cycles_from_B(self, A, B):
         """
-        B를 포함하는 4-cycle들을 반환.
-        cycle 형태: (B, C, D, E) => B-C-D-E-B
+        Returns 4-cycles containing B.
+        Cycle format: (B, C, D, E) => B-C-D-E-B
         """
         cycles = []
         neighbors_B = [x for x in self.iid_neighbors.get(B, {}).values() if x != A]
 
-        # B의 두 이웃(C, E) 선택 (중복 제거 위해 i<j)
+        # Select two neighbors of B (C, E) (i<j to avoid duplicates)
         for i in range(len(neighbors_B)):
             C = neighbors_B[i]
             for j in range(i+1, len(neighbors_B)):
                 E = neighbors_B[j]
 
-                # C와 E의 공통 이웃이 D 후보
+                # Common neighbors of C and E are candidates for D
                 common = set(self.iid_neighbors.get(C, {}).values()) & set(self.iid_neighbors.get(E, {}).values())
                 for D in common:
                     if D in (B, C, E):
@@ -690,12 +690,12 @@ class ENV():
 
     def pick_edge_cycle_for_stalled(self, A, stalled_iids, active_iids):
         """
-        stalled 교차로 A에서,
-        - B는 stalled가 아닌 이웃
-        - B를 포함하는 4-cycle(B-C-D-E-B)이 존재
-        하는 (dir_AB, B, (B,C,D,E))를 랜덤으로 하나 선택.
+        In stalled intersection A,
+        - B is a non-stalled neighbor
+        - A 4-cycle (B-C-D-E-B) containing B exists
+        Randomly select one (dir_AB, B, (B,C,D,E)).
 
-        반환:
+        Returns:
         (dir_AB, B, cycle_tuple) or (None, None, None)
         """
         I = self.intersections[A]
@@ -705,7 +705,7 @@ class ENV():
             if B in stalled_iids or B in active_iids:
                 continue
 
-            # A 입장에서 실제 팔이 있는 방향만
+            # Only directions where A actually has an arm
             if d not in I.dirs:
                 continue
 
@@ -721,7 +721,7 @@ class ENV():
         d, B, cycles = self.py_rng.choice(candidates)
         cycle = self.py_rng.choice(cycles)
 
-        # 방향(시계/반시계) 랜덤 뒤집기
+        # Randomly flip direction (clockwise/counter-clockwise)
         if self.py_rng.random() < 0.5:
             B, C, D, E = cycle
             cycle = (B, E, D, C)
@@ -742,14 +742,14 @@ class ENV():
         cur = start
         for wp in waypoints:
             seg = self.planner.plan_path(cur, wp)
-            full_path.extend(seg[1:])  # 중복 방지
+            full_path.extend(seg[1:])  # Avoid duplicates
             cur = wp
         
         prefix = amr.path[:amr.path_cursor + 1]
         tail = amr.path[amr.path_cursor + 1:]
 
         if Bc in tail[:]:
-            return  # 이미 경로에 포함된 경우 삽입 안 함
+            return  # Do not insert if already included in the path
 
         amr.path = prefix + full_path[1:] + tail
 
@@ -763,36 +763,36 @@ class ENV():
 
     def insert_scheduled_path(self, amr, short_path, target_exit, iid):
         """
-        교차로 스케줄러가 생성한 경로(short_path)를 현재 AMR 경로에 삽입한다.
+        Inserts the path (short_path) generated by the intersection scheduler into the current AMR path.
 
-        - short_path : amr.pos -> 교차로 내부 merge_point 까지의 스케줄 경로
-        - target_exit: 이 AMR이 '원래' 나가고 싶어하는 출구 방향 lane의 마지막 셀(tip)
+        - short_path : schedule path from amr.pos to merge_point inside the intersection
+        - target_exit: the last cell (tip) of the exit lane the AMR 'originally' wants to go to
 
-        최종 경로 구성:
-        prefix(지금까지 온 경로) +
-        short_path[1:] (현재 위치 이후 교차로 내부 스케줄) +
-        bridge(merge_point → 재합류 지점, BFS로 패치) +
-        continuation(원래 AMR 경로에서 재합류 지점 이후 tail)
+        Final path composition:
+        prefix (path taken so far) +
+        short_path[1:] (intersection internal schedule after current position) +
+        bridge (merge_point -> rejoin point, patched with BFS) +
+        continuation (tail after rejoin point in the original AMR path)
         """
-        # 방어 코드
+        # Defensive code
         if not short_path or len(short_path) < 2:
             return
 
         merge_point = short_path[-1]
 
-        # 현재까지 따라온 원래 경로에서의 마지막 위치 (cursor 위치)
+        # Last position in the original path followed so far (cursor position)
         if not (0 <= amr.path_cursor < len(amr.path)):
             return
         last_original_pos = amr.path[amr.path_cursor]
 
-        # --- 1) bridge: merge_point -> rejoin_point 까지 BFS 경로 ---
-        #    기본은 target_exit을 재합류 지점으로 사용,
-        #    target_exit을 원래 경로에서 못 찾으면 last_original_pos로 되돌아오는 식으로 처리
+        # --- 1) bridge: BFS path from merge_point to rejoin_point ---
+        #    Default is to use target_exit as the rejoin point,
+        #    if target_exit is not found in the original path, handle by returning to last_original_pos
         bridge = [merge_point]
-        rejoin_point = None       # bridge 끝에서 원래 path로 합류할 지점
-        continuation = []         # rejoin_point 이후의 원래 path tail
+        rejoin_point = None       # Point to rejoin the original path at the end of the bridge
+        continuation = []         # Original path tail after rejoin_point
 
-        # (1) target_exit 기준으로 tail을 찾으려고 시도
+        # (1) Attempt to find tail based on target_exit
         exit_idx = -1
         for i in range(amr.path_cursor + 1, len(amr.path)):
             if amr.path[i] == target_exit:
@@ -800,49 +800,49 @@ class ENV():
                 break
 
         if exit_idx != -1:
-            # ✅ 정상 케이스: 원래 path에 target_exit가 존재
+            # ✅ Normal case: target_exit exists in the original path
             rejoin_point = target_exit
             continuation = amr.path[exit_idx + 1:]
         else:
-            # ❌ target_exit를 원래 path에서 못 찾은 경우:
-            #    last_original_pos로 되돌아가서 그 뒤 tail을 그대로 쓰기로 함
+            # ❌ Case where target_exit is not found in the original path:
+            #    Decided to return to last_original_pos and use the tail after it as is
             rejoin_point = last_original_pos
             continuation = amr.path[amr.path_cursor + 1:]
 
-        # 이 시점에서 rejoin_point는
+        # At this point, rejoin_point is
         #   - normal case: target_exit
-        #   - 예외 case: last_original_pos
-        # 중 하나가 되고, continuation은 rejoin_point 이후의 tail
+        #   - exception case: last_original_pos
+        # one of these, and continuation is the tail after rejoin_point
 
-        # bridge 계산: merge_point -> rejoin_point
+        # bridge calculation: merge_point -> rejoin_point
         if rejoin_point != merge_point:
             bridge = self.planner.plan_path(merge_point, rejoin_point)
         else:
-            # rejoin_point가 merge_point와 같으면 bridge는 [merge_point] 그대로
+            # If rejoin_point is the same as merge_point, bridge remains [merge_point]
             pass
 
-        # --- 3) 새 suffix 구성 ---
+        # --- 3) Construct new suffix ---
         new_suffix = []
 
-        # (a) short_path: 현재 위치는 prefix에 있으니 [1:]부터
+        # (a) short_path: current position is in prefix, so start from [1:]
         new_suffix.extend(short_path[1:])
 
-        # (b) bridge: merge_point 중복 방지를 위해 [1:]부터
+        # (b) bridge: start from [1:] to avoid merge_point duplication
         if len(bridge) > 1:
             new_suffix.extend(bridge[1:])
 
-        # (c) rejoin_point 이후 원래 경로 tail (혹은 last_original_pos 이후 tail)
+        # (c) original path tail after rejoin_point (or tail after last_original_pos)
         new_suffix.extend(continuation)
 
-        # --- 4) AMR 경로/상태 업데이트 ---
+        # --- 4) Update AMR path/state ---
         prefix = amr.path[:amr.path_cursor + 1]
         amr.path = prefix + new_suffix
 
-        # 스케줄된 구간 길이: short_path (중복 한칸 제거)
+        # Scheduled segment length: short_path (remove one duplicate)
         sched_len = len(short_path) - 1
         amr.scheduling = sched_len
 
-        # next_pos 동기화
+        # next_pos synchronization
         if len(amr.path) > amr.path_cursor + 1:
             amr.next_pos = amr.path[amr.path_cursor + 1]
         else:
@@ -851,8 +851,7 @@ class ENV():
     
     def has_active_neighbor(self, iid):
         """
-        해당 교차로 iid의 이웃 중,
-        현재 deadlock_queue에 포함된 교차로가 있는지 확인
+        Check if any of the neighbors of the intersection iid are currently in the deadlock_queue
         """
         for nid in self.iid_neighbors.get(iid, {}).values():
             if nid in self.deadlock_queue:
@@ -862,29 +861,27 @@ class ENV():
 
     def block_intersection(self, cur_pos, next_pos, normal_only=False) -> bool:
         """
-        현재 위치 cur_pos에서 next_pos로 이동할 때,
-        교차로 관련 정책(우선순위)에 의해 진입을 막아야 하면 True를 반환.
+        Returns True if movement from cur_pos to next_pos should be blocked by intersection-related policies (priority).
 
-        우선순위(priority) 정책:
-           - 현재 위치는 교차로 '밖'이거나 교차로 '중심(center)'이어야 한다.
-           - 다음 위치는 어떤 교차로의 '레인 끝(tip)' 위치여야 한다.
-           - 이때 진입하려는 교차로의 우선순위(= deadlock_queue 상 위치)가
-             현재 교차로보다 높으면 → True (차단)
+        Priority policy:
+           - Current position must be 'outside' the intersection or at the intersection 'center'.
+           - Next position must be at a 'lane end (tip)' of some intersection.
+           - If the priority of the intersection being entered (= position in deadlock_queue) is higher than the current intersection -> True (blocked).
 
-        교차로 수용량 초과 시 진입 금지(normal_only=True인 경우):
-          - 진입하려는 교차로의 현재 내부 AMR 수가 스케줄링 수용량 초과 시 → True (차단)
+        Entry prohibited if intersection capacity is exceeded (when normal_only=True):
+          - If the current number of internal AMRs in the intersection being entered exceeds scheduling capacity -> True (blocked).
 
-        우선순위:
-          - deadlock_queue에서 앞에 있을수록 우선순위 ↑ (index 0,1,2,...)
-          - deadlock_queue에 없는 교차로는 가장 낮은 우선순위로 취급.
+        Priority:
+          - Higher priority the earlier it is in the deadlock_queue (index 0, 1, 2, ...).
+          - Intersections not in the deadlock_queue are treated as having the lowest priority.
         """
-        # 현재 위치가 교차로 중심이 아니면서 교차로 안이거나, 다음 위치가 교차로 끝이 아니면 False
+        # False if current position is inside the intersection but not at the center, or if next position is not at an intersection end
         is_cur_outside = cur_pos not in self.cell2iids
         if ((cur_pos not in self.event_center_cells and not is_cur_outside) 
             or next_pos not in self.event_tip_cells):
             return False
 
-        # 현재/다음 위치가 속한 교차로들 (교차로 중앙에 위치하면 현재 위치는 무조건 한 개의 교차로에만 속함)
+        # Intersections the current/next positions belong to (if at the center, current position belongs to exactly one intersection)
         cur_iid = self.cell2iids.get(cur_pos, [])
         cur_iid_set = set(self.cell2iids.get(cur_pos, []))
         next_iid_set = set(self.cell2iids.get(next_pos, []))
@@ -892,27 +889,27 @@ class ENV():
         entering_iid_set = next_iid_set - cur_iid_set
         entering_iid = next(iter(entering_iid_set))
 
-        # normal_only 모드: 교차로 스케줄링 수용량 초과 시 진입 금지
+        # normal_only mode: entry prohibited if intersection scheduling capacity is exceeded
         if normal_only:
             J = self.intersections[entering_iid]
             if J.available_count <= 0:
                 return True
 
-        # 우선순위(priority) 정책   
+        # Priority policy   
         seq = self.deadlock_queue
 
         def priority(iid):
             try:
                 return seq.index(iid)
             except ValueError:
-                return len(seq)  # 가장 낮은 우선순위
+                return len(seq)  # Lowest priority
 
         if is_cur_outside:
-            cur_priority = len(seq)  # 가장 낮은 우선순위
+            cur_priority = len(seq)  # Lowest priority
         else:
             cur_priority = priority(cur_iid[0])
 
-        # 다음 위치가 속한 교차로들 중 가장 높은 우선순위 찾기
+        # Find the highest priority among the intersections the next position belongs to
         next_priority = priority(entering_iid)
 
         if next_priority < cur_priority:
@@ -924,18 +921,18 @@ class ENV():
     def _update_available_on_move_success(self, cur_pos, next_pos):
         cur_set = set(self.cell2iids.get(tuple(cur_pos), []))
         nxt_set = set(self.cell2iids.get(tuple(next_pos), []))
-        entering = nxt_set - cur_set   # 새로 들어가는 교차로
-        leaving  = cur_set - nxt_set   # 빠져나가는 교차로
+        entering = nxt_set - cur_set   # Newly entering intersection
+        leaving  = cur_set - nxt_set   # Leaving intersection
 
         if not entering and not leaving:
             return
 
-        # leaving: 자리 +1 (상한 CAP)
+        # leaving: space +1 (upper bound CAP)
         for iid in leaving:
             I = self.intersections[iid]
             I.available_count = min(I.available_count + 1, I.scheduling_capacity)
 
-        # entering: 자리 -1 (하한 0)
+        # entering: space -1 (lower bound 0)
         for iid in entering:
             J = self.intersections[iid]
             J.available_count = max(0, J.available_count - 1)
@@ -943,8 +940,8 @@ class ENV():
 
     def _get_goal_bbox(self, margin: int = 0):
         """
-        goal들의 x 범위를 bbox로 잡되, y는 전체 높이로 둔다.
-        반환: (x_min, y_min=0, x_max, y_max=H-1)
+        Set the x-range of goals as a bbox, while y is set to the full height.
+        Returns: (x_min, y_min=0, x_max, y_max=H-1)
         """
         if not self.goal:
             return None
@@ -962,14 +959,14 @@ class ENV():
 
     def _count_walkable_in_bbox(self, bbox) -> int:
         """
-        LaCAM 스타일:
-        - x 범위만 사용
-        - 경계 미포함: x_min < x < x_max
-        - goal 타일은 제외
+        LaCAM style:
+        - Use only x-range
+        - Exclude boundaries: x_min < x < x_max
+        - Exclude goal tiles
         """
         H, W = self.map.shape
 
-        # bbox 없으면 전체 map에서 walkable(0) 카운트 - goal(0인 것만) 제외
+        # If no bbox, count walkable(0) in the entire map - exclude goals (only those that are 0)
         if bbox is None:
             walkable = int(np.count_nonzero(self.map == 0))
             goal_set = set(self.goal)
@@ -981,18 +978,18 @@ class ENV():
 
         x_min, _, x_max, _ = bbox
 
-        # 경계 미포함: (x_min+1) ~ (x_max-1)
+        # Exclude boundaries: (x_min+1) ~ (x_max-1)
         left = x_min + 1
-        right = x_max          # python slice end는 미포함이라 x < x_max가 됨
+        right = x_max          # python slice end is exclusive, so it becomes x < x_max
 
         if left >= right:
             return 0
 
-        # 모든 y에 대해 x 구간만 카운트
+        # Count only the x-interval for all y
         area = self.map[:, left:right]
         walkable = int(np.count_nonzero(area == 0))
 
-        # goal 제외(내부 구간에 있는 goal만)
+        # Exclude goals (only goals within the internal interval)
         goal_set = set(self.goal)
         goals_in_range = sum(
             1 for (x, y) in goal_set
@@ -1003,8 +1000,8 @@ class ENV():
 
     def _spawn_amrs_from_task_gen(self):
         """
-        [이름 변경 및 Task 모드 전용]
-        RandomGenerator로부터 새로운 AMR을 받아 환경에 추가.
+        [Renamed and Task mode only]
+        Receive new AMRs from RandomGenerator and add them to the environment.
         """
         gen = self.task_generator
         if not gen or not gen.should_spawn_next():
@@ -1042,14 +1039,14 @@ class ENV():
 
     def _spawn_amrs_from_stream_gen(self):
         """
-        [새로 추가된 함수 - Traffic 모드 전용]
-        TrafficGenerator로부터 새로운 AMR을 받아 환경에 추가.
+        [Newly added function - Traffic mode only]
+        Receive new AMRs from TrafficGenerator and add them to the environment.
         """
         gen = self.traffic_generator
         if not gen or not gen.should_spawn_next():
             return
         
-        # TrafficGenerator12는 current_time 인자가 없음
+        # TrafficGenerator12 does not have a current_time argument
         new_tasks = gen.get_next_task_pair()
 
         for task in new_tasks:
@@ -1065,7 +1062,7 @@ class ENV():
             if start_pos is None or goal_pos is None:
                 continue
             
-            # AMR 생성 및 등록 (amr 생성자 인자 순서 수정)
+            # AMR creation and registration (corrected AMR constructor argument order)
             new_amr = AMR(amr_id, start_pos, goal_pos, self.color_map[amr_id % 6])
             self.amr_list[amr_id] = new_amr
         
@@ -1075,18 +1072,18 @@ class ENV():
     def _direction_to_coords(self, direction, intersection_ref):
         """
         direction: 'N'|'E'|'S'|'W'
-        intersection_ref: 교차로 id 문자열("x{cx}y{cy}") 또는 (cx,cy,lenN,lenE,lenS,lenW) 튜플 모두 허용
+        intersection_ref: intersection id string ("x{cx}y{cy}") or (cx,cy,lenN,lenE,lenS,lenW) tuple are both allowed
         """
-        # 1) iid 문자열 → Intersection에서 스펙 가져오기
+        # 1) iid string -> Get spec from Intersection
         if isinstance(intersection_ref, str):
             I = self.intersections[intersection_ref]
-            # outer_entry_cells 같은 사전이 있으면 그걸 우선 사용
+            # If a dictionary like outer_entry_cells exists, use it first
             if hasattr(I, "outer_entry_cells") and direction in I.outer_entry_cells:
                 return I.outer_entry_cells[direction]
             center_x, center_y = I.center_x, I.center_y
             len_N, len_E, len_S, len_W = I.len_N, I.len_E, I.len_S, I.len_W
 
-        # 2) 과거 호환: 스펙 튜플로 온 경우
+        # 2) Backward compatibility: If spec comes as a tuple
         else:
             center_x, center_y, len_N, len_E, len_S, len_W = intersection_ref
 
@@ -1120,30 +1117,30 @@ class ENV():
         return np.array(map_data)
 
     def _find_intersection_center(self):
-        # 3x3 패턴들: 0=도로, 1=벽
+        # 3x3 patterns: 0=road, 1=wall
         plus4 = np.array([
             [1, 0, 1],
             [0, 0, 0],
             [1, 0, 1]
         ])
 
-        # T자 (팔 하나 없는 방향)
-        t_noN = np.array([  # 위쪽 팔 없음 (E/W/S만 열림)
+        # T-shape (direction with one missing arm)
+        t_noN = np.array([  # No top arm (only E/W/S open)
             [1, 1, 1],
             [0, 0, 0],
             [1, 0, 1]
         ])
-        t_noE = np.array([  # 오른쪽 팔 없음 (N/W/S만 열림)
+        t_noE = np.array([  # No right arm (only N/W/S open)
             [1, 0, 1],
             [0, 0, 1],
             [1, 0, 1]
         ])
-        t_noS = np.array([  # 아래쪽 팔 없음 (N/E/W만 열림)
+        t_noS = np.array([  # No bottom arm (only N/E/W open)
             [1, 0, 1],
             [0, 0, 0],
             [1, 1, 1]
         ])
-        t_noW = np.array([  # 왼쪽 팔 없음 (N/E/S만 열림)
+        t_noW = np.array([  # No left arm (only N/E/S open)
             [1, 0, 1],
             [1, 0, 0],
             [1, 0, 1]
@@ -1151,14 +1148,14 @@ class ENV():
 
         kernels = (plus4, t_noN, t_noE, t_noS, t_noW)
 
-        # 3x3 슬라이딩 윈도우
+        # 3x3 sliding window
         windows = np.lib.stride_tricks.sliding_window_view(self.map, (3, 3))
-        # 각 커널에 대해 매칭 후 OR 합치기
+        # Match each kernel and combine with OR
         match_any = np.zeros(windows.shape[:2], dtype=bool)
         for K in kernels:
             match_any |= np.all(windows == K, axis=(2, 3))
 
-        # 윈도우 좌표 → 중심 좌표(슬라이딩 오프셋 +1)
+        # Window coordinates -> Center coordinates (sliding offset +1)
         centers = (np.argwhere(match_any) + 1).tolist()
         return centers
         
@@ -1194,7 +1191,7 @@ class ENV():
             len_E = self._ray_len(r, c,  0, 1)
             len_W = self._ray_len(r, c,  0,-1)
 
-            # ★ 사거리/삼거리 허용: 팔이 3개 이상 존재해야 교차로 인정
+            # ★ Allow 4-way/3-way: Recognized as an intersection only if there are 3 or more arms
             present = {d for d, L in zip("NESW", [len_N, len_E, len_S, len_W]) if L > 0}
             if len(present) >= 3:
                 center_xy_to_data[(c, r)] = (c, r, len_N, len_E, len_S, len_W, present)
@@ -1204,7 +1201,7 @@ class ENV():
             c, r, len_N, len_E, len_S, len_W, present = tup
             current_iid = f'x{c}y{r}'
 
-            # ★ 있는 팔만 이웃 계산
+            # ★ Calculate neighbors only for existing arms
             neighbors_map = {}
             if 'N' in present:
                 t = (c, r - len_N - 1)
@@ -1230,7 +1227,7 @@ class ENV():
             processed_intersections[current_iid] = {
                 'data': (c, r, len_N, len_E, len_S, len_W),
                 'neighbors': neighbors_map,
-                # ↓ 이후 단계에서 마스크/상태 0패딩에 쓰기 좋게 전달
+                # ↓ Pass for easy use in mask/state zero-padding in later steps
                 'present_dirs': present,
             }
         return processed_intersections
@@ -1239,17 +1236,17 @@ class ENV():
     def is_arm_outgoing_clear(self, iid: str, d: str) -> bool:
         I = self.intersections[iid]
 
-        # (선택) 삼거리 대응: 존재하지 않는 팔은 금지
+        # (Optional) 3-way response: Prohibit non-existent arms
         present = getattr(I, "present_dirs", set(I.lane_coords.keys()))
         if d not in present:
             return False
 
-        # 1) 해당 팔에 '바깥으로 나가려는 흐름'이 있으면 금지
+        # 1) Prohibit if there is an 'outgoing flow' on that arm
         has_outgoing = bool(getattr(I, "outgoing", {}).get(d, False))
         if has_outgoing:
             return False
 
-        # 2) 교차로 데드락인 경우 금지  ← deadlock_queue 정규화
+        # 2) Prohibit if intersection is in deadlock ← deadlock_queue normalization
         dq = self.deadlock_queue or []
         if dq and isinstance(dq[0], tuple):
             dead_iids = {x for (x, _) in dq}
@@ -1258,7 +1255,7 @@ class ENV():
         if iid in dead_iids:
             return False
 
-        # (권장) 3) 팔 팁(outer entry)이 도로이고 비어있는지 확인
+        # (Recommended) 3) Check if the arm tip (outer entry) is a road and empty
         if hasattr(I, "outer_entry_cells") and d in I.outer_entry_cells:
             tip = I.outer_entry_cells[d]
         else:
@@ -1282,8 +1279,8 @@ class ENV():
     
     def _update_and_check_stagnation(self) -> bool:
         """
-        최근 전역 위치 시그니처를 바탕으로 정지/진동을 감지.
-        True면 조기 종료해야 함.
+        Detect stagnation/oscillation based on recent global position signatures.
+        Returns True if early termination is required.
         """
         if self.time < self._stg_min_time:
             self._sig_hist.clear()
@@ -1292,17 +1289,17 @@ class ENV():
             self._sig_hist.clear()
             return False
 
-        # 전역 시그니처: (amr_id, x, y) 튜플을 정렬한 튜플
+        # Global signature: sorted tuple of (amr_id, x, y) tuples
         sig = tuple(sorted((aid, amr.pos[0], amr.pos[1]) for aid, amr in self.amr_list.items()))
         self._sig_hist.append(sig)
 
-        # 1) 정지: 최근 N개가 모두 동일
+        # 1) Idle: Recent N are all identical
         idle = False
         if len(self._sig_hist) >= self._stg_idle_win:
             lastN = list(self._sig_hist)[-self._stg_idle_win:]
             idle = all(s == lastN[0] for s in lastN)
 
-        # 2) 진동: 최근 M개가 ABABAB 형태(두 개의 시그니처가 번갈아)
+        # 2) Oscillation: Recent M are in ABABAB form (two signatures alternating)
         osc = False
         if len(self._sig_hist) >= self._stg_osc_win:
             w = self._stg_osc_win
@@ -1316,29 +1313,29 @@ class ENV():
         return False
     
 
-    # --- [GUI 연동을 위한 어댑터 함수들] ---
+    # --- [Adapter functions for GUI integration] ---
     def Get_AMR(self):
-        """GUI가 AMR 목록을 가져갈 수 있도록 하는 함수"""
+        """Function to allow GUI to get the AMR list"""
         return self.amr_list
 
     def get_active_tasks(self):
-        """GUI가 AMR의 목표 지점을 가져갈 수 있도록 하는 함수"""
+        """Function to allow GUI to get the AMR goal positions"""
         return {amr_id: amr_obj.goal for amr_id, amr_obj in self.amr_list.items()}
 
     def make_info(self):
         """
-        [수정] GUI에 필요한 모든 정보를 계산하여 반환합니다.
-        'task' 모드와 'traffic' 모드를 명시적으로 구분하여 처리합니다.
+        [Modified] Calculates and returns all information needed for the GUI.
+        Explicitly handles 'task' and 'traffic' modes.
         """
-        # --- 2. 모드에 따라 통계 정보 계산 ---
+        # --- 2. Calculate statistical information according to mode ---
         progress = self.task_generator.get_progress()
         completed_tasks = progress.get('completed_total', 0)
         total_tasks = progress.get('spawned_total', 0)
 
-        # Success Rate 계산
+        # Calculate Success Rate
         success_rate = (completed_tasks / total_tasks) if total_tasks > 0 else 0.0
         
-        # 스루풋 계산 (분 단위)
+        # Calculate throughput (per minute)
         throughput = (completed_tasks / self.time * 60) if self.time > 0 else 0.0
 
         active_pi = []
@@ -1347,14 +1344,14 @@ class ENV():
         all_pi = self.completed_path_integrities + active_pi
         avg_pi = float(np.mean(all_pi)) if all_pi else 0.0
 
-        # --- 3. 현재 활성화된 AMR들의 상세 정보 수집 ---
+        # --- 3. Collect detailed information of currently active AMRs ---
         active_amr_details = {}
         for amr_id, amr_obj in self.amr_list.items():
             active_amr_details[amr_id] = {
                 "steps": amr_obj.steps,
             }
 
-        # --- 4. 최종 정보 취합하여 반환 ---
+        # --- 4. Aggregate and return final information ---
         return {
             "success_rate": success_rate,
             "throughput": throughput,

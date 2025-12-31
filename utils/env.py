@@ -4,29 +4,29 @@ from typing import List, Optional, Sequence, Union
 
 class StackRearrangementEnv:
     """
-    - num_stacks: len(stack_capacities)로 자동 결정
-    - stack_capacities[i]: i번 스택의 최대 원소 수
-    - stacks[i]: i번 스택의 원소들(아래->위 순서, pop()은 맨 위)
+    - num_stacks: automatically determined by len(stack_capacities)
+    - stack_capacities[i]: maximum number of elements in stack i
+    - stacks[i]: elements of stack i (bottom->top order, pop() is from the top)
     """
 
     def __init__(
         self,
         stacks: Optional[List[List[int]]] = None,
         stack_capacities: Optional[Sequence[int]] = None,
-        # 하위호환: 예전처럼 num_stacks/stack_capacity로도 만들 수 있게
+        # Backward compatibility: allow creation with num_stacks/stack_capacity as before
         num_stacks: Optional[int] = None,
         stack_capacity: Optional[Union[int, Sequence[int]]] = None,
     ):
-        # 1) cap 결정
+        # 1) Determine cap
         if stack_capacities is None:
             if stack_capacity is None:
-                raise ValueError("stack_capacities 또는 stack_capacity를 제공해야 합니다.")
+                raise ValueError("stack_capacities or stack_capacity must be provided.")
 
-            # stack_capacity가 int면 균일 cap, list면 per-stack cap
+            # stack_capacity is int, uniform cap; if list, per-stack cap
             if isinstance(stack_capacity, int):
                 if num_stacks is None:
                     if stacks is None:
-                        raise ValueError("num_stacks 또는 stacks가 필요합니다.")
+                        raise ValueError("num_stacks or stacks is required.")
                     num_stacks = len(stacks)
                 stack_capacities = [int(stack_capacity)] * int(num_stacks)
             else:
@@ -34,28 +34,28 @@ class StackRearrangementEnv:
 
         self.stack_capacities: List[int] = [int(x) for x in stack_capacities]
         if any(c < 0 for c in self.stack_capacities):
-            raise ValueError(f"stack_capacities는 0 이상이어야 합니다: {self.stack_capacities}")
+            raise ValueError(f"stack_capacities must be 0 or greater: {self.stack_capacities}")
 
         self.num_stacks = len(self.stack_capacities)
 
-        # 2) stacks 결정
+        # 2) Determine stacks
         if stacks is None:
             self.stacks = [[] for _ in range(self.num_stacks)]
         else:
             if len(stacks) != self.num_stacks:
                 raise ValueError(
-                    f"stacks 길이({len(stacks)})와 stack_capacities 길이({self.num_stacks})가 다릅니다."
+                    f"stacks length ({len(stacks)}) and stack_capacities length ({self.num_stacks}) are different."
                 )
             self.stacks = [list(s) for s in stacks]
 
-        # 3) 유효성 체크
+        # 3) Validity check
         self._validate_lengths()
 
     def _validate_lengths(self) -> None:
         for i, s in enumerate(self.stacks):
             if len(s) > self.stack_capacities[i]:
                 raise ValueError(
-                    f"스택 {i} 길이({len(s)})가 cap({self.stack_capacities[i]})을 초과했습니다."
+                    f"Stack {i} length ({len(s)}) exceeded cap ({self.stack_capacities[i]})."
                 )
 
     def cap(self, stack_id: int) -> int:
@@ -92,16 +92,16 @@ class StackRearrangementEnv:
         return self.stacks == goal_state
 
     def is_solved(self) -> bool:
-        # 혹시 외부에서 잘못 넣은 상태 방어
+        # Defense against invalid states entered from outside
         for i, s in enumerate(self.stacks):
             if len(s) > self.cap(i):
                 return False
 
-        # 1) 기본 조건: 각 스택이 자기 인덱스 색만 포함
+        # 1) Basic condition: each stack contains only its own index color
         if all(all(item == stack_id for item in stack) for stack_id, stack in enumerate(self.stacks)):
             return True
 
-        # 2) overflow 판정: "색 i의 전체 개수 > i번 스택 cap"
+        # 2) overflow judgment: "total count of color i > stack i cap"
         counts = Counter(item for stack in self.stacks for item in stack)
 
         overflow_types = set()
@@ -116,16 +116,16 @@ class StackRearrangementEnv:
 
     def _is_valid_with_overflow(self, overflow_types: set[int]) -> bool:
         for stack_id, stack in enumerate(self.stacks):
-            # cap 초과는 애초에 불가능 상태
+            # Exceeding cap is an impossible state to begin with
             if len(stack) > self.cap(stack_id):
                 return False
 
             if stack_id in overflow_types:
-                # overflow 스택은 자기 색상만
+                # overflow stack contains only its own color
                 if not all(item == stack_id for item in stack):
                     return False
             else:
-                # 아래: 자기 색상, 위: overflow 색상들만
+                # bottom: its own color, top: only overflow colors
                 idx = 0
                 while idx < len(stack) and stack[idx] == stack_id:
                     idx += 1
@@ -144,12 +144,12 @@ class StackRearrangementEnv:
         h = self.max_cap()
         print("".join(fmt("[TOP]") for _ in range(self.num_stacks)))
 
-        # max 높이 기준으로 찍되, cap이 더 작은 스택 영역은 공백 처리
+        # Print based on max height, but treat stack areas with smaller cap as blank
         for level in range(h - 1, -1, -1):
             row = []
             for sid, stack in enumerate(self.stacks):
                 if level >= self.cap(sid):
-                    cell = " "  # 이 스택은 이 높이 자체가 없음
+                    cell = " "  # This stack does not have this height itself
                 else:
                     cell = stack[level] if level < len(stack) else " "
                 row.append(fmt(str(cell)))
