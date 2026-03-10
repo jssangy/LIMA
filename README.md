@@ -1,7 +1,5 @@
 # LIMA MAPF
 
-This GitHub is for IEEE RA-L review purposes.
-
 ### Prerequisites
 - Python 3.9+
 - A C++ compiler (GCC, Clang, or MSVC) for building extensions.
