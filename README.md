@@ -1,4 +1,4 @@
-# LIMA MAPF
+# LIMA
 
 ### Prerequisites
 - Python 3.9+
