@@ -1,4 +1,5 @@
 # LIMA
+LIMA: Local Intersection Marshalling Algorithm for Multi-Agent Path Finding in Large-Scale Warehouses
 
 ### Prerequisites
 - Python 3.9+
