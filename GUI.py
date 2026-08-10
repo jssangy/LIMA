@@ -17,7 +17,7 @@ class GUI():
         self.width = initial_dis * width
         self.height = initial_dis * height
 
-        # [Added] Zoom and panning state variables
+        # [추가] 확대/축소 및 패닝 상태 변수
         self.zoom_level = float(initial_dis)
         self.min_zoom = 0.5
         self.max_zoom = 50.0
@@ -33,7 +33,7 @@ class GUI():
         self.root.resizable(True, True)
         self.root.configure(background='#000000')
 
-        # [Added] Keyboard shortcut bindings
+        # [추가] 키보드 단축키 바인딩
         self.root.bind("<space>", self.toggle_run)
         self.root.bind("<r>", self.reset_env)
         self.root.bind("<R>", self.reset_env)
@@ -171,7 +171,7 @@ class GUI():
         # Start pygame
         pygame.init()
 
-        # [Modified] Font for deadlock priority display (initialization method changed as size is dynamically adjusted based on zoom_level)
+        # [수정] 데드락 우선순위 표시용 폰트 (zoom_level에 따라 동적으로 크기 조절되므로 초기화 방식 변경)
         # self.priority_font = pygame.font.Font('utils/D2Coding.ttf', int(self.dis * 0.8))
         self.font_renderer = lambda size: pygame.font.Font('utils/D2Coding.ttf', max(1, int(size)))
 
@@ -181,7 +181,7 @@ class GUI():
         self.root.mainloop()
 
     def map_to_screen(self, map_x, map_y):
-        """[Added] Convert map coordinates to screen coordinates matching current zoom/pan state"""
+        """[추가] 맵 좌표를 현재 zoom/pan 상태에 맞는 화면 좌표로 변환"""
         screen_x = (map_x * self.zoom_level) - self.view_offset_x
         screen_y = (map_y * self.zoom_level) - self.view_offset_y
         return int(screen_x), int(screen_y)
@@ -192,34 +192,33 @@ class GUI():
         self.win.fill((32,32,32))
         self.drawMap()
 
-        # Display goal points (rectangles)
+        # 목표 지점 표시(사각형)
         active_tasks = self.env.get_active_tasks()  # {amr_id: (x,y)}
         for amr_id, (gx, gy) in reversed(list(active_tasks.items())):
-            # Use env.color_map for base color
-            base_color = self.env.color_map[amr_id % 6]
+            base_color = self.env.get_task_color(amr_id, (gx, gy))
             sx, sy = self.map_to_screen(gx, gy)
             pygame.draw.rect(self.win, base_color, (sx, sy, self.zoom_level, self.zoom_level))
 
-        # Display AMR
+        # AMR 표시
         for _, amr in amr_list.items():
             x, y = amr.pos
             sx, sy = self.map_to_screen(x + 0.5, y + 0.5)
             radius = max(1, int(self.zoom_level / 2) - 2)
             
-            # [Modified] Visualization distinction based on scheduling state
-            # If scheduling: thicken border or display with brighter color
+            # [수정] 스케줄링 상태에 따른 시각화 구분
+            # 스케줄링 중이면: 테두리를 두껍게 하거나, 색상을 밝게 표시
             if amr.scheduling > 0:
-                # Method 1: Add white border (emphasis)
+                # 방법 1: 흰색 테두리 추가 (강조)
                 pygame.draw.circle(self.win, amr.color, (sx, sy), radius)
-                # pygame.draw.circle(self.win, (255, 255, 255), (sx, sy), radius, 2) # White border
+                # pygame.draw.circle(self.win, (255, 255, 255), (sx, sy), radius, 2) # 흰색 테두리
                 
-                # Method 2: Draw a dot in the center (indicates deadlock resolution in progress)
+                # 방법 2: 중앙에 점 찍기 (Deadlock 해결 중임을 표시)
                 pygame.draw.circle(self.win, (255, 255, 255), (sx, sy), max(1, radius // 2))
             else:
-                # Normal state: basic circle
+                # 일반 상태: 기본 원
                 pygame.draw.circle(self.win, amr.color, (sx, sy), radius)
 
-        # Goal lines (optional)
+        # 목표 라인 (옵션)
         if self.show_goal_var.get():
             for amr_id, amr in amr_list.items():
                 goal = amr.path[-1] if amr.path else None
@@ -227,16 +226,16 @@ class GUI():
                     start_sx, start_sy = self.map_to_screen(amr.pos[0] + 0.5, amr.pos[1] + 0.5)
                     end_sx,   end_sy   = self.map_to_screen(goal[0] + 0.5,    goal[1] + 0.5)
                     
-                    # Different line color if scheduling? (optional)
+                    # 라인 색상도 스케줄링 중이면 다르게? (선택사항)
                     line_color = amr.color
                     pygame.draw.line(self.win, line_color, (start_sx, start_sy), (end_sx, end_sy), 2)
 
-        # Deadlock overlay (supports iid list or (iid, ts))
+        # Deadlock overlay (iid 리스트 또는 (iid, ts) 지원)
         dq = getattr(self.env, 'deadlock_queue', [])
         if dq:
             priority_colors = [(255, 0, 0), (255,165,0), (255,255,0)]
             default_color = (0, 0, 255)
-            # Assume latest is added at the end -> priority from the back
+            # 최신이 뒤에 쌓인다고 가정 → 우선순위는 뒤에서부터
             for priority, entry in enumerate(reversed(dq)):
                 iid = entry[0] if isinstance(entry, (tuple, list)) else entry
                 I = self.env.intersections.get(iid)
@@ -259,10 +258,10 @@ class GUI():
     
     # Draw Map
     def drawMap(self):
-        # [Modified] Optimized to draw only the currently visible area instead of the entire map
+        # [수정] 전체 맵을 그리는 대신, 현재 보이는 영역만 그리도록 최적화
         grid_h, grid_w = self.env.map.shape
         
-        # Calculate start/end coordinates of the map to be displayed on screen
+        # 화면에 보일 맵의 시작/끝 좌표 계산
         start_col = max(0, int(self.view_offset_x / self.zoom_level))
         end_col = min(grid_w, int((self.view_offset_x + self.width) / self.zoom_level) + 1)
         start_row = max(0, int(self.view_offset_y / self.zoom_level))
@@ -282,40 +281,40 @@ class GUI():
                 self.running_check = False
             self.make_state_info(run)
         
-        # [Added] Mouse event handling (zoom/pan)
+        # [추가] 마우스 이벤트 처리 (확대/축소 및 패닝)
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.root.quit()
                 return
-            # Mouse wheel: zoom in/out
+            # 마우스 휠: 확대/축소
             if event.type == pygame.MOUSEWHEEL:
                 mouse_x, mouse_y = pygame.mouse.get_pos()
                 
-                # Calculate map coordinates corresponding to mouse position
+                # 마우스 위치에 해당하는 맵 좌표 계산
                 map_x_before_zoom = (mouse_x + self.view_offset_x) / self.zoom_level
                 map_y_before_zoom = (mouse_y + self.view_offset_y) / self.zoom_level
                 
-                # Change zoom level
-                if event.y > 0: # Wheel up
+                # 줌 레벨 변경
+                if event.y > 0: # 휠 위로
                     self.zoom_level *= 1.1
-                else: # Wheel down
+                else: # 휠 아래로
                     self.zoom_level /= 1.1
                 self.zoom_level = max(self.min_zoom, min(self.max_zoom, self.zoom_level))
 
-                # After zoom, adjust offset so mouse cursor points to the same map coordinates
+                # 줌 이후, 마우스 커서가 동일한 맵 좌표를 가리키도록 오프셋 조정
                 self.view_offset_x = (map_x_before_zoom * self.zoom_level) - mouse_x
                 self.view_offset_y = (map_y_before_zoom * self.zoom_level) - mouse_y
 
-            # Mouse button pressed: start panning
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1: # Left click
+            # 마우스 버튼 누름: 패닝 시작
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1: # 좌클릭
                 self.panning = True
                 self.pan_start_pos = event.pos
             
-            # Mouse button released: end panning
+            # 마우스 버튼 뗌: 패닝 종료
             if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 self.panning = False
 
-            # Mouse motion: move screen while panning
+            # 마우스 이동: 패닝 중일 때 화면 이동
             if event.type == pygame.MOUSEMOTION and self.panning:
                 dx = event.pos[0] - self.pan_start_pos[0]
                 dy = event.pos[1] - self.pan_start_pos[1]
@@ -323,7 +322,7 @@ class GUI():
                 self.view_offset_y -= dy
                 self.pan_start_pos = event.pos
 
-        # Redraw screen
+        # 화면 다시 그리기
         self.redrawWindow(self.env.Get_AMR())
         self.root.after(self.speed_var.get(), self.run_env)
     
@@ -334,155 +333,6 @@ class GUI():
     
     def stop_env(self, event=None):
         self.running_check = False
-
-        # --- DEBUG: Dump specific intersection ---
-        iid = "x108y108"
-        env = getattr(self, "env", None)
-
-        if env is None:
-            print("[DEBUG] stop_env: self.env is None")
-            self.append_log('Stop Simulation')
-            return
-
-        inters = getattr(env, "intersections", {}) or {}
-        I = inters.get(iid, None)
-
-        print(I.check_deadlock())
-
-        if I is None:
-            print(f"[DEBUG] stop_env: intersection not found: {iid} (known={len(inters)})")
-            self.append_log('Stop Simulation')
-            return
-
-        from collections import Counter
-        import pprint
-
-        # lane summary (length/front/tip)
-        lane_summary = {}
-        for d in I.dirs:
-            coords = I.lane_coords.get(d, [])
-            lane_summary[d] = {
-                "len": len(coords),
-                "front": coords[0] if coords else None,   # cell closest to center
-                "tip": coords[-1] if coords else None,    # arm tip
-            }
-
-        # intent summary
-        amr_map = I.amr_intent_map or {}
-        cur_cnt = Counter()
-        exit_cnt = Counter()
-
-        intent_rows = []
-        for aid, rec in amr_map.items():
-            cur = rec.get("current_arm")
-            nxt = rec.get("exit_arm")
-            cur_cnt[cur] += 1
-            exit_cnt[nxt] += 1
-
-            a = rec.get("amr_obj")
-            intent_rows.append({
-                "aid": aid,
-                "pos": getattr(a, "pos", None),
-                "path_cursor": getattr(a, "path_cursor", None),
-                "cur": cur,
-                "exit": nxt,
-                "target_tip": (I.target_exits.get(aid) if isinstance(I.target_exits, dict) else None),
-            })
-        try:
-            intent_rows.sort(key=lambda r: r["aid"])
-        except Exception:
-            pass  # If aid types are mixed, maintain original order
-
-        # Assume stack_quota corresponds to I.dirs order (output as raw if lengths differ)
-        if isinstance(I.stack_quota, (list, tuple)) and len(I.stack_quota) == len(I.dirs):
-            quota_map = {d: I.stack_quota[i] for i, d in enumerate(I.dirs)}
-        else:
-            quota_map = {"raw": I.stack_quota}
-
-        # env-level meta
-        inside_count = (getattr(env, "iid_inside_counts", {}) or {}).get(iid, None)
-        neigh_map = (getattr(env, "iid_neighbors", {}) or {}).get(iid, {}) or {}
-        scheduled_set = (getattr(env, "iid2sched", {}) or {}).get(iid, set()) or set()
-        dq = getattr(env, "deadlock_queue", []) or []
-        in_deadlock_queue = any(
-            (x == iid) or (isinstance(x, (tuple, list)) and len(x) > 0 and x[0] == iid)
-            for x in dq
-        )
-
-        # Also include neighbor intersection snapshots
-        neighbor_snap = {}
-        for d, nid in neigh_map.items():
-            J = inters.get(nid)
-            neighbor_snap[d] = {
-                "iid": nid,
-                "exists": J is not None,
-                "inside": (getattr(env, "iid_inside_counts", {}) or {}).get(nid, None),
-                "avail": getattr(J, "available_count", None) if J else None,
-                "cap": getattr(J, "scheduling_capacity", None) if J else None,
-                "deadlock": getattr(J, "is_deadlock", None) if J else None,
-                "intents": len(getattr(J, "amr_intent_map", {}) or {}) if J else None,
-            }
-
-        # paths/target_exits can be too long, so only samples
-        paths = I.paths or {}
-        try:
-            paths_len_sample = {aid: len(p) for aid, p in list(paths.items())[:20]}
-        except Exception:
-            paths_len_sample = {}
-
-        target_exits = I.target_exits or {}
-        try:
-            target_exits_sample = dict(list(target_exits.items())[:20]) if isinstance(target_exits, dict) else target_exits
-        except Exception:
-            target_exits_sample = target_exits
-
-        dump = {
-            "iid": I.id,
-            "center": (I.center_x, I.center_y),
-            "arm_lengths": {"N": I.len_N, "E": I.len_E, "S": I.len_S, "W": I.len_W},
-            "present_dirs": sorted(list(I.present_dirs)),
-            "dirs": list(I.dirs),
-            "lane_summary": lane_summary,
-
-            "scheduling_capacity": I.scheduling_capacity,
-            "available_count": I.available_count,
-            "neighbor_available_count": dict(I.neighbor_available_count or {}),
-            "stack_quota": quota_map,
-
-            "is_deadlock": I.is_deadlock,
-            "env_inside_count": inside_count,
-            "env_scheduled_members_count": len(scheduled_set),
-            "env_scheduled_members_sample": sorted(list(scheduled_set))[:50],
-            "in_deadlock_queue": in_deadlock_queue,
-
-            "env_neighbors": neigh_map,
-            "neighbor_snapshot": neighbor_snap,
-
-            "amr_intent_count": len(amr_map),
-            "amr_intent_current_arm_counts": dict(cur_cnt),
-            "amr_intent_exit_arm_counts": dict(exit_cnt),
-            "amr_intent_sample": intent_rows[:20],
-
-            "paths_count": len(paths),
-            "paths_len_sample": paths_len_sample,
-            "target_exits_sample": target_exits_sample,
-        }
-
-        print("\n" + "=" * 90)
-        print(f"[DEBUG] stop_env() intersection dump: {iid}")
-        print(pprint.pformat(dump, width=160, sort_dicts=False))
-        print("=" * 90 + "\n")
-
-        # GUI log only one-line summary
-        try:
-            self.append_log(
-                f"[DEBUG] {iid} inside={inside_count} "
-                f"avail={I.available_count}/{I.scheduling_capacity} "
-                f"intents={len(amr_map)} deadlock={I.is_deadlock}"
-            )
-        except Exception:
-            pass
-
         self.append_log('Stop Simulation')
 
     # If reset button is clicked
@@ -493,7 +343,7 @@ class GUI():
         self.make_state_info(self.env.make_info())
         self.append_log('Reset Simulation') 
 
-    # [Added] Space bar toggle function
+    # [추가] Space 바 토글 기능
     def toggle_run(self, event=None):
         if self.running_check:
             self.stop_env(event)
@@ -510,7 +360,7 @@ class GUI():
     def update_state(self, msg):
         self.state_box.insert(tk.END, "{}".format(msg))
         self.state_box.update()
-        # [Modified] Commented out the line below to prevent auto-scrolling
+        # [수정] 자동 스크롤을 방지하기 위해 아래 줄을 주석 처리
         # self.state_box.see(tk.END)
     
     # Clear all Log
@@ -528,31 +378,33 @@ class GUI():
 
     def make_state_info(self, info_dict):
         """
-        [Modified] Update State Panel according to the new info_dict structure.
+        [수정] 새로운 info_dict 구조에 맞춰 State Panel을 업데이트합니다.
         """
         if not isinstance(info_dict, dict):
             return
         
         self.state_box.delete(0, self.state_box.size())
 
-        # --- Top summary information ---
+        # --- 상단 요약 정보 ---
         time = info_dict.get("time", 0)
         success_rate = info_dict.get("success_rate", 0.0)
         throughput = info_dict.get("throughput", 0.0)
         avg_integrity = info_dict.get("avg_path_integrity", 0.0)
+        detour_ratio = info_dict.get("detour_ratio", 0.0)
 
         self.update_state('{:>20} {:<10}'.format('Time Step: ', time))
         self.update_state('{:>20} {:<10.2%}'.format('Success Rate: ', success_rate))
         self.update_state('{:>20} {:<10.2f}'.format('Throughput (/min): ', throughput))
         self.update_state('{:>20} {:<10.2f}'.format('Avg PI: ', avg_integrity))
+        self.update_state('{:>20} {:<10.2%}'.format('Detour Ratio: ', detour_ratio))
         self.update_state(' ')
 
-        # --- Individual AMR information ---
+        # --- 개별 AMR 정보 ---
         active_amrs = info_dict.get("active_amrs", {})
         self.update_state('{:^10} {:^10}'.format('AMR ID', 'Steps'))
         self.update_state('-' * 40)
 
-        # Sort AMR IDs by converting to integers
+        # AMR ID를 정수로 변환하여 정렬
         sorted_amr_ids = sorted(active_amrs.keys(), key=int)
 
         for amr_id in sorted_amr_ids:

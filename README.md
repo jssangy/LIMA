@@ -1,65 +1,88 @@
-# LIMA
-LIMA: Local Intersection Marshalling Algorithm for Multi-Agent Path Finding in Large-Scale Warehouses
+# LIMA C++
 
-### Prerequisites
-- Python 3.9+
-- A C++ compiler (GCC, Clang, or MSVC) for building extensions.
+LIMA is being migrated to a native C++20 implementation. The current executable contains the map/scenario loaders, BFS and A* global planners, intersection topology and deadlock detection, the native IDA* stack scheduler, and atomic joint movement.
 
-### Install Dependencies
-Clone the repository and install the required Python packages:
+## Build
 
-    pip install -r requirements.txt
-
-
-### Build Extensions
-Before running the simulator, build the C++ extensions in-place:
-
-    python setup.py build_ext --inplace
-
-    
-### Run Simulation
-After installing dependencies, you can run the simulation with:
-
-    python main.py
-
-    
-### Argument summary:
-```
-  --map            Map name under assets/<map>/ (loads assets/<map>/<map>.map)
-
-  --density        Density (%) of agents w.r.t. free tiles (ignored if --num-amrs > 0)
-
-  --num-amrs       If >0, sets the exact number of agents and overrides --density
-
-  --max-steps      Max simulation timesteps before termination
-
-  --planner        Global planner: bfs or cbs
-
-  --workers        Number of workers used by planning/scheduling (implementation-dependent)
-
-  --cache-db-path  Path to schedule cache DB (sqlite)
-
-  --task-mode      random: random tasks, scen: scenario-based tasks from .scen
-
-  --scen-idx       Scenario index for scen mode (loads assets/<map>/scen/<map>_s<idx>.scen)
-
-  --seed           Random seed for reproducibility
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
 ```
 
+## Run
 
-### Common examples:
-Run with density (percentage of free tiles)
-  
-    python main.py --map cross-30-30 --density 30
+Random tasks use `S`/`G` cells in the map as goals:
 
-Run with a fixed number of agents (overrides --density)
-  
-    python main.py --map cross-30-30 --num-amrs 200
+```bash
+./build/lima --map maps/cross_1.map --agents 12 --planner bfs --max-steps 1000
+```
 
-Run a scenario-based task (s0~s9)
-  
-    python main.py --map cross-30-30 --task-mode scen --scen-idx 3
+MovingAI scenarios can be loaded directly:
 
-Use a different global planner
-  
-    python main.py --planner cbs
+```bash
+./build/lima \
+  --map assets/warehouse-10-20/warehouse-10-20.map \
+  --scenario assets/warehouse-10-20/scen/warehouse-10-20_s0.scen \
+  --agents 50 --planner astar --max-steps 5000
+```
+
+Add `--gui` to open the SDL2 viewer:
+
+```bash
+./build/lima \
+  --map assets/warehouse-10-20/warehouse-10-20.map \
+  --scenario assets/warehouse-10-20/scen/warehouse-10-20_s0.scen \
+  --agents 50 --planner bfs --max-steps 5000 --gui --fps 30
+```
+
+Viewer controls:
+
+- `Space`: pause/resume
+- `Right Arrow`: advance one timestep while paused
+- `Up` / `Down`: change simulation speed
+- `Mouse wheel` or `+` / `-`: zoom at the mouse position
+- `Left drag` or `Middle drag`: pan the map
+- `F`: fit the whole map to the current window
+- `Esc`: close
+
+The viewer uses the same colors as the original Python GUI: a dark-gray road background, gray obstacles, and a golden-ratio HSV color per AMR. Each active goal is drawn with its AMR color. A scheduled AMR has a white center dot.
+
+## Joint movement rule
+
+Each timestep is processed as one transaction:
+
+1. Snapshot current occupancy and generate one intent per active AMR.
+2. Reserve active intersection schedule regions and arbitrate same-target intents.
+3. Resolve dependencies. A move into an occupied cell succeeds only when its occupant also has an approved move in the same timestep.
+4. Reject edge swaps, unresolved cycles, duplicate final cells, and partially blocked schedule groups.
+5. Commit every approved position together.
+
+This permits a safety-spaced convoy to advance together while preserving vertex and edge conflict invariants. Normal routes and intersection schedule frames use the same resolver and commit path.
+
+The Python implementation remains beside the C++ tree only while migration is in progress. It is not required to configure or build the C++ executable.
+
+## Execution modes
+
+Realtime mode computes and renders each timestep. Supplying `--output` records the same run at the same time:
+
+```bash
+./build/lima --mode realtime --map maps/cross_1.map --agents 15 \
+  --planner bfs --gui --fps 30 --output results/cross_1_15.txt
+```
+
+Solve mode runs without rendering and writes a LaCAM-compatible solution trace. If `--output` is omitted, it writes `build/result.txt`:
+
+```bash
+./build/lima --mode solve --map maps/cross_1.map --agents 15 \
+  --planner bfs --max-steps 5000 --output results/cross_1_15.txt
+```
+
+Replay mode loads that trace without running the planner or scheduler:
+
+```bash
+./build/lima --mode replay --map maps/cross_1.map \
+  --replay results/cross_1_15.txt --fps 30
+```
+
+Replay controls add `Left Arrow` for one timestep backward and `Home` / `End` for the first / last timestep. The existing pause, forward, speed, zoom, fit, and pan controls remain available.
+Automatic replay interpolates positions between adjacent timestep configurations. Pausing or using the left/right controls snaps exactly to the selected timestep.

@@ -12,10 +12,10 @@
 namespace py = pybind11;
 using Move = std::pair<int,int>;
 
-static constexpr int MAX_STACKS = 4;   // 3-way/4-way intersection
-static constexpr int MAX_CAP    = 16;  // Can be increased if lane_len exceeds 16
-static constexpr int MAX_TYPES  = 16;  // src/dst 0..15, types also allowed up to 0..15
-static constexpr uint8_t EMPTY  = 16;  // empty used as zobrist index
+static constexpr int MAX_STACKS = 4;   // 삼/사거리
+static constexpr int MAX_CAP    = 16;  // lane_len이 16 넘으면 늘려도 됨
+static constexpr int MAX_TYPES  = 16;  // src/dst 0..15, 타입도 0..15까지 허용
+static constexpr uint8_t EMPTY  = 16;  // zobrist 인덱스로 쓰는 empty
 
 // -------------------------
 // SplitMix64 (deterministic RNG for zobrist)
@@ -88,7 +88,7 @@ static inline bool is_overflow_type(const State& st, int t) {
 }
 
 static inline bool stack_target_ready(const State& st, int dst) {
-    // "Pure" stack: empty or all are of dst type
+    // "순수" 스택: 비었거나 모두 dst 타입
     for (int i=0; i<st.sz[dst]; i++) {
         if (st.cells[dst][i] != (uint8_t)dst) return false;
     }
@@ -96,7 +96,7 @@ static inline bool stack_target_ready(const State& st, int dst) {
 }
 
 static bool is_sorted(const State& st) {
-    // If no overflow, check for strict sorted only
+    // overflow 없으면 strict sorted로만
     if (st.overflow_mask == 0) {
         for (int sid=0; sid<st.n; sid++) {
             for (int i=0; i<st.sz[sid]; i++) {
@@ -106,7 +106,7 @@ static bool is_sorted(const State& st) {
         return true;
     }
 
-    // overflow rules
+    // overflow 규칙
     for (int sid=0; sid<st.n; sid++) {
         const bool is_of = is_overflow_type(st, sid);
         if (is_of) {
@@ -124,7 +124,7 @@ static bool is_sorted(const State& st) {
     return true;
 }
 
-// Scale Python H2 by 2 (int) to remove float operations
+// Python H2를 int로 스케일(2배)해서 float 연산 제거
 // 1.5 -> 3, 1.0 -> 2
 static inline int heuristic_h2_scaled2(const State& st) {
     int h2 = 0;
@@ -187,7 +187,7 @@ static inline void undo_move(State& st, const Undo& u) {
     st.cells[src][u.src_pos] = u.ball;
 }
 
-// move ordering (aggressive sorting as result identity is not required)
+// move ordering (결과 동일성 필요 없으니 공격적으로 정렬)
 static inline void gen_moves(
     const State& st,
     int last_src,
@@ -197,7 +197,7 @@ static inline void gen_moves(
 ) {
     out.clear();
 
-    // (1) deterministic: if top can be sent directly to target and target is pure, only that one
+    // (1) deterministic: top을 target으로 바로 보낼 수 있고 target이 순수면 그 한 개만
     if (use_deterministic_move) {
         for (int src=0; src<st.n; src++) {
             if (st.sz[src] == 0) continue;
@@ -224,9 +224,9 @@ static inline void gen_moves(
         for (int dst=0; dst<st.n; dst++) {
             if (src == dst) continue;
             if (st.sz[dst] >= st.cap[dst]) continue;
-            if (src == last_dst && dst == last_src) continue; // prevent ping-pong
+            if (src == last_dst && dst == last_src) continue; // ping-pong 방지
 
-            // priority classification
+            // 우선순위 분류
             if (dst == (int)ball && stack_target_ready(st, dst)) {
                 direct.push_back({src, dst});
             } else if (st.sz[dst] > 0 && st.cells[dst][st.sz[dst]-1] == ball) {
@@ -369,14 +369,14 @@ static std::vector<Move> solve_h2_base_cpp(
         iteration++;
 
         std::unordered_map<Key128, int, KeyHasher> visited;
-        visited.reserve(200000); // Adjust as needed (too small causes rehash cost)
+        visited.reserve(200000); // 상황에 따라 조절(너무 작으면 rehash 비용)
 
         auto res = dfs_ida(st, 0, threshold2, visited, path, det);
         if (res.found) return path;
 
         if (res.f2 == std::numeric_limits<int>::max()) {
             if (det) {
-                // Turn off deterministic and retry
+                // deterministic 끄고 다시
                 det = false;
                 threshold2 = initial_threshold2;
                 path.clear();
@@ -388,7 +388,7 @@ static std::vector<Move> solve_h2_base_cpp(
 
         // threshold = max(res_f, threshold + 3.0)  (scaled2 => +6)
         threshold2 = std::max(res.f2, threshold2 + 6);
-        path.clear(); // Next iteration starts search from root again
+        path.clear(); // 다음 iteration은 root부터 다시 탐색
     }
 
     throw std::runtime_error("H2: max_iters exceeded");

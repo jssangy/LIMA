@@ -3,7 +3,7 @@ from typing import Tuple
 # AMR Object
 class AMR():
     def __init__(self, id, pos, goal, color):
-        # Basic information
+        # 기본 정보
         self.id = id
         self.color = color
         self.goal = goal
@@ -14,7 +14,7 @@ class AMR():
         self.prev_moved = False
         self.no_move_steps = 0
 
-        # Path
+        # 경로
         self.path = []
         self.path_cursor = 0
         self.scheduling = 0
@@ -25,7 +25,7 @@ class AMR():
 
     def reset(self):
         """
-        Resets the state of the AMR.
+        AMR의 상태를 초기화합니다.
         """
         self.prev_pos = self.pos
         self.next_pos = self.pos
@@ -42,10 +42,10 @@ class AMR():
 
     def set_path(self, new_path: list):
         """
-        Rule 1: Receives a new full path from the planner and resets the state.
+        규칙 1: 플래너로부터 새로운 전체 경로를 주입받고 상태를 초기화합니다.
         """
         if not new_path:
-            self.path = [self.pos] # If there is no path, set it to stay in place
+            self.path = [self.pos] # 경로가 없으면 제자리에 머무는 경로로 설정
         else:
             self.path = new_path
 
@@ -63,7 +63,7 @@ class AMR():
 
     def move(self):
         """
-        After moving, find the current position on the path and synchronize path_cursor.
+        [수정] 이동 후, 경로상의 현재 위치를 찾아 path_cursor를 동기화합니다.
         """
         self.prev_pos = self.pos
         self.path_cursor += 1

@@ -21,18 +21,18 @@ class Task:
 
 class RandomGenerator:
     """
-    Creates a task_set all at once at the start of an episode, and returns it exactly once in get_next_task_pair().
+    에피소드 시작 시 한 번에 task_set을 만들고, get_next_task_pair()에서 딱 한 번 반환하는 형태.
 
-    Basic Rules:
-    - start candidates: walkable(0) coordinates excluding borders (default) and goal coordinates (default)
-    - goal candidates: input goal_positions first (only valid ones), if none or all invalid, fallback to corner -> border walkable
-    - start is sampled without duplicates, goal allows duplicates
+    기본 규칙:
+    - start 후보: walkable(0) 좌표 중 테두리 제외(기본), goal 좌표 제외(기본)
+    - goal 후보: 입력 goal_positions 우선(유효한 것만), 없거나 전부 무효면 코너 -> 테두리 walkable로 fallback
+    - start는 중복 없이 샘플링, goal은 중복 허용
 
-    Options:
-    - start_in_goal_bbox=True: picks start candidates only within the (min_x~max_x, min_y~max_y) bbox of goal candidates
-    - bbox_margin: expands the bbox in all directions (optional)
-    - start_bbox: directly specifies the bbox (if present, used instead of goal bbox)
-    - fallback_to_any_start=True: if bbox filtering results in an empty set, reconstruct candidates without bbox
+    옵션:
+    - start_in_goal_bbox=True: goal 후보들의 (min_x~max_x, min_y~max_y) bbox 내부에서만 start 후보를 고름
+    - bbox_margin: bbox를 상하좌우로 확장(선택)
+    - start_bbox: bbox를 직접 지정(있으면 goal bbox 대신 이걸 사용)
+    - fallback_to_any_start=True: bbox 필터 결과가 비면 bbox 없이 다시 후보를 구성
     """
 
     def __init__(
@@ -57,7 +57,7 @@ class RandomGenerator:
         self.rng = np.random.default_rng(seed)
         self.num_tasks = max(0, int(num_tasks))
 
-        # Options
+        # 옵션
         self.exclude_border = bool(exclude_border)
         self.exclude_goals_from_start = bool(exclude_goals_from_start)
         self.start_in_goal_bbox = bool(start_in_goal_bbox)
@@ -65,22 +65,22 @@ class RandomGenerator:
         self.start_bbox = start_bbox
         self.fallback_to_any_start = bool(fallback_to_any_start)
 
-        # State (used in ENV)
+        # 상태(ENV에서 사용)
         self.agv_id_counter = 0
         self.completed_total = 0
         self.spawned_once = False
         self.task_set: List[Dict] = []
 
-        # Pre-aggregation (speed/readability)
+        # 미리 집계(속도/가독성)
         self.walkable_coords: List[Coord] = self._collect_walkables()
         self.walkable_count = len(self.walkable_coords)
 
-        # Configure goal/start candidates
+        # goal/start 후보 구성
         self.goal_candidates: List[Coord] = self._resolve_goal_candidates(goal_positions)
         self.start_candidates: List[Coord] = self._build_start_candidates()
 
     # -----------------------
-    # API called from ENV
+    # ENV에서 호출되는 API
     # -----------------------
     def start_new_episode(self, reset_ids: bool = True) -> None:
         if reset_ids:
@@ -99,7 +99,7 @@ class RandomGenerator:
         self.task_set = self._generate_task_set()
 
     def get_next_task_pair(self, current_time: int) -> List[Dict]:
-        # Spawn only once
+        # 한 번만 spawn
         if not self.spawned_once and self.task_set:
             self.spawned_once = True
             return list(self.task_set)
@@ -109,7 +109,7 @@ class RandomGenerator:
         return (not self.spawned_once) and bool(self.task_set)
 
     def set_arm_gate(self, *args, **kwargs) -> None:
-        # For maintaining existing interface (can be left empty if not used)
+        # 기존 인터페이스 유지용(사용 안 하면 비워둬도 됨)
         return
 
     def complete_task(self, agv_id: int) -> None:
@@ -132,19 +132,19 @@ class RandomGenerator:
         }
 
     def set_goal_positions(self, goal_positions: Iterable[Coord]) -> None:
-        """Update goal set at runtime. Reflected from the next episode."""
+        """goal set을 런타임에 갱신. 다음 episode부터 반영."""
         self.goal_candidates = self._validate_walkable_coords(goal_positions)
         self.start_candidates = self._build_start_candidates()
 
     # -----------------------
-    # Internal Logic
+    # 내부 로직
     # -----------------------
     def _generate_task_set(self) -> List[Dict]:
         total = min(self.num_tasks, len(self.start_candidates))
         if total <= 0:
             return []
 
-        # Sample start without duplicates
+        # start는 중복 없이 샘플
         idxs = self.rng.choice(len(self.start_candidates), size=total, replace=False)
         starts = [self.start_candidates[int(i)] for i in idxs]
 
@@ -164,8 +164,8 @@ class RandomGenerator:
         if len(goals) == 1:
             return goals[0]
 
-        # If you want to avoid a goal that is the same as start, avoid it only when possible
-        # (It's impossible anyway if the goal candidate is only the same as start)
+        # start와 같은 goal을 피하고 싶으면, 가능한 경우만 회피
+        # (goal 후보가 start랑 같은 것만 있는 경우는 어차피 불가능)
         for _ in range(8):
             g = goals[int(self.rng.integers(0, len(goals)))]
             if g != start:
@@ -178,14 +178,14 @@ class RandomGenerator:
         bbox = self._get_start_bbox()
         cands = self._collect_start_candidates(exclude_goals=exclude_goals, bbox=bbox)
 
-        # Fallback if candidates are empty due to bbox
+        # bbox 때문에 후보가 비면 fallback
         if not cands and bbox is not None and self.fallback_to_any_start:
             cands = self._collect_start_candidates(exclude_goals=exclude_goals, bbox=None)
 
         return cands
 
     def _get_start_bbox(self) -> Optional[BBox]:
-        # If the user directly specifies a bbox, prioritize that
+        # 사용자가 bbox를 직접 지정하면 그걸 우선
         if self.start_bbox is not None:
             return self._clamp_bbox(self.start_bbox)
 
@@ -195,12 +195,12 @@ class RandomGenerator:
         if not self.goal_candidates:
             return None
 
-        # Use only the x range of the goal
+        # goal의 x 범위만 사용
         xs = [x for x, _ in self.goal_candidates]
         x_min = min(xs) - self.bbox_margin
         x_max = max(xs) + self.bbox_margin
 
-        # y is full range (0 ~ H-1)
+        # y는 전체(0 ~ H-1)
         return self._clamp_bbox((x_min, 0, x_max, self.H - 1))
 
     def _clamp_bbox(self, bbox: BBox) -> BBox:
@@ -231,17 +231,17 @@ class RandomGenerator:
             x_min, y_min, x_max, y_max = bbox
 
         for x, y in self.walkable_coords:
-            # Exclude border (default)
+            # 테두리 제외(기본)
             if self.exclude_border:
                 if x == 0 or x == self.W - 1 or y == 0 or y == self.H - 1:
                     continue
 
-            # bbox filter: y is inclusive, x is "exclusive of boundaries"
+            # bbox 필터: y는 포함, x는 "경계 미포함"
             if bbox is not None:
                 if not (x_min < x < x_max and y_min <= y <= y_max):
                     continue
 
-            # Exclude goal coordinates (default)
+            # goal 좌표 제외(기본)
             if (x, y) in exclude_goals:
                 continue
 
@@ -251,13 +251,13 @@ class RandomGenerator:
 
 
     def _resolve_goal_candidates(self, goal_positions: Optional[Iterable[Coord]]) -> List[Coord]:
-        # 1) Prioritize input goals
+        # 1) 입력 goals 우선
         if goal_positions is not None:
             valid = self._validate_walkable_coords(goal_positions)
             if valid:
                 return valid
 
-        # 2) fallback: corners -> border
+        # 2) fallback: 코너 -> 테두리
         corners = self._collect_goal_corners()
         if corners:
             return corners
@@ -283,14 +283,14 @@ class RandomGenerator:
     def _collect_border_walkables(self) -> List[Coord]:
         border: Set[Coord] = set()
 
-        # Top/Bottom
+        # 상/하
         for x in range(self.W):
             if self.map[0][x] == 0:
                 border.add((x, 0))
             if self.map[self.H - 1][x] == 0:
                 border.add((x, self.H - 1))
 
-        # Left/Right
+        # 좌/우
         for y in range(self.H):
             if self.map[y][0] == 0:
                 border.add((0, y))
@@ -302,17 +302,17 @@ class RandomGenerator:
 
 class ScenGenerator:
     """
-    Task generator based on LaCAM .scen files.
+    LaCAM .scen 파일 기반 Task generator.
 
-    .scen format (example):
+    .scen 포맷(예):
       version 1
       0 <map_path> <W> <H> <sx> <sy> <gx> <gy> 0
 
-    Behavior:
-    - Prepares task_set during start_new_episode()
-    - Spawns all at once when get_next_task_pair() is called (same "one-time spawn" pattern as TaskSetGenerator)
-    - If num_tasks is given, uses only num_tasks from the beginning of the .scen (same concept as LaCAM's -N)
-    - If offset is given, skips the first offset tasks
+    동작:
+    - start_new_episode() 시 task_set을 준비
+    - get_next_task_pair() 호출 시 한 번에 전부 spawn (TaskSetGenerator와 동일한 "1회 스폰" 패턴)
+    - num_tasks가 주어지면 .scen의 앞에서부터 num_tasks개만 사용 (LaCAM의 -N과 동일 개념)
+    - offset을 주면 앞에서 offset개는 건너뛰고 사용
     """
 
     def __init__(self, scen_path: str, num_tasks: Optional[int] = None, offset: int = 0):
@@ -323,7 +323,7 @@ class ScenGenerator:
         # raw records: List[(sx,sy,gx,gy)]
         self._records: List[Tuple[int, int, int, int]] = self._load_scen(self.scen_path)
 
-        # ENV expected state variables
+        # ENV가 기대하는 상태 변수들
         self.agv_id_counter = 0
         self.completed_total = 0
         self.spawned_once = False
@@ -340,7 +340,7 @@ class ScenGenerator:
                     continue
 
                 parts = line.split()
-                # bucket map W H sx sy gx gy opt  -> at least 9 parts
+                # bucket map W H sx sy gx gy opt  -> 최소 9개
                 if len(parts) < 9:
                     continue
 
@@ -353,7 +353,7 @@ class ScenGenerator:
         return records
 
     # -----------------------
-    # API called from ENV
+    # ENV에서 호출되는 API
     # -----------------------
     def start_new_episode(self, reset_ids: bool = True) -> None:
         if reset_ids:
@@ -362,12 +362,12 @@ class ScenGenerator:
         self.spawned_once = False
         self.task_set = []
 
-        # Apply offset/limit (use "N from the front" like LaCAM)
+        # offset/limit 적용 (LaCAM처럼 "앞에서부터 N개" 사용)
         recs = self._records[self.offset:]
         if self.num_tasks is not None:
             recs = recs[: self.num_tasks]
 
-        # Re-assign IDs as 0..N-1 (for convenience within ENV)
+        # id는 0..N-1로 재부여(ENV 내부에서 쓰기 편하게)
         for i, (sx, sy, gx, gy) in enumerate(recs):
             self.task_set.append({
                 "id": i,
@@ -388,7 +388,7 @@ class ScenGenerator:
         self.completed_total += 1
 
     def is_episode_done(self) -> bool:
-        # If no tasks, terminate immediately (prevent infinite loop)
+        # task가 없으면 즉시 종료(무한루프 방지)
         if not self.task_set:
             return True
         return self.spawned_once and (self.completed_total >= len(self.task_set))

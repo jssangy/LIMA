@@ -13,16 +13,16 @@ Pos = Tuple[int, int]
 
 class BFS:
     """
-    [New Class]
-    A planner that extracts paths very quickly by pre-calculating a goal-based Distance Field.
-    - The distance field for a specific goal is calculated only once via BFS and cached.
-    - Path planning is performed immediately by finding the steepest descent along the cached distance field.
-    - There is no replanning function, and it is specialized for initial path generation.
+    [신규 클래스]
+    목표 지점(goal) 기반의 거리장(Distance Field)을 미리 계산하여 경로를 매우 빠르게 추출하는 플래너.
+    - 특정 goal에 대한 거리장은 BFS를 통해 단 한 번만 계산되고 캐시됩니다.
+    - 경로 계획은 캐시된 거리장을 따라 가장 가파른 경사(steepest descent)를 찾는 방식으로 즉시 수행됩니다.
+    - 재계획 기능은 없으며, 초기 경로 생성에 특화되어 있습니다.
     """
     def __init__(self, map_data: np.ndarray, rng=None):
         self.map = map_data
         self.H, self.W = map_data.shape
-        self._distance_fields: Dict[Pos, np.ndarray] = {}  # goal -> distance_field map cache
+        self._distance_fields: Dict[Pos, np.ndarray] = {}  # goal -> distance_field 맵 캐시
 
         if rng is not None:
             self.rng = rng
@@ -31,53 +31,53 @@ class BFS:
 
     def plan_path(self, start: Pos, goal: Pos) -> List[Pos]:
         """
-        Extracts a path for the given start and goal points.
-        Generates and caches a distance field for the goal point if necessary.
+        주어진 시작점과 목표점에 대한 경로를 추출합니다.
+        필요 시 목표점에 대한 거리장을 생성하고 캐시합니다.
         """
         if start == goal:
             return [start]
 
-        # 1. Get or generate a distance field for the goal point.
+        # 1. 목표점에 대한 거리장을 얻거나 생성합니다.
         if goal not in self._distance_fields:
             self._distance_fields[goal] = self._create_field_from_goal(goal)
         
         distance_field = self._distance_fields[goal]
 
-        # 2. Extract a path along the generated distance field.
+        # 2. 생성된 거리장을 따라 경로를 추출합니다.
         path = [start]
         current = start
         
-        # Check if the start point is unreachable
+        # 시작점에서 도달 불가능한 경우 체크
         if distance_field[current[1], current[0]] < 0:
             print(f"Warning: Start position {start} is unreachable from goal {goal}.")
-            return [start] # Return stay-in-place path if unreachable
+            return [start] # 도달 불가능 시 제자리 경로 반환
 
         while current != goal:
             neighbors = self._get_neighbors(current)
             if not neighbors:
-                return path # Dead end
+                return path # 막다른 길
 
-            # [Modified Start] Randomly select when there are multiple optimal paths with the same cost
+            # [수정 시작] 비용이 같은 최적 경로가 여러 개일 때 무작위 선택
             
-            # 1. Calculate distance field values for all neighbors
+            # 1. 모든 이웃의 거리장 값을 계산
             distances = {n: distance_field[n[1], n[0]] for n in neighbors}
             
-            # 2. Find the minimum distance value
+            # 2. 최소 거리 값 찾기
             min_dist = min(distances.values())
 
-            # If only unreachable places (-1) remain
+            # 도달 불가능한 곳(-1)만 남은 경우
             if min_dist < 0:
                 print(f"Warning: Path extraction stuck at {current} (surrounded by unreachable cells).")
                 return path
 
-            # 3. Collect all neighbor nodes with the minimum distance as candidates
+            # 3. 최소 거리를 가진 모든 이웃 노드를 후보로 수집
             best_neighbors = [n for n, dist in distances.items() if dist == min_dist]
             
-            # 4. Randomly select one from the candidates
+            # 4. 후보 중에서 하나를 무작위로 선택
             next_node = self.rng.choice(best_neighbors)
-            # [Modified End]
+            # [수정 끝]
             
-            # If no further progress can be made (all neighbors are further than current)
+            # 더 이상 진행할 수 없는 경우 (주변이 모두 현재보다 멀어지는 경우)
             if distance_field[next_node[1], next_node[0]] >= distance_field[current[1], current[0]]:
                  print(f"Warning: Path extraction stuck at {current} for goal {goal}.")
                  return path
@@ -89,14 +89,14 @@ class BFS:
 
     def _create_field_from_goal(self, goal: Pos) -> np.ndarray:
         """
-        Generates a distance field by executing reverse BFS from the goal point.
-        Obstacles or unreachable areas are marked as -1.
+        목표 지점에서부터 역방향 BFS를 실행하여 거리장을 생성합니다.
+        장애물이나 도달 불가능한 지역은 -1로 표시됩니다.
         """
         field = np.full((self.H, self.W), -1, dtype=int)
         gx, gy = goal
         
         if not (0 <= gx < self.W and 0 <= gy < self.H) or self.map[gy, gx] == 1:
-            return field # If the goal is outside the map or a wall
+            return field # 목표가 맵 밖이거나 벽인 경우
 
         q = deque([goal])
         field[gy, gx] = 0
@@ -106,7 +106,7 @@ class BFS:
             current_dist = field[y, x]
             
             for nx, ny in self._get_neighbors((x, y)):
-                if field[ny, nx] == -1: # Not visited yet
+                if field[ny, nx] == -1: # 아직 방문하지 않은 곳
                     field[ny, nx] = current_dist + 1
                     q.append((nx, ny))
         return field
@@ -137,7 +137,7 @@ class BFS:
         l = bisect_left(sorted_vals, lo)
         r = bisect_left(sorted_vals, hi + 1)
 
-        # If no candidate in range, closest value from the whole set
+        # 범위 내 후보가 없으면 전체에서라도 가장 가까운 값
         vals = sorted_vals[l:r] if l < r else sorted_vals
         if not vals:
             return None
@@ -170,7 +170,7 @@ class BFS:
         return path
 
     def _plan_segment(self, start: Pos, goal: Pos) -> Optional[list[Pos]]:
-        # Use straight line if possible, otherwise use existing BFS (distance field)
+        # 직선 가능하면 직선, 아니면 기존 BFS(거리장) 사용
         if not self._is_free(goal):
             return None
         seg = self._try_straight(start, goal)
@@ -194,35 +194,40 @@ class BFS:
             cur = wp
         return full
 
-    def plan_path_highway(self, start: Pos, goal: Pos, center_xs: list[int], center_ys: list[int],tries: int=8):
+    def plan_path_highway(self, start: Pos, goal: Pos, center_xs: list[int], center_ys: list[int], tries: int = 8) -> list[Pos]:
+        """
+        벽(goal)이 N/S/E/W 끝에 있을 때:
+        - 내부 교차로 중심 라인(row/col)을 이용해 '차선변경-고속주행-주차진입' 형태로 경로 생성.
+        실패하면 기본 plan_path로 폴백.
+        """
         if start == goal:
             return [start]
 
         sx, sy = start
         gx, gy = goal
 
-        # Determine if goal is a wall
+        # goal이 벽인지 판정
         on_top = (gy == 0)
         on_bottom = (gy == self.H - 1)
         on_left = (gx == 0)
         on_right = (gx == self.W - 1)
 
-        # If it's a corner, randomly select one direction
+        # 코너면 방향 하나 랜덤 선택
         if (on_top or on_bottom) and (on_left or on_right):
             if self.rng.random() < 0.5:
                 on_left = on_right = False
             else:
                 on_top = on_bottom = False
 
-        # If it doesn't belong to any wall, forcibly classify as left/right based on the center
+        # 어느 벽에도 속하지 않으면 중앙 기준으로 좌/우 강제 분류
         if not (on_top or on_bottom or on_left or on_right):
-            mid_x = self.W // 2          # If W=10, mid_x=5 (0~4 left, 5~9 right)
+            mid_x = self.W // 2          # W=10이면 mid_x=5 (0~4 left, 5~9 right)
             if gx < mid_x:
                 on_left = True
             else:
                 on_right = True
 
-        # CASE A: Top/bottom wall -> y_rand random (center y), x_align is the nearest center x
+        # CASE A: 위/아래 벽 -> y_rand 랜덤(센터y), x_align은 가까운 센터x
         if on_top or on_bottom:
             x_align = self._nearest_center_in_range(center_xs, sx, gx, sx)
             if x_align is None:
@@ -233,7 +238,7 @@ class BFS:
                 if y_rand is None:
                     break
 
-                # Waypoint configuration (for maintaining shape)
+                # 경유점 구성 (형태 유지용)
                 waypoints = [(x_align, sy), (x_align, y_rand), (gx, y_rand), goal]
 
                 path = self._plan_via(start, waypoints)
@@ -242,7 +247,7 @@ class BFS:
 
             return self.plan_path(start, goal)
 
-        # CASE B: Left/right wall -> x_rand random (center x), y_align is the nearest center y
+        # CASE B: 좌/우 벽 -> x_rand 랜덤(센터x), y_align은 가까운 센터y
         if on_left or on_right:
             y_align = self._nearest_center_in_range(center_ys, sy, gy, sy)
             if y_align is None:
@@ -261,7 +266,7 @@ class BFS:
 
             return self.plan_path(start, goal)
 
-        # If goal is not a wall, just use basic
+        # goal이 벽이 아니면 그냥 기본
         return self.plan_path(start, goal)
 
 
@@ -276,7 +281,7 @@ class AStar_for_CBS:
         self.conflict_avoidance_table = self._build_cat(solution_for_cat)  # CAT: Conflict Avoidance Table
 
     def _build_cat(self, solution):
-        """Create a Conflict Avoidance Table (CAT) for Tie-Breaking"""
+        """Tie-Breaking을 위한 충돌 회피 테이블(CAT)을 생성"""
         cat = defaultdict(int)  # Key: (position, time) / Value: count of agents at that position and time
         if not solution:
             return cat
@@ -291,7 +296,7 @@ class AStar_for_CBS:
     def _get_neighbors(self, pos):
         x, y = pos
         neighbors = []
-        # [Modified] 5-way movement: wait (0,0) and 4 directions
+        # [수정] 5-way movement: wait (0,0) and 4 directions
         for dx, dy in [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)]:
             nx, ny = x + dx, y + dy
             if 0 <= nx < self.width and 0 <= ny < self.height and self.map[ny][nx] == 0:
@@ -308,11 +313,11 @@ class AStar_for_CBS:
         vertex_constraints = {(loc, t) for (loc, t) in constraints if not is_edge(loc)}
         edge_constraints   = {(loc, t) for (loc, t) in constraints if is_edge(loc)}
 
-        # Check start constraint (t=0)
+        # start 제약 체크 (t=0)
         if (self.start, 0) in vertex_constraints:
             return None
 
-        # If there are goal-related constraints, must be at goal "after" that time
+        # goal 관련 제약이 있으면, 그 시간 "이후"에 goal에 있어야 함
         forbidden_goal_times = [t for (loc, t) in vertex_constraints if loc == self.goal]
         earliest_goal_time = (max(forbidden_goal_times) + 1) if forbidden_goal_times else 0
 
@@ -330,11 +335,11 @@ class AStar_for_CBS:
                 continue
             visited.add((current_pos, time))
 
-            # ✅ Discard if the current state itself is a vertex constraint
+            # ✅ 현재 상태 자체가 vertex 제약이면 폐기
             if (current_pos, time) in vertex_constraints:
                 continue
 
-            # ✅ Goal arrival condition: process as success only after the time allowed by constraints
+            # ✅ goal 도착 조건: 제약이 허용되는 시각 이후에만 성공 처리
             if current_pos == self.goal and time >= earliest_goal_time:
                 return path
 
@@ -364,9 +369,9 @@ class AStar_for_CBS:
 
 @dataclass(order=True)
 class CTNode:
-    """Node of the Conflict Tree (CT). A method of collecting constraints along the parent."""
+    """충돌 트리(CT)의 노드. 부모를 따라 제약조건을 수집하는 방식."""
     cost: int
-    # Add conflict count as the second sorting criterion for Tie-Breaking
+    # Tie-Breaking을 위해 충돌 수를 두 번째 정렬 기준으로 추가
     num_conflicts: int = field(compare=True)
 
     node_id: int = field(compare=True)
@@ -376,7 +381,7 @@ class CTNode:
     parent: Optional['CTNode'] = field(compare=False, default=None)
 
 class CBS:
-    """Conflict-Based Search (CBS) algorithm implementation (memory-efficient method)"""
+    """Conflict-Based Search (CBS) 알고리즘 구현 (메모리 효율적 방식)"""
     def __init__(self, map_data: np.ndarray, agents: Dict[int, Dict[str, Tuple[int, int]]]):
         self.map = map_data
         self.agents = agents
@@ -384,14 +389,14 @@ class CBS:
 
     def _get_constraints_for_agent(self, node: CTNode, agent_id: int) -> Set:
         """
-        [Modified] Recursively search the parent of CTNode and extract only 'loc' and 'time'.
+        [수정] CTNode의 부모를 재귀적으로 탐색하며 'loc'와 'time'만 추출합니다.
         """
         constraints = set()
         curr = node
         while curr is not None:
             if curr.constraint and curr.constraint[0] == agent_id:
                 # constraint = (agent_id, loc, time)
-                # Add (loc, time) to the constraints set
+                # constraints set에는 (loc, time)을 추가
                 constraints.add((curr.constraint[1], curr.constraint[2]))
             curr = curr.parent
         return constraints
@@ -399,19 +404,19 @@ class CBS:
     def solve(self, time_limit: float = 10.0):
         start_perf = time.perf_counter()
 
-        # SIGALRM handler
+        # SIGALRM 핸들러
         def _alarm_handler(signum, frame):
             raise _CBSHardTimeout()
 
         old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
-        signal.setitimer(signal.ITIMER_REAL, time_limit)  # ✅ Force interrupt exactly time_limit seconds from here
+        signal.setitimer(signal.ITIMER_REAL, time_limit)  # ✅ 여기서부터 정확히 time_limit초 뒤 강제 인터럽트
 
         best_node_so_far = None
 
         try:
             # ---------------------------
-            # From here, you can leave your existing solve() content as is
-            # (However, since best_node_so_far was being updated below, keep only that line)
+            # 여기부터는 네 기존 solve() 내용 그대로 두면 됨
+            # (단, 아래에서 best_node_so_far를 갱신하고 있었으니 그 라인만 유지)
             # ---------------------------
             start_time = time.time()
             open_list = []
@@ -436,7 +441,7 @@ class CBS:
             node_counter += 1
 
             heapq.heappush(open_list, root)
-            best_node_so_far = root  # ✅ best to return on timeout
+            best_node_so_far = root  # ✅ timeout 시 반환할 best
 
             while open_list:
                 P = heapq.heappop(open_list)
@@ -499,13 +504,13 @@ class CBS:
                 print("    > No partial solution.\n")
                 return None
             print(f"    > Returning best found solution with {best_node_so_far.num_conflicts} conflicts.\n")
-            # ✅ Doing pad_paths here may take additional time.
-            #    If you want "exactly 60 seconds", recommended to return without padding:
+            # ✅ 여기서 pad_paths까지 하면 추가 시간이 걸릴 수 있음.
+            #    “60초 딱”을 원하면 pad 없이 반환 추천:
             # return best_node_so_far.solution
             return self.pad_paths(best_node_so_far.solution)
 
         finally:
-            # Restore timer/handler (very important)
+            # 타이머/핸들러 원복 (매우 중요)
             signal.setitimer(signal.ITIMER_REAL, 0.0)
             signal.signal(signal.SIGALRM, old_handler)
 
@@ -513,7 +518,7 @@ class CBS:
     def find_first_conflict(self, solution: Dict[int, List[Tuple[int, int]]]):
         max_len = max(len(p) for p in solution.values()) if solution else 0
         
-        # [Modified] Since path is 0-indexed, iterate up to max_len (considering padding)
+        # [수정] 경로는 0-indexed이므로 max_len까지 순회 (padding 감안)
         for t in range(max_len):
             positions_at_t = defaultdict(list)
             for agent_id, path in solution.items():
@@ -525,8 +530,8 @@ class CBS:
                     return (agents[0], agents[1], pos, t) # (A1, A2, (x,y), t)
 
             # Edge conflict (swaps)
-            # [Modified] Edge conflict occurs in t -> t+1 movement.
-            # Check up to range(max_len - 1) so that t+1 does not exceed max_len
+            # [수정] Edge conflict는 t -> t+1 이동에서 발생합니다.
+            # t+1이 max_len을 넘지 않도록 range(max_len - 1)까지 확인
             if t < max_len - 1:
                 for agent1 in self.agent_ids:
                     for agent2 in self.agent_ids:
@@ -582,31 +587,31 @@ class CBS:
 
     def calculate_sic(self, solution: Dict[int, List[Tuple[int, int]]]) -> int:
         """
-        [Modified] Sum-of-Costs is the sum of 'times' to reach the goal.
-        If path length is L, then t=0, 1, ..., L-1, so cost is L-1.
-        However, A* may return a path that waits longer at the goal point due to constraints.
-        (e.g., a 10-second path, but if it waits until t=12 due to constraints, there will be 13 path points)
-        The exact cost is the "time to reach the goal".
+        [수정] Sum-of-Costs는 목표에 도달한 '시간'의 합입니다.
+        경로 길이가 L이면, t=0, 1, ..., L-1 이므로 비용은 L-1 입니다.
+        하지만, A*가 목표 지점에서 제약 때문에 더 기다리도록 경로를 반환할 수 있습니다.
+        (예: 10초짜리 경로지만, 제약 때문에 t=12까지 기다리면, 경로는 13개가 됨)
+        정확한 비용은 "목표에 도달한 시간"입니다.
         
-        The path returned by A* is in the form (start, ... , goal, [goal, ...]).
-        The cost is correctly (path length - 1).
+        A*가 반환하는 경로는 (start, ... , goal, [goal, ...]) 형태입니다.
+        비용은 (경로의 길이 - 1)이 맞습니다.
         """
         cost = 0
         for path in solution.values():
             if not path: continue
-            # Assume the end of the path is the goal point
+            # 경로의 마지막이 목표지점이라고 가정
             goal = path[-1]
             last_goal_time = 0
             for t, pos in enumerate(path):
                 if pos == goal:
                     last_goal_time = t
             
-            # If path is (start) -> (goal) [t=1] -> (goal) [t=2], then len=3, cost=2.
-            # But if (start) -> (other) [t=1] -> (goal) [t=2], then len=3, cost=2.
-            # (start) -> (goal) [t=1] -> (other) [t=2] -> (goal) [t=3], then len=4, cost=3.
+            # 만약 경로가 (start) -> (goal) [t=1] -> (goal) [t=2] 라면 len=3, cost=2.
+            # 하지만 (start) -> (other) [t=1] -> (goal) [t=2] 라면 len=3, cost=2.
+            # (start) -> (goal) [t=1] -> (other) [t=2] -> (goal) [t=3] 라면 len=4, cost=3.
             
-            # According to the paper, the cost is the "time of last arrival at the goal".
-            # Since the end of the path returned by A* is always the goal, len(path) - 1 is that time.
+            # [cite_start]논문에 따르면[cite: 118], 비용은 "목표에 마지막으로 도달한 시간"입니다.
+            # A*가 반환한 경로의 마지막은 항상 목표이므로, len(path) - 1이 그 시간입니다.
             cost += len(path) - 1
         return cost
 
@@ -615,7 +620,7 @@ class CBS:
         max_len = max(len(path) for path in solution.values()) if solution else 0
         padded_solution = {}
         for agent_id, path in solution.items():
-            if not path: # Emergency situation where there is no path
+            if not path: # 경로가 없는 비상상황
                 start_pos = self.agents[agent_id]['start']
                 padded_solution[agent_id] = [start_pos] * max_len
                 continue
