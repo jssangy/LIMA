@@ -26,7 +26,6 @@ struct Options {
     std::optional<std::uint64_t> seed;
     std::uint64_t max_steps{100000};
     lima::PlannerKind planner{lima::PlannerKind::Bfs};
-    bool gui{};
     bool validate_conflicts{};
     double fps{20.0};
     RunMode mode{RunMode::Realtime};
@@ -36,7 +35,7 @@ struct Options {
 
 void usage() {
     std::cout << "usage: lima [--map FILE] [--scenario FILE] [--agents N] [--planner bfs|astar]"
-                 " [--seed N] [--max-steps N] [--gui] [--fps N] [--validate-conflicts]"
+                 " [--seed N] [--max-steps N] [--fps N] [--validate-conflicts]"
                  " [--mode realtime|solve|replay] [--output FILE] [--replay FILE]\n";
 }
 
@@ -54,7 +53,6 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--seed") options.seed = std::stoull(std::string(value()));
         else if (arg == "--max-steps") options.max_steps = std::stoull(std::string(value()));
         else if (arg == "--fps") options.fps = std::stod(std::string(value()));
-        else if (arg == "--gui") options.gui = true;
         else if (arg == "--validate-conflicts") options.validate_conflicts = true;
         else if (arg == "--output") options.output = value();
         else if (arg == "--replay") options.replay = value();
@@ -122,10 +120,7 @@ int main(int argc, char** argv) {
         }
         if (options.validate_conflicts && !recorder)
             throw std::invalid_argument("--validate-conflicts requires solve mode or --output FILE");
-        if (options.mode == RunMode::Solve && options.gui) {
-            throw std::invalid_argument("solve mode is headless; use realtime mode with --gui --output to display and record");
-        }
-        if (options.gui) {
+        if (options.mode == RunMode::Realtime) {
 #ifdef LIMA_HAS_SDL2
             const int viewer_result = lima::run_viewer(simulator, {options.fps, options.max_steps}, recorder.get());
             if (recorder) recorder->save(output_path, simulator.map(), simulator.done());
