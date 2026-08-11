@@ -184,8 +184,8 @@ std::optional<std::vector<ScheduledPath>> IntersectionCoordinator::schedule(
         return std::nullopt;
     }
 
-    // Apply the neighbor-capacity quotas as the same lightweight post-process
-    // used by the Python scheduler. Overflow robots may be parked on another arm.
+    // Apply neighbor-capacity quotas as a lightweight post-process. Overflow
+    // robots may be parked on another arm.
     auto final_types = solver_stacks;
     for (const auto& [src, dst] : actions) {
         if (final_types[src].empty() || final_types[dst].size() >= static_cast<std::size_t>(capacities[dst])) return std::nullopt;
@@ -247,8 +247,8 @@ std::optional<std::vector<ScheduledPath>> IntersectionCoordinator::schedule(
         if (src < 0 || dst < 0 || static_cast<std::size_t>(src) >= stacks.size()
             || static_cast<std::size_t>(dst) >= stacks.size()) return std::nullopt;
 
-        // Match the Python scheduler: finish the previous center push and pull the
-        // next source in the same logical frame.
+        // Finish the previous center push and pull the next source in the same
+        // logical frame.
         if (center) {
             if (pending_destination < 0
                 || stacks[static_cast<std::size_t>(pending_destination)].size()
@@ -290,8 +290,7 @@ std::optional<std::vector<ScheduledPath>> IntersectionCoordinator::schedule(
     for (const IntersectionIntent* intent : participants) {
         if (omitted.contains(intent->agent)) continue;
         auto& path = paths[intent->agent];
-        // Environment.insert_scheduled_path returns without scheduling when
-        // Python receives fewer than two positions.
+        // Paths shorter than one move are not inserted into an agent route.
         if (path.size() < 2) continue;
         for (std::size_t i = 0; i + 1 < path.size(); ++i)
             if (!adjacent_or_equal(path[i], path[i + 1], intersection)) return std::nullopt;

@@ -20,7 +20,7 @@ namespace {
 enum class RunMode { Realtime, Solve, Replay };
 
 struct Options {
-    std::filesystem::path map{"maps/cross_1.map"};
+    std::filesystem::path map{"data/maps/cross_1.map"};
     std::filesystem::path scenario;
     std::size_t agents{15};
     std::optional<std::uint64_t> seed;
