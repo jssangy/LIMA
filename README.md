@@ -1,6 +1,6 @@
 # LIMA C++
 
-LIMA is being migrated to a native C++20 implementation. The current executable contains the map/scenario loaders, BFS and A* global planners, intersection topology and deadlock detection, the native IDA* stack scheduler, and atomic joint movement.
+LIMA is being migrated to a native C++20 implementation. The current executable contains the map/scenario loaders, BFS and A* global planners, intersection topology and deadlock detection, and the native IDA* stack scheduler. Simulation follows the Python implementation's execution semantics: scheduled paths are inserted into each AMR's single route, normal AMRs move first in ID order, and blocked scheduled AMRs wait as one intersection group.
 
 ## Build
 
@@ -86,3 +86,5 @@ Replay mode loads that trace without running the planner or scheduler:
 
 Replay controls add `Left Arrow` for one timestep backward and `Home` / `End` for the first / last timestep. The existing pause, forward, speed, zoom, fit, and pan controls remain available.
 Automatic replay interpolates positions between adjacent timestep configurations. Pausing or using the left/right controls snaps exactly to the selected timestep.
+
+Set `--fps 0` in realtime or replay mode to remove the step-rate delay. Unlimited mode still renders every timestep, so headless solve mode remains the fastest option when visualization is unnecessary.

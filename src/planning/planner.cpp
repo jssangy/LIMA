@@ -58,17 +58,20 @@ std::vector<CellId> BfsPlanner::plan(const CellId start, const CellId goal) {
     std::vector<CellId> path{start};
     CellId current = start;
     while (current != goal) {
-        CellId best = kInvalidCell;
+        std::vector<CellId> best;
         int best_distance = distance[static_cast<std::size_t>(current)];
         for (const CellId next : map_.neighbors(current)) {
             const int candidate = distance[static_cast<std::size_t>(next)];
             if (candidate >= 0 && candidate < best_distance) {
-                best = next;
+                best = {next};
                 best_distance = candidate;
+            } else if (candidate >= 0 && candidate == best_distance) {
+                best.push_back(next);
             }
         }
-        if (best == kInvalidCell) return {};
-        current = best;
+        if (best.empty()) return {};
+        std::uniform_int_distribution<std::size_t> choose(0, best.size() - 1);
+        current = best[choose(rng_)];
         path.push_back(current);
     }
     return path;
@@ -114,8 +117,8 @@ std::vector<CellId> AStarPlanner::plan(const CellId start, const CellId goal) {
     return {};
 }
 
-std::unique_ptr<Planner> make_planner(const PlannerKind kind, const GridMap& map) {
-    if (kind == PlannerKind::Bfs) return std::make_unique<BfsPlanner>(map);
+std::unique_ptr<Planner> make_planner(const PlannerKind kind, const GridMap& map, std::mt19937_64& rng) {
+    if (kind == PlannerKind::Bfs) return std::make_unique<BfsPlanner>(map, rng);
     if (kind == PlannerKind::AStar) return std::make_unique<AStarPlanner>(map);
     throw std::invalid_argument("unsupported planner");
 }

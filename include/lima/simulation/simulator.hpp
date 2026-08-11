@@ -4,12 +4,12 @@
 #include "lima/intersection/topology.hpp"
 #include "lima/intersection/coordinator.hpp"
 #include "lima/planning/planner.hpp"
-#include "lima/simulation/dependency_resolver.hpp"
 
 #include <memory>
+#include <random>
 #include <array>
 #include <span>
-#include <unordered_map>
+#include <unordered_set>
 
 namespace lima {
 
@@ -23,7 +23,7 @@ struct SimulationStats {
 
 class Simulator {
 public:
-    Simulator(GridMap map, std::span<const Task> tasks, PlannerKind planner_kind);
+    Simulator(GridMap map, std::span<const Task> tasks, PlannerKind planner_kind, std::uint64_t seed = 0);
 
     [[nodiscard]] bool step();
     [[nodiscard]] bool done() const noexcept { return stats_.completed == agents_.size(); }
@@ -34,29 +34,25 @@ public:
 
 private:
     GridMap map_;
+    std::mt19937_64 rng_;
     std::unique_ptr<Planner> planner_;
     IntersectionTopology topology_;
     std::vector<Agent> agents_;
-    DependencyResolver resolver_;
     IntersectionCoordinator coordinator_;
-    std::int32_t next_schedule_group_{};
-    std::unordered_map<std::int32_t, IntersectionId> active_schedule_intersections_;
-    struct DischargeReservation {
-        IntersectionId source{-1};
-        std::array<int, 4> remaining{};
-    };
-    std::unordered_map<std::int32_t, DischargeReservation> discharge_reservations_;
-    // Persistent admission tokens.  Scheduling reserves downstream tokens before
-    // paths are committed; successful boundary crossings return/consume them.
+    std::vector<IntersectionId> deadlock_queue_;
+    std::vector<std::unordered_set<AgentId>> scheduled_members_;
+    std::vector<bool> deadlock_waiting_;
     std::vector<int> intersection_available_;
-    std::uint32_t stalled_timesteps_{};
     SimulationStats stats_;
 
-    bool recover_from_stall();
     bool recover_stalled_intersections(const std::vector<std::vector<AgentId>>& members,
                                        const std::vector<bool>& stalled);
+    bool has_active_neighbor(IntersectionId intersection) const;
+    bool block_intersection(CellId current, CellId next, bool normal_only) const;
+    void update_available_on_move(CellId current, CellId next);
+    void insert_scheduled_path(Agent& agent, const ScheduledPath& scheduled, IntersectionId intersection);
+    void move_agent(Agent& agent);
     std::vector<CellId> plan_global(CellId start, CellId goal);
-    void reconnect_to_original_route(Agent& agent, IntersectionId intersection_id);
 };
 
 }  // namespace lima

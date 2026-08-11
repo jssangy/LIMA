@@ -5,15 +5,23 @@
 
 #include <cstdint>
 #include <array>
+#include <optional>
 #include <span>
+#include <vector>
 
 namespace lima {
 
+struct ScheduledPath {
+    AgentId agent{kNoAgent};
+    std::vector<CellId> path;
+    CellId target_exit{kInvalidCell};
+};
+
 class IntersectionCoordinator {
 public:
-    bool schedule(const Intersection& intersection, std::span<Agent> agents,
-                  std::span<const IntersectionIntent> intents, const std::array<int, 4>& stack_quotas,
-                  std::int32_t group_id) const;
+    std::optional<std::vector<ScheduledPath>> schedule(
+        const Intersection& intersection, std::span<const IntersectionIntent> intents,
+        const std::array<int, 4>& stack_quotas) const;
 };
 
 }  // namespace lima

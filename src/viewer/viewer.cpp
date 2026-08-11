@@ -199,8 +199,14 @@ int run_viewer_impl(Simulator* simulator, const GridMap& map, const SolutionTrac
                             previous = std::chrono::steady_clock::now();
                         }
                         break;
-                    case SDLK_UP: options.steps_per_second = std::min(240.0, options.steps_per_second * 1.5); break;
-                    case SDLK_DOWN: options.steps_per_second = std::max(0.5, options.steps_per_second / 1.5); break;
+                    case SDLK_UP:
+                        options.steps_per_second = options.steps_per_second == 0.0
+                            ? 20.0 : std::min(240.0, options.steps_per_second * 1.5);
+                        break;
+                    case SDLK_DOWN:
+                        options.steps_per_second = options.steps_per_second == 0.0
+                            ? 240.0 : std::max(0.5, options.steps_per_second / 1.5);
+                        break;
                     case SDLK_EQUALS:
                     case SDLK_KP_PLUS: zoom_at(1.2, mouse_x, mouse_y); break;
                     case SDLK_MINUS:
@@ -216,9 +222,13 @@ int run_viewer_impl(Simulator* simulator, const GridMap& map, const SolutionTrac
         if (!paused) accumulator += std::chrono::duration<double>(now - previous).count();
         else accumulator = 0.0;
         previous = now;
-        const double interval = 1.0 / options.steps_per_second;
+        const bool unlimited = options.steps_per_second == 0.0;
+        const double interval = unlimited ? 0.0 : 1.0 / options.steps_per_second;
         if (replay != nullptr) {
-            while (!paused && replay_cursor + 1 < replay->frame_count() && accumulator >= interval) {
+            if (unlimited && !paused && replay_cursor + 1 < replay->frame_count()) {
+                ++replay_cursor;
+                accumulator = 0.0;
+            } else while (!paused && replay_cursor + 1 < replay->frame_count() && accumulator >= interval) {
                 ++replay_cursor;
                 accumulator -= interval;
             }
@@ -230,7 +240,13 @@ int run_viewer_impl(Simulator* simulator, const GridMap& map, const SolutionTrac
                 single_step = false;
                 accumulator = 0.0;
             }
-            while (!paused && !simulator->done() && simulator->stats().timestep < options.max_steps && accumulator >= interval) {
+            if (unlimited && !paused && !single_step && !simulator->done()
+                && simulator->stats().timestep < options.max_steps) {
+                if (!simulator->step()) paused = true;
+                else if (recorder != nullptr) recorder->append(simulator->agents());
+                accumulator = 0.0;
+            } else while (!paused && !simulator->done() && simulator->stats().timestep < options.max_steps
+                          && accumulator >= interval) {
                 if (!simulator->step()) {
                     paused = true;
                     break;
@@ -294,7 +310,7 @@ int run_viewer_impl(Simulator* simulator, const GridMap& map, const SolutionTrac
             const auto positions = replay->frame(replay_cursor);
             const std::size_t next_cursor = std::min(replay_cursor + 1, replay->frame_count() - 1);
             const auto next_positions = replay->frame(next_cursor);
-            const double raw_alpha = (!paused && next_cursor != replay_cursor)
+            const double raw_alpha = (!unlimited && !paused && next_cursor != replay_cursor)
                 ? std::clamp(accumulator / interval, 0.0, 1.0) : 0.0;
             if (show_goal_lines) {
                 for (std::size_t i = 0; i < replay->agent_count(); ++i) {
@@ -358,11 +374,12 @@ int run_viewer_impl(Simulator* simulator, const GridMap& map, const SolutionTrac
         const std::string title = std::string(replay != nullptr ? "LIMA Replay | " : "LIMA Realtime | ")
             + std::to_string(completed) + "/" + std::to_string(total_agents) + " completed | step "
             + std::to_string(timestep) + (replay != nullptr ? "/" + std::to_string(replay->frame_count() - 1) : "")
-            + " | " + (paused ? "paused" : std::to_string(static_cast<int>(options.steps_per_second)) + " step/s")
+            + " | " + (paused ? "paused" : (unlimited ? "unlimited" :
+                std::to_string(static_cast<int>(options.steps_per_second)) + " step/s"))
             + " | goals " + (show_goal_lines ? "on" : "off")
             + " | zoom " + std::to_string(static_cast<int>(std::lround(zoom * 100.0))) + "%";
         SDL_SetWindowTitle(window.window(), title.c_str());
-        SDL_Delay(1);
+        if (!unlimited) SDL_Delay(1);
     }
     return 0;
 }

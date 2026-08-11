@@ -17,7 +17,6 @@ add_library(lima_core
     src/intersection/deadlock_detector.cpp
     src/intersection/coordinator.cpp
     src/scheduling/ida_star.cpp
-    src/simulation/dependency_resolver.cpp
     src/simulation/simulator.cpp
 )
 target_include_directories(lima_core PUBLIC include)

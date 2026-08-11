@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <deque>
+#include <random>
 #include <span>
 #include <unordered_map>
 
@@ -17,11 +18,12 @@ public:
 
 class BfsPlanner final : public Planner {
 public:
-    explicit BfsPlanner(const GridMap& map) : map_(map) {}
+    BfsPlanner(const GridMap& map, std::mt19937_64& rng) : map_(map), rng_(rng) {}
     [[nodiscard]] std::vector<CellId> plan(CellId start, CellId goal) override;
 
 private:
     const GridMap& map_;
+    std::mt19937_64& rng_;
     std::unordered_map<CellId, std::vector<std::int32_t>> fields_;
     std::deque<CellId> field_order_;
 };
@@ -35,7 +37,7 @@ private:
     const GridMap& map_;
 };
 
-std::unique_ptr<Planner> make_planner(PlannerKind kind, const GridMap& map);
+std::unique_ptr<Planner> make_planner(PlannerKind kind, const GridMap& map, std::mt19937_64& rng);
 
 // Local recovery route. A non-zero blocked entry excludes that cell, except start and goal.
 std::vector<CellId> plan_avoiding(const GridMap& map, CellId start, CellId goal,

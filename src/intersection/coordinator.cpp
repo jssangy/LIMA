@@ -15,11 +15,6 @@ namespace {
 
 using Lane = std::vector<std::optional<AgentId>>;
 
-Agent* find_agent(const AgentId id, const std::span<Agent> agents) {
-    for (Agent& agent : agents) if (agent.id == id) return &agent;
-    return nullptr;
-}
-
 bool adjacent_or_equal(const CellId a, const CellId b, const Intersection& intersection) {
     if (a == b) return true;
     if (a == intersection.center || b == intersection.center) {
@@ -37,10 +32,7 @@ bool adjacent_or_equal(const CellId a, const CellId b, const Intersection& inter
 std::optional<std::vector<CellId>> make_trimmed_egress(
     const Intersection& intersection, const IntersectionIntent& intent,
     const std::vector<CellId>& full_path) {
-    const auto direction_index = static_cast<std::size_t>(intent.exit);
-    if (direction_index >= 4 || intersection.arms[direction_index].empty() || full_path.empty())
-        return std::nullopt;
-
+    if (full_path.empty()) return std::nullopt;
     std::size_t last_center = full_path.size();
     for (std::size_t i = full_path.size(); i-- > 0;) {
         if (full_path[i] == intersection.center) {
@@ -48,67 +40,53 @@ std::optional<std::vector<CellId>> make_trimmed_egress(
             break;
         }
     }
-    if (last_center == full_path.size()) return std::nullopt;
-    if (last_center + 1 >= full_path.size()) return std::nullopt;
+    if (last_center == full_path.size() || last_center + 1 >= full_path.size()) return std::nullopt;
+    if (intersection.direction_of(full_path[last_center + 1]) != intent.exit) return std::nullopt;
 
-    // Python decides Case A/B from the cell immediately after the final center
-    // visit, not from the scheduler's final placement.
-    const Direction actual_exit = intersection.direction_of(full_path[last_center + 1]);
-    if (actual_exit != intent.exit) return std::nullopt;
-
-    // After the last center visit, retain the
-    // schedule through the first occurrence of the farthest outward position.
-    // Later synchronized hold snapshots are no longer part of this AMR's
-    // schedule because its final arm already matches the requested target.
-    const auto& exit_arm = intersection.arms[direction_index];
-    std::size_t release_time = last_center;
-    std::size_t farthest_rank = 0;
-    bool found_exit_position = false;
+    std::size_t farthest = last_center;
+    std::int64_t farthest_distance = -1;
     for (std::size_t i = last_center + 1; i < full_path.size(); ++i) {
-        const auto found = std::find(exit_arm.begin(), exit_arm.end(), full_path[i]);
-        if (found == exit_arm.end()) return std::nullopt;
-        const std::size_t rank = static_cast<std::size_t>(found - exit_arm.begin());
-        if (!found_exit_position || rank > farthest_rank) {
-            found_exit_position = true;
-            farthest_rank = rank;
-            release_time = i;
+        const auto direction = static_cast<std::size_t>(intent.exit);
+        if (direction >= 4) return std::nullopt;
+        const auto& arm = intersection.arms[direction];
+        const auto found = std::find(arm.begin(), arm.end(), full_path[i]);
+        if (found == arm.end()) continue;
+        const auto distance = static_cast<std::int64_t>(found - arm.begin());
+        if (distance > farthest_distance) {
+            farthest_distance = distance;
+            farthest = i;
         }
     }
-    if (!found_exit_position) return std::nullopt;
-
-    std::vector<CellId> result(
-        full_path.begin(), full_path.begin() + static_cast<std::ptrdiff_t>(release_time + 1));
-    if (result.size() >= full_path.size()) return std::nullopt;
-    return result;
+    if (farthest_distance < 0 || farthest + 1 >= full_path.size()) return std::nullopt;
+    return std::vector<CellId>(full_path.begin(),
+        full_path.begin() + static_cast<std::ptrdiff_t>(farthest + 1));
 }
 
 }  // namespace
 
-bool IntersectionCoordinator::schedule(const Intersection& intersection, const std::span<Agent> agents,
-                                       const std::span<const IntersectionIntent> intents,
-                                       const std::array<int, 4>& stack_quotas,
-                                       const std::int32_t group_id) const {
+std::optional<std::vector<ScheduledPath>> IntersectionCoordinator::schedule(
+    const Intersection& intersection, const std::span<const IntersectionIntent> intents,
+    const std::array<int, 4>& stack_quotas) const {
     std::vector<Direction> directions;
     for (std::size_t d = 0; d < 4; ++d) if (!intersection.arms[d].empty()) directions.push_back(static_cast<Direction>(d));
-    if (directions.size() < 3 || intents.size() < 2) return false;
+    if (directions.size() < 3 || intents.size() < 2) return std::nullopt;
 
     std::unordered_map<AgentId, Direction> desired_direction;
     std::array<Lane, 4> current;
     for (const Direction d : directions) current[static_cast<std::size_t>(d)].resize(intersection.arms[static_cast<std::size_t>(d)].size());
     std::optional<AgentId> center_agent;
     for (const auto& intent : intents) {
-        if (find_agent(intent.agent, agents) == nullptr) return false;
         desired_direction[intent.agent] = intent.exit;
         if (intent.current == Direction::Center) {
-            if (center_agent) return false;
+            if (center_agent) return std::nullopt;
             center_agent = intent.agent;
             continue;
         }
         const auto d = static_cast<std::size_t>(intent.current);
-        if (d >= 4) return false;
+        if (d >= 4) return std::nullopt;
         const auto& cells = intersection.arms[d];
         const auto found = std::find(cells.begin(), cells.end(), intent.position);
-        if (found == cells.end()) return false;
+        if (found == cells.end()) return std::nullopt;
         current[d][static_cast<std::size_t>(found - cells.begin())] = intent.agent;
     }
 
@@ -141,7 +119,7 @@ bool IntersectionCoordinator::schedule(const Intersection& intersection, const s
                 }
             }
         }
-        if (!has_space(host)) return false;
+        if (!has_space(host)) return std::nullopt;
         auto& lane = target[static_cast<std::size_t>(host)];
         for (std::size_t i = lane.size() - 1; i > 0; --i) lane[i] = lane[i - 1];
         lane[0] = center_agent;
@@ -160,7 +138,7 @@ bool IntersectionCoordinator::schedule(const Intersection& intersection, const s
     std::size_t prestage_steps = center_agent ? 1 : 0;
     for (const auto& [id, source] : current_location) {
         const auto destination = target_location.at(id);
-        if (source.first != destination.first) return false;
+        if (source.first != destination.first) return std::nullopt;
         const auto distance = source.second > destination.second ? source.second - destination.second : destination.second - source.second;
         prestage_steps = std::max(prestage_steps, distance);
     }
@@ -203,14 +181,14 @@ bool IntersectionCoordinator::schedule(const Intersection& intersection, const s
     try {
         actions = solve_stack_rearrangement(solver_stacks, capacities);
     } catch (const std::exception&) {
-        return false;
+        return std::nullopt;
     }
 
     // Apply the neighbor-capacity quotas as the same lightweight post-process
     // used by the Python scheduler. Overflow robots may be parked on another arm.
     auto final_types = solver_stacks;
     for (const auto& [src, dst] : actions) {
-        if (final_types[src].empty() || final_types[dst].size() >= static_cast<std::size_t>(capacities[dst])) return false;
+        if (final_types[src].empty() || final_types[dst].size() >= static_cast<std::size_t>(capacities[dst])) return std::nullopt;
         const int item = final_types[src].back();
         final_types[src].pop_back();
         final_types[dst].push_back(item);
@@ -242,7 +220,7 @@ bool IntersectionCoordinator::schedule(const Intersection& intersection, const s
                 dst = static_cast<int>(i);
             }
         }
-        if (dst < 0 || final_types[src].empty()) return false;
+        if (dst < 0 || final_types[src].empty()) return std::nullopt;
         const int item = final_types[src].back();
         final_types[src].pop_back();
         final_types[dst].push_back(item);
@@ -267,18 +245,18 @@ bool IntersectionCoordinator::schedule(const Intersection& intersection, const s
     int pending_destination = -1;
     for (const auto& [src, dst] : actions) {
         if (src < 0 || dst < 0 || static_cast<std::size_t>(src) >= stacks.size()
-            || static_cast<std::size_t>(dst) >= stacks.size()) return false;
+            || static_cast<std::size_t>(dst) >= stacks.size()) return std::nullopt;
 
         // Match the Python scheduler: finish the previous center push and pull the
         // next source in the same logical frame.
         if (center) {
             if (pending_destination < 0
                 || stacks[static_cast<std::size_t>(pending_destination)].size()
-                    >= static_cast<std::size_t>(capacities[static_cast<std::size_t>(pending_destination)])) return false;
+                    >= static_cast<std::size_t>(capacities[static_cast<std::size_t>(pending_destination)])) return std::nullopt;
             stacks[static_cast<std::size_t>(pending_destination)].push_back(*center);
             center.reset();
         }
-        if (stacks[src].empty()) return false;
+        if (stacks[src].empty()) return std::nullopt;
         const AgentId moving = stacks[src].back();
         stacks[src].pop_back();
         center = moving;
@@ -287,59 +265,42 @@ bool IntersectionCoordinator::schedule(const Intersection& intersection, const s
     }
     if (center) {
         if (stacks[static_cast<std::size_t>(pending_destination)].size()
-            >= static_cast<std::size_t>(capacities[static_cast<std::size_t>(pending_destination)])) return false;
+            >= static_cast<std::size_t>(capacities[static_cast<std::size_t>(pending_destination)])) return std::nullopt;
         stacks[static_cast<std::size_t>(pending_destination)].push_back(*center);
         append_snapshot(std::nullopt);
     }
 
-    if (actions.empty() && prestage_steps == 0) return false;
-    struct Assignment {
-        Agent* agent{};
-        std::vector<CellId> path;
-    };
-    std::vector<Assignment> assignments;
-    assignments.reserve(participants.size());
+    if (actions.empty() && prestage_steps == 0) return std::nullopt;
 
-    // Current Python behavior: every AMR participates in prestaging and IDA*.
-    // Only after the complete synchronized paths exist, discard the entire
-    // inserted path for a center-bypassing AMR already on its target arm.
     std::unordered_set<AgentId> omitted;
     for (const IntersectionIntent* intent : participants) {
         const auto& path = paths.at(intent->agent);
         const bool center_visited = std::find(path.begin(), path.end(), intersection.center) != path.end();
         if (!center_visited && intent->current == intent->exit) omitted.insert(intent->agent);
     }
-
-    // Apply Case A/B path trimming to the remaining schedule paths.
     for (const IntersectionIntent* intent : participants) {
         if (omitted.contains(intent->agent)) continue;
-        auto trimmed = make_trimmed_egress(intersection, *intent, paths.at(intent->agent));
-        if (trimmed) paths[intent->agent] = std::move(*trimmed);
+        if (auto trimmed = make_trimmed_egress(intersection, *intent, paths.at(intent->agent)))
+            paths[intent->agent] = std::move(*trimmed);
     }
 
+    std::vector<ScheduledPath> scheduled_paths;
+    scheduled_paths.reserve(participants.size());
+
     for (const IntersectionIntent* intent : participants) {
-        Agent* agent = find_agent(intent->agent, agents);
-        if (agent == nullptr) return false;
         if (omitted.contains(intent->agent)) continue;
         auto& path = paths[intent->agent];
         // Environment.insert_scheduled_path returns without scheduling when
         // Python receives fewer than two positions.
         if (path.size() < 2) continue;
-        for (std::size_t i = 0; i + 1 < path.size(); ++i) if (!adjacent_or_equal(path[i], path[i + 1], intersection)) return false;
-        Assignment assignment;
-        assignment.agent = agent;
-        assignment.path = std::move(path);
-        assignments.push_back(std::move(assignment));
+        for (std::size_t i = 0; i + 1 < path.size(); ++i)
+            if (!adjacent_or_equal(path[i], path[i + 1], intersection)) return std::nullopt;
+        const auto direction = static_cast<std::size_t>(intent->exit);
+        if (direction >= 4 || intersection.arms[direction].empty()) return std::nullopt;
+        scheduled_paths.push_back({intent->agent, std::move(path), intersection.arms[direction].back()});
     }
-    if (assignments.empty()) return false;
-    // Commit only after every shortened path has been validated.  A late
-    // validation failure must never leave a subset of the group scheduled.
-    for (auto& assignment : assignments) {
-        assignment.agent->schedule_route = std::move(assignment.path);
-        assignment.agent->schedule_cursor = 0;
-        assignment.agent->schedule_group = group_id;
-    }
-    return true;
+    if (scheduled_paths.empty()) return std::nullopt;
+    return scheduled_paths;
 }
 
 }  // namespace lima

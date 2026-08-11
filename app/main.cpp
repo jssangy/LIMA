@@ -24,7 +24,7 @@ struct Options {
     std::filesystem::path scenario;
     std::size_t agents{15};
     std::optional<std::uint64_t> seed;
-    std::uint64_t max_steps{1000};
+    std::uint64_t max_steps{100000};
     lima::PlannerKind planner{lima::PlannerKind::Bfs};
     bool gui{};
     double fps{20.0};
@@ -90,7 +90,7 @@ int main(int argc, char** argv) {
     try {
         const Options options = parse(argc, argv);
         lima::GridMap map = lima::GridMap::load(options.map);
-        if (options.fps <= 0.0) throw std::invalid_argument("fps must be greater than zero");
+        if (options.fps < 0.0) throw std::invalid_argument("fps must be zero or greater");
 
         if (options.mode == RunMode::Replay) {
             if (options.replay.empty()) throw std::invalid_argument("replay mode requires --replay FILE");
@@ -110,7 +110,7 @@ int main(int argc, char** argv) {
         if (tasks.empty()) throw std::runtime_error("no tasks were loaded");
         if (options.scenario.empty()) std::cout << "seed=" << task_seed << '\n';
 
-        lima::Simulator simulator(std::move(map), tasks, options.planner);
+        lima::Simulator simulator(std::move(map), tasks, options.planner, task_seed);
         std::filesystem::path output_path = options.output;
         if (options.mode == RunMode::Solve && output_path.empty()) output_path = "build/result.txt";
         std::unique_ptr<lima::SolutionTrace> recorder;
