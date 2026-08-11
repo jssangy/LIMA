@@ -9,6 +9,15 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
+Native CPU instructions can be tested with the optional build flag below. It
+is disabled by default because `-march=native` is not portable and is not
+faster on every workload:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLIMA_NATIVE_OPTIMIZATION=ON
+cmake --build build -j
+```
+
 ## Run
 
 Random tasks use `S`/`G` cells in the map as goals:
@@ -75,6 +84,14 @@ Solve mode runs without rendering and writes a LaCAM-compatible solution trace. 
 ```bash
 ./build/lima --mode solve --map maps/cross_1.map --agents 15 \
   --planner bfs --max-steps 5000 --output results/cross_1_15.txt
+```
+
+Conflict validation is disabled by default so normal recording does not pay its
+per-frame cost. Enable it explicitly when checking a run:
+
+```bash
+./build/lima --mode solve --map maps/cross_1.map --agents 15 \
+  --planner bfs --output results/cross_1_15.txt --validate-conflicts
 ```
 
 Replay mode loads that trace without running the planner or scheduler:

@@ -10,7 +10,7 @@ constexpr std::array<Coord, 4> kDelta{{{0, -1}, {1, 0}, {0, 1}, {-1, 0}}};
 
 bool wall_or_outside(const GridMap& map, const Coord c) { return !map.in_bounds(c) || !map.traversable(c); }
 
-bool is_center(const GridMap& map, const Coord c) {
+bool detect_center(const GridMap& map, const Coord c) {
     if (!map.traversable(c)) return false;
     int open = 0;
     for (const Coord d : kDelta) open += map.traversable({c.x + d.x, c.y + d.y}) ? 1 : 0;
@@ -44,6 +44,12 @@ bool Intersection::has_arm(const Direction direction) const noexcept {
     return value < 4 && !arms[value].empty();
 }
 
+bool Intersection::is_tip(const CellId cell) const noexcept {
+    return std::any_of(arms.begin(), arms.end(), [&](const auto& arm) {
+        return !arm.empty() && arm.back() == cell;
+    });
+}
+
 Direction Intersection::direction_of(const CellId cell) const noexcept {
     if (cell == center) return Direction::Center;
     for (std::size_t d = 0; d < arms.size(); ++d) {
@@ -61,11 +67,13 @@ std::vector<CellId> Intersection::cells() const {
 IntersectionTopology IntersectionTopology::build(const GridMap& map) {
     IntersectionTopology topology;
     topology.cell_to_intersections_.resize(static_cast<std::size_t>(map.cell_count()));
+    topology.cell_is_center_.resize(static_cast<std::size_t>(map.cell_count()), 0);
+    topology.cell_is_arm_tip_.resize(static_cast<std::size_t>(map.cell_count()), 0);
     std::unordered_map<CellId, IntersectionId> by_center;
 
     for (const CellId cell : map.traversable_cells()) {
         const Coord center = map.coord(cell);
-        if (!is_center(map, center)) continue;
+        if (!detect_center(map, center)) continue;
         Intersection intersection;
         intersection.id = static_cast<IntersectionId>(topology.intersections_.size());
         intersection.center = cell;
@@ -80,9 +88,11 @@ IntersectionTopology IntersectionTopology::build(const GridMap& map) {
     }
 
     for (auto& intersection : topology.intersections_) {
+        topology.cell_is_center_[static_cast<std::size_t>(intersection.center)] = 1;
         for (std::size_t d = 0; d < 4; ++d) {
             const auto& arm = intersection.arms[d];
             if (arm.empty()) continue;
+            topology.cell_is_arm_tip_[static_cast<std::size_t>(arm.back())] = 1;
             const Coord tip = map.coord(arm.back());
             const Coord delta = kDelta[d];
             const CellId expected = map.in_bounds({tip.x + delta.x, tip.y + delta.y})
@@ -100,6 +110,16 @@ const std::vector<IntersectionId>& IntersectionTopology::memberships(const CellI
     static const std::vector<IntersectionId> empty;
     if (cell < 0 || static_cast<std::size_t>(cell) >= cell_to_intersections_.size()) return empty;
     return cell_to_intersections_[static_cast<std::size_t>(cell)];
+}
+
+bool IntersectionTopology::is_center(const CellId cell) const noexcept {
+    return cell >= 0 && static_cast<std::size_t>(cell) < cell_is_center_.size()
+        && cell_is_center_[static_cast<std::size_t>(cell)] != 0;
+}
+
+bool IntersectionTopology::is_arm_tip(const CellId cell) const noexcept {
+    return cell >= 0 && static_cast<std::size_t>(cell) < cell_is_arm_tip_.size()
+        && cell_is_arm_tip_[static_cast<std::size_t>(cell)] != 0;
 }
 
 }  // namespace lima

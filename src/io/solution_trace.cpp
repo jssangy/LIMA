@@ -1,9 +1,9 @@
 #include "lima/io/solution_trace.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <stdexcept>
 #include <string_view>
-#include <unordered_map>
 
 namespace lima {
 namespace {
@@ -37,8 +37,9 @@ std::vector<CellId> to_cells(const std::vector<Coord>& coordinates, const GridMa
 
 }  // namespace
 
-SolutionTrace::SolutionTrace(const GridMap& map, const std::span<const Agent> agents, std::string map_file)
-    : map_file_(std::move(map_file)) {
+SolutionTrace::SolutionTrace(const GridMap& map, const std::span<const Agent> agents, std::string map_file,
+                             const bool validate_conflicts)
+    : map_file_(std::move(map_file)), validation_enabled_(validate_conflicts) {
     starts_.reserve(agents.size());
     goals_.reserve(agents.size());
     for (const Agent& agent : agents) {
@@ -48,6 +49,12 @@ SolutionTrace::SolutionTrace(const GridMap& map, const std::span<const Agent> ag
         starts_.push_back(agent.position);
         goals_.push_back(agent.goal);
     }
+    current_frame_.reserve(agents.size());
+    if (validation_enabled_) {
+        current_occupancy_.resize(static_cast<std::size_t>(map.cell_count()), kNoAgent);
+        previous_occupancy_.resize(static_cast<std::size_t>(map.cell_count()), kNoAgent);
+        previous_active_.reserve(agents.size());
+    }
     append(agents);
 }
 
@@ -55,41 +62,42 @@ void SolutionTrace::append(const std::span<const Agent> agents) {
     if (agents.size() != agent_count()) throw std::logic_error("solution agent count changed while recording");
     const bool has_previous = frame_count() > 0;
     const auto previous = has_previous ? frame(frame_count() - 1) : std::span<const CellId>{};
-    std::vector<CellId> current;
-    current.reserve(agents.size());
-    for (const Agent& agent : agents) current.push_back(agent.position);
+    current_frame_.clear();
+    for (const Agent& agent : agents) current_frame_.push_back(agent.position);
 
-    // Temporary trace validation: completed robots are removed from simulator
-    // occupancy, so include a robot in this transition when it was active at
-    // either endpoint.  This still validates its final move into the goal.
-    std::unordered_map<CellId, std::size_t> current_occupancy;
-    current_occupancy.reserve(agents.size() * 2);
-    for (std::size_t i = 0; i < agents.size(); ++i) {
-        const bool participates = agents[i].active
-            || (has_previous && i < previous_active_.size() && previous_active_[i]);
-        if (!participates) continue;
-        if (!current_occupancy.emplace(current[i], i).second) ++vertex_conflicts_;
-    }
-    if (has_previous) {
-        std::unordered_map<CellId, std::size_t> previous_occupancy;
-        previous_occupancy.reserve(agents.size() * 2);
-        for (std::size_t i = 0; i < agents.size(); ++i)
-            if (i < previous_active_.size() && previous_active_[i]) previous_occupancy.emplace(previous[i], i);
+    if (validation_enabled_) {
+        // Completed robots are removed from simulator occupancy, so include a
+        // robot when it was active at either endpoint of this transition.
+        std::fill(current_occupancy_.begin(), current_occupancy_.end(), kNoAgent);
         for (std::size_t i = 0; i < agents.size(); ++i) {
-            if (i >= previous_active_.size() || !previous_active_[i] || previous[i] == current[i]) continue;
-            const auto occupant = previous_occupancy.find(current[i]);
-            if (occupant == previous_occupancy.end()) continue;
-            const std::size_t j = occupant->second;
-            if (j > i && j < current.size() && previous[j] == current[i] && current[j] == previous[i])
-                ++edge_conflicts_;
+            const bool participates = agents[i].active
+                || (has_previous && i < previous_active_.size() && previous_active_[i]);
+            if (!participates) continue;
+            AgentId& occupant = current_occupancy_[static_cast<std::size_t>(current_frame_[i])];
+            if (occupant != kNoAgent) ++vertex_conflicts_;
+            else occupant = static_cast<AgentId>(i);
         }
+        std::fill(previous_occupancy_.begin(), previous_occupancy_.end(), kNoAgent);
+        for (std::size_t i = 0; i < agents.size(); ++i)
+            if (i < previous_active_.size() && previous_active_[i])
+                previous_occupancy_[static_cast<std::size_t>(previous[i])] = static_cast<AgentId>(i);
+        if (has_previous) {
+            for (std::size_t i = 0; i < agents.size(); ++i) {
+                if (i >= previous_active_.size() || !previous_active_[i]
+                    || previous[i] == current_frame_[i]) continue;
+                const AgentId occupant = previous_occupancy_[static_cast<std::size_t>(current_frame_[i])];
+                if (occupant == kNoAgent) continue;
+                const std::size_t j = static_cast<std::size_t>(occupant);
+                if (j > i && j < current_frame_.size() && previous[j] == current_frame_[i]
+                    && current_frame_[j] == previous[i]) ++edge_conflicts_;
+            }
+        }
+        previous_active_.clear();
+        for (const Agent& agent : agents) previous_active_.push_back(agent.active);
     }
 
     configurations_.reserve(configurations_.size() + agents.size());
-    configurations_.insert(configurations_.end(), current.begin(), current.end());
-    previous_active_.clear();
-    previous_active_.reserve(agents.size());
-    for (const Agent& agent : agents) previous_active_.push_back(agent.active);
+    configurations_.insert(configurations_.end(), current_frame_.begin(), current_frame_.end());
 }
 
 std::span<const CellId> SolutionTrace::frame(const std::size_t timestep) const {
@@ -120,7 +128,8 @@ void SolutionTrace::save(const std::filesystem::path& path, const GridMap& map, 
     output << "sum_of_loss=" << sum_of_costs << '\n';
     output << "sum_of_loss_lb=0\n";
     output << "comp_time=" << computation_time_seconds_ << '\n';
-    output << "validation=" << (vertex_conflicts_ == 0 && edge_conflicts_ == 0 ? "ok" : "conflict") << '\n';
+    output << "validation=" << (validation_enabled_
+        ? (vertex_conflicts_ == 0 && edge_conflicts_ == 0 ? "ok" : "conflict") : "disabled") << '\n';
     output << "vertex_conflicts=" << vertex_conflicts_ << '\n';
     output << "edge_conflicts=" << edge_conflicts_ << '\n';
     output << "starts=";

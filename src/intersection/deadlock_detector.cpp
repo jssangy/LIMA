@@ -17,6 +17,14 @@ std::vector<IntersectionIntent> collect_intents(const Intersection& intersection
                                                 const std::span<const AgentId> members) {
     std::vector<IntersectionIntent> result;
     result.reserve(members.size());
+    collect_intents(intersection, agents, members, result);
+    return result;
+}
+
+void collect_intents(const Intersection& intersection, const std::span<const Agent> agents,
+                     const std::span<const AgentId> members, std::vector<IntersectionIntent>& result) {
+    result.clear();
+    if (result.capacity() < members.size()) result.reserve(members.size());
     for (const AgentId id : members) {
         if (id < 0 || static_cast<std::size_t>(id) >= agents.size()) continue;
         const Agent& agent = agents[static_cast<std::size_t>(id)];
@@ -32,7 +40,6 @@ std::vector<IntersectionIntent> collect_intents(const Intersection& intersection
         }
         result.push_back({agent.id, current, exit, agent.position, agent.intended_cell()});
     }
-    return result;
 }
 
 bool has_intersection_deadlock(const Intersection& intersection, const std::span<const IntersectionIntent> intents) {

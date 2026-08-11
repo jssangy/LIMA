@@ -16,6 +16,7 @@ struct Intersection {
     std::array<IntersectionId, 4> neighbors{{-1, -1, -1, -1}};
 
     [[nodiscard]] bool has_arm(Direction direction) const noexcept;
+    [[nodiscard]] bool is_tip(CellId cell) const noexcept;
     [[nodiscard]] Direction direction_of(CellId cell) const noexcept;
     [[nodiscard]] std::vector<CellId> cells() const;
 };
@@ -26,11 +27,14 @@ public:
 
     [[nodiscard]] const std::vector<Intersection>& intersections() const noexcept { return intersections_; }
     [[nodiscard]] const std::vector<IntersectionId>& memberships(CellId cell) const;
+    [[nodiscard]] bool is_center(CellId cell) const noexcept;
+    [[nodiscard]] bool is_arm_tip(CellId cell) const noexcept;
 
 private:
     std::vector<Intersection> intersections_;
     std::vector<std::vector<IntersectionId>> cell_to_intersections_;
+    std::vector<std::uint8_t> cell_is_center_;
+    std::vector<std::uint8_t> cell_is_arm_tip_;
 };
 
 }  // namespace lima
-

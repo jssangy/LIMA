@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <memory_resource>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -129,20 +130,29 @@ void rollback(State& state, const Undo& undo) {
     state.cells[undo.src][undo.src_position] = undo.item;
 }
 
-void generate_moves(const State& state, const StackMove last, const bool deterministic, std::vector<StackMove>& result) {
-    result.clear();
+struct MoveList {
+    std::array<StackMove, kMaxStacks * (kMaxStacks - 1)> values{};
+    std::size_t size{};
+
+    void push_back(const StackMove move) { values[size++] = move; }
+};
+
+MoveList generate_moves(const State& state, const StackMove last, const bool deterministic) {
+    MoveList result;
     if (deterministic) {
         for (int src = 0; src < state.count; ++src) {
             if (state.size[src] == 0) continue;
             const int dst = state.cells[src][state.size[src] - 1];
             if (dst != src && dst < state.count && state.size[dst] < state.capacity[dst] && target_ready(state, dst)
                 && !(src == last.second && dst == last.first)) {
-                result.emplace_back(src, dst);
-                return;
+                result.push_back({src, dst});
+                return result;
             }
         }
     }
-    std::array<std::vector<StackMove>, 4> ordered;
+    std::array<StackMove, kMaxStacks * (kMaxStacks - 1)> unordered_moves{};
+    std::array<std::uint8_t, kMaxStacks * (kMaxStacks - 1)> buckets{};
+    std::size_t count = 0;
     for (int src = 0; src < state.count; ++src) {
         if (state.size[src] == 0) continue;
         const int item = state.cells[src][state.size[src] - 1];
@@ -152,16 +162,24 @@ void generate_moves(const State& state, const StackMove last, const bool determi
             if (dst == item && target_ready(state, dst)) bucket = 0;
             else if (state.size[dst] > 0 && state.cells[dst][state.size[dst] - 1] == item) bucket = 1;
             else if (state.size[dst] == 0) bucket = 2;
-            ordered[static_cast<std::size_t>(bucket)].emplace_back(src, dst);
+            unordered_moves[count] = {src, dst};
+            buckets[count++] = static_cast<std::uint8_t>(bucket);
         }
     }
-    for (const auto& bucket : ordered) result.insert(result.end(), bucket.begin(), bucket.end());
+    for (std::uint8_t bucket = 0; bucket < 4; ++bucket) {
+        for (std::size_t i = 0; i < count; ++i) {
+            if (buckets[i] == bucket) result.push_back(unordered_moves[i]);
+        }
+    }
+    return result;
 }
 
 struct SearchResult { int bound2; bool found; };
 
+using Visited = std::pmr::unordered_map<Key, int, KeyHash>;
+
 SearchResult search(State& state, const int depth, const int bound2,
-                    std::unordered_map<Key, int, KeyHash>& visited, std::vector<StackMove>& path,
+                    Visited& visited, std::vector<StackMove>& path,
                     const bool deterministic) {
     if (const auto found = visited.find(state.hash); found != visited.end() && found->second <= depth) {
         return {std::numeric_limits<int>::max(), false};
@@ -172,10 +190,10 @@ SearchResult search(State& state, const int depth, const int bound2,
     if (solved(state)) return {estimate2, true};
 
     const StackMove last = path.empty() ? StackMove{-1, -1} : path.back();
-    std::vector<StackMove> moves;
-    generate_moves(state, last, deterministic, moves);
+    const MoveList moves = generate_moves(state, last, deterministic);
     int next_bound = std::numeric_limits<int>::max();
-    for (const auto& move : moves) {
+    for (std::size_t i = 0; i < moves.size; ++i) {
+        const StackMove move = moves.values[i];
         Undo undo;
         apply(state, move.first, move.second, undo);
         path.push_back(move);
@@ -225,9 +243,11 @@ std::vector<StackMove> solve_stack_rearrangement(const std::vector<std::vector<i
     bool deterministic = options.deterministic_move;
     std::vector<StackMove> path;
     path.reserve(256);
+    std::pmr::unsynchronized_pool_resource visited_pool;
+    Visited visited{&visited_pool};
+    visited.reserve(200'000);
     for (std::size_t iteration = 0; iteration < options.max_iterations; ++iteration) {
-        std::unordered_map<Key, int, KeyHash> visited;
-        visited.reserve(200'000);
+        visited.clear();
         const SearchResult result = search(state, 0, bound, visited, path, deterministic);
         if (result.found) return path;
         if (result.bound2 == std::numeric_limits<int>::max()) {

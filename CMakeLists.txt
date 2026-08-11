@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(LIMA_ENABLE_LTO "Enable link-time optimization for release builds" ON)
+option(LIMA_NATIVE_OPTIMIZATION "Optimize release builds for the current CPU" OFF)
 option(LIMA_BUILD_GUI "Build the SDL2 graphical viewer when SDL2 is available" ON)
 
 add_library(lima_core
@@ -24,6 +25,9 @@ target_compile_options(lima_core PRIVATE -Wall -Wextra -Wpedantic)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     target_compile_options(lima_core PRIVATE -O3 -DNDEBUG)
+    if(LIMA_NATIVE_OPTIMIZATION)
+        target_compile_options(lima_core PRIVATE -march=native)
+    endif()
     if(LIMA_ENABLE_LTO)
         include(CheckIPOSupported)
         check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error)
@@ -35,6 +39,15 @@ endif()
 
 add_executable(lima app/main.cpp)
 target_link_libraries(lima PRIVATE lima_core)
+
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    if(LIMA_NATIVE_OPTIMIZATION)
+        target_compile_options(lima PRIVATE -march=native)
+    endif()
+    if(LIMA_ENABLE_LTO AND ipo_supported)
+        set_property(TARGET lima PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    endif()
+endif()
 
 if(LIMA_BUILD_GUI)
     find_package(PkgConfig QUIET)

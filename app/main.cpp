@@ -27,6 +27,7 @@ struct Options {
     std::uint64_t max_steps{100000};
     lima::PlannerKind planner{lima::PlannerKind::Bfs};
     bool gui{};
+    bool validate_conflicts{};
     double fps{20.0};
     RunMode mode{RunMode::Realtime};
     std::filesystem::path output;
@@ -35,7 +36,7 @@ struct Options {
 
 void usage() {
     std::cout << "usage: lima [--map FILE] [--scenario FILE] [--agents N] [--planner bfs|astar]"
-                 " [--seed N] [--max-steps N] [--gui] [--fps N]"
+                 " [--seed N] [--max-steps N] [--gui] [--fps N] [--validate-conflicts]"
                  " [--mode realtime|solve|replay] [--output FILE] [--replay FILE]\n";
 }
 
@@ -54,6 +55,7 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--max-steps") options.max_steps = std::stoull(std::string(value()));
         else if (arg == "--fps") options.fps = std::stod(std::string(value()));
         else if (arg == "--gui") options.gui = true;
+        else if (arg == "--validate-conflicts") options.validate_conflicts = true;
         else if (arg == "--output") options.output = value();
         else if (arg == "--replay") options.replay = value();
         else if (arg == "--mode") {
@@ -115,8 +117,11 @@ int main(int argc, char** argv) {
         if (options.mode == RunMode::Solve && output_path.empty()) output_path = "build/result.txt";
         std::unique_ptr<lima::SolutionTrace> recorder;
         if (!output_path.empty()) {
-            recorder = std::make_unique<lima::SolutionTrace>(simulator.map(), simulator.agents(), options.map.string());
+            recorder = std::make_unique<lima::SolutionTrace>(
+                simulator.map(), simulator.agents(), options.map.string(), options.validate_conflicts);
         }
+        if (options.validate_conflicts && !recorder)
+            throw std::invalid_argument("--validate-conflicts requires solve mode or --output FILE");
         if (options.mode == RunMode::Solve && options.gui) {
             throw std::invalid_argument("solve mode is headless; use realtime mode with --gui --output to display and record");
         }
@@ -152,7 +157,7 @@ int main(int argc, char** argv) {
                   << " intersections=" << simulator.topology().intersections().size()
                   << " elapsed_seconds=" << solve_seconds;
         if (options.mode == RunMode::Solve) {
-            if (recorder) {
+            if (recorder && recorder->validation_enabled()) {
                 std::cout << " validation="
                           << (recorder->vertex_conflicts() == 0 && recorder->edge_conflicts() == 0 ? "ok" : "conflict")
                           << " vertex_conflicts=" << recorder->vertex_conflicts()
