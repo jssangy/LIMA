@@ -9,6 +9,8 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <optional>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -21,8 +23,8 @@ struct Options {
     std::filesystem::path map{"maps/cross_1.map"};
     std::filesystem::path scenario;
     std::size_t agents{15};
-    std::uint64_t seed{7};
-    std::uint64_t max_steps{100'000};
+    std::optional<std::uint64_t> seed;
+    std::uint64_t max_steps{1000};
     lima::PlannerKind planner{lima::PlannerKind::Bfs};
     bool gui{};
     double fps{20.0};
@@ -74,6 +76,14 @@ Options parse(const int argc, char** argv) {
     return options;
 }
 
+std::uint64_t random_seed() {
+    std::random_device device;
+    const auto now = static_cast<std::uint64_t>(
+        std::chrono::high_resolution_clock::now().time_since_epoch().count());
+    return (static_cast<std::uint64_t>(device()) << 32U)
+        ^ static_cast<std::uint64_t>(device()) ^ now;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -93,10 +103,12 @@ int main(int argc, char** argv) {
         }
 
         const auto solve_started = std::chrono::steady_clock::now();
+        const std::uint64_t task_seed = options.seed.value_or(random_seed());
         std::vector<lima::Task> tasks = options.scenario.empty()
-            ? lima::make_random_tasks(map, options.agents, options.seed)
+            ? lima::make_random_tasks(map, options.agents, task_seed)
             : lima::load_scenario(options.scenario, options.agents);
         if (tasks.empty()) throw std::runtime_error("no tasks were loaded");
+        if (options.scenario.empty()) std::cout << "seed=" << task_seed << '\n';
 
         lima::Simulator simulator(std::move(map), tasks, options.planner);
         std::filesystem::path output_path = options.output;
@@ -128,7 +140,7 @@ int main(int argc, char** argv) {
         }
         const double solve_seconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - solve_started).count();
-        if (recorder && options.mode == RunMode::Solve) recorder->set_computation_time(solve_seconds);
+        if (recorder) recorder->set_computation_time(solve_seconds);
         if (recorder) recorder->save(output_path, simulator.map(), simulator.done());
         const auto& stats = simulator.stats();
         std::cout << "status=" << (simulator.done() ? "completed" : "step_limit")
@@ -137,9 +149,9 @@ int main(int argc, char** argv) {
                   << " moves=" << stats.committed_moves
                   << " waits=" << stats.waits
                   << " deadlocks=" << stats.detected_deadlocks
-                  << " intersections=" << simulator.topology().intersections().size();
+                  << " intersections=" << simulator.topology().intersections().size()
+                  << " elapsed_seconds=" << solve_seconds;
         if (options.mode == RunMode::Solve) {
-            std::cout << " elapsed_seconds=" << solve_seconds;
             if (recorder) {
                 std::cout << " validation="
                           << (recorder->vertex_conflicts() == 0 && recorder->edge_conflicts() == 0 ? "ok" : "conflict")

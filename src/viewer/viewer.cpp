@@ -122,6 +122,7 @@ int run_viewer_impl(Simulator* simulator, const GridMap& map, const SolutionTrac
     bool paused = false;
     bool single_step = false;
     bool panning = false;
+    bool show_goal_lines = false;
     std::size_t replay_cursor = 0;
     auto previous = std::chrono::steady_clock::now();
     double accumulator = 0.0;
@@ -137,7 +138,19 @@ int run_viewer_impl(Simulator* simulator, const GridMap& map, const SolutionTrac
                 zoom_at(event.wheel.y > 0 ? 1.2 : 1.0 / 1.2, mouse_x, mouse_y);
             } else if (event.type == SDL_MOUSEBUTTONDOWN
                        && (event.button.button == SDL_BUTTON_LEFT || event.button.button == SDL_BUTTON_MIDDLE)) {
-                panning = true;
+                int width = 0;
+                int height = 0;
+                SDL_GetWindowSize(window.window(), &width, &height);
+                (void)height;
+                const SDL_Rect goal_line_button{width - 60, 16, 44, 32};
+                const SDL_Point click{event.button.x, event.button.y};
+                if (event.button.button == SDL_BUTTON_LEFT
+                    && SDL_PointInRect(&click, &goal_line_button) == SDL_TRUE) {
+                    show_goal_lines = !show_goal_lines;
+                    panning = false;
+                } else {
+                    panning = true;
+                }
             } else if (event.type == SDL_MOUSEBUTTONUP
                        && (event.button.button == SDL_BUTTON_LEFT || event.button.button == SDL_BUTTON_MIDDLE)) {
                 panning = false;
@@ -193,6 +206,7 @@ int run_viewer_impl(Simulator* simulator, const GridMap& map, const SolutionTrac
                     case SDLK_MINUS:
                     case SDLK_KP_MINUS: zoom_at(1.0 / 1.2, mouse_x, mouse_y); break;
                     case SDLK_f: fit_map(); break;
+                    case SDLK_g: show_goal_lines = !show_goal_lines; break;
                     default: break;
                 }
             }
@@ -263,12 +277,35 @@ int run_viewer_impl(Simulator* simulator, const GridMap& map, const SolutionTrac
                 fill_circle(renderer, center_x, center_y, std::max(1, radius / 2));
             }
         };
+        const auto draw_goal_line = [&](const AgentId id, const double map_x, const double map_y,
+                                        const CellId goal_cell) {
+            const Coord goal = map.coord(goal_cell);
+            auto line_color = agent_color(id);
+            line_color[3] = 180;
+            color(renderer, line_color);
+            const int from_x = screen_x(map_x + 0.5);
+            const int from_y = screen_y(map_y + 0.5);
+            const int to_x = screen_x(goal.x + 0.5);
+            const int to_y = screen_y(goal.y + 0.5);
+            SDL_RenderDrawLine(renderer, from_x, from_y, to_x, to_y);
+            SDL_RenderDrawLine(renderer, from_x + 1, from_y, to_x + 1, to_y);
+        };
         if (replay != nullptr) {
             const auto positions = replay->frame(replay_cursor);
             const std::size_t next_cursor = std::min(replay_cursor + 1, replay->frame_count() - 1);
             const auto next_positions = replay->frame(next_cursor);
             const double raw_alpha = (!paused && next_cursor != replay_cursor)
                 ? std::clamp(accumulator / interval, 0.0, 1.0) : 0.0;
+            if (show_goal_lines) {
+                for (std::size_t i = 0; i < replay->agent_count(); ++i) {
+                    if (positions[i] == replay->goals()[i]) continue;
+                    const Coord from = map.coord(positions[i]);
+                    const Coord to = map.coord(next_positions[i]);
+                    const double x = static_cast<double>(from.x) + (to.x - from.x) * raw_alpha;
+                    const double y = static_cast<double>(from.y) + (to.y - from.y) * raw_alpha;
+                    draw_goal_line(static_cast<AgentId>(i), x, y, replay->goals()[i]);
+                }
+            }
             for (std::size_t i = 0; i < replay->agent_count(); ++i) draw_goal(static_cast<AgentId>(i), replay->goals()[i]);
             for (std::size_t i = 0; i < replay->agent_count(); ++i) {
                 if (positions[i] == replay->goals()[i]) continue;
@@ -279,12 +316,30 @@ int run_viewer_impl(Simulator* simulator, const GridMap& map, const SolutionTrac
                 draw_agent_at(static_cast<AgentId>(i), x, y, false);
             }
         } else {
+            if (show_goal_lines) {
+                for (const Agent& agent : simulator->agents()) if (agent.active) {
+                    const Coord position = map.coord(agent.position);
+                    draw_goal_line(agent.id, position.x, position.y, agent.goal);
+                }
+            }
             for (const Agent& agent : simulator->agents()) if (agent.active) draw_goal(agent.id, agent.goal);
             for (const Agent& agent : simulator->agents()) if (agent.active) {
                 const Coord position = map.coord(agent.position);
                 draw_agent_at(agent.id, position.x, position.y, agent.scheduled());
             }
         }
+
+        const SDL_Rect goal_line_button{viewport_width - 60, 16, 44, 32};
+        color(renderer, show_goal_lines ? std::array<std::uint8_t, 4>{55, 80, 62, 235}
+                                        : std::array<std::uint8_t, 4>{55, 55, 55, 220});
+        SDL_RenderFillRect(renderer, &goal_line_button);
+        color(renderer, show_goal_lines ? std::array<std::uint8_t, 4>{110, 220, 130, 255}
+                                        : std::array<std::uint8_t, 4>{155, 155, 155, 255});
+        SDL_RenderDrawRect(renderer, &goal_line_button);
+        SDL_RenderDrawLine(renderer, goal_line_button.x + 11, goal_line_button.y + 22,
+                          goal_line_button.x + 33, goal_line_button.y + 10);
+        fill_circle(renderer, goal_line_button.x + 10, goal_line_button.y + 22, 3);
+        fill_circle(renderer, goal_line_button.x + 34, goal_line_button.y + 10, 3);
         SDL_RenderPresent(renderer);
 
         std::size_t completed = 0;
@@ -304,6 +359,7 @@ int run_viewer_impl(Simulator* simulator, const GridMap& map, const SolutionTrac
             + std::to_string(completed) + "/" + std::to_string(total_agents) + " completed | step "
             + std::to_string(timestep) + (replay != nullptr ? "/" + std::to_string(replay->frame_count() - 1) : "")
             + " | " + (paused ? "paused" : std::to_string(static_cast<int>(options.steps_per_second)) + " step/s")
+            + " | goals " + (show_goal_lines ? "on" : "off")
             + " | zoom " + std::to_string(static_cast<int>(std::lround(zoom * 100.0))) + "%";
         SDL_SetWindowTitle(window.window(), title.c_str());
         SDL_Delay(1);
