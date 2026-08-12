@@ -4,6 +4,7 @@
 #include "lima/simulation/simulator.hpp"
 #include "lima/viewer/viewer.hpp"
 
+#include "bench.hpp"
 #include "lima_version.hpp"
 
 #include <algorithm>
@@ -21,7 +22,7 @@
 
 namespace {
 
-enum class RunMode { Realtime, Solve, Replay, Debug };
+enum class RunMode { Realtime, Solve, Replay, Debug, Bench };
 
 struct Options {
     std::filesystem::path map{"data/maps/cross_1.map"};
@@ -36,6 +37,7 @@ struct Options {
     std::filesystem::path output;
     std::filesystem::path replay;
     lima::SimulatorConfig sim;
+    lima::bench::BenchOptions bench;
 };
 
 void usage() {
@@ -74,6 +76,17 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--no-discharge") options.sim.discharge_enabled = false;
         else if (arg == "--metrics") options.sim.metrics_dir = std::string(value());
         else if (arg == "--trace-jsonl") options.sim.trace_path = std::string(value());
+        else if (arg == "--bench-arms") {
+            options.bench.capacities.clear();
+            std::string text(value());
+            std::replace(text.begin(), text.end(), ',', ' ');
+            std::istringstream arms(text);
+            for (int capacity = 0; arms >> capacity;) options.bench.capacities.push_back(capacity);
+            if (options.bench.capacities.empty() || options.bench.capacities.size() > 4)
+                throw std::invalid_argument("--bench-arms takes 1..4 comma-separated capacities");
+        }
+        else if (arg == "--bench-n") options.bench.items = std::stoi(std::string(value()));
+        else if (arg == "--bench-instances") options.bench.instances = std::stoi(std::string(value()));
         else if (arg == "--routing") {
             const auto name = value();
             if (name == "dor") options.sim.direct_routing = false;
@@ -92,7 +105,8 @@ Options parse(const int argc, char** argv) {
             else if (name == "solve") options.mode = RunMode::Solve;
             else if (name == "replay") options.mode = RunMode::Replay;
             else if (name == "debug") options.mode = RunMode::Debug;
-            else throw std::invalid_argument("mode must be realtime, solve, replay, or debug");
+            else if (name == "bench") options.mode = RunMode::Bench;
+            else throw std::invalid_argument("mode must be realtime, solve, replay, debug, or bench");
         }
         else if (arg == "--planner") {
             const auto name = value();
@@ -251,6 +265,12 @@ int run_debug(lima::Simulator& simulator, const Options& options, lima::Solution
 int main(int argc, char** argv) {
     try {
         Options options = parse(argc, argv);
+        if (options.mode == RunMode::Bench) {
+            options.bench.seed = options.seed.value_or(random_seed());
+            options.bench.csv_path = options.output.string();
+            const auto solver = lima::make_solver(options.sim.solver);
+            return lima::bench::run(*solver, options.bench);
+        }
         options.sim.map_file = options.map.string();
         lima::GridMap map = lima::GridMap::load(options.map);
         if (options.fps < 0.0) throw std::invalid_argument("fps must be zero or greater");
