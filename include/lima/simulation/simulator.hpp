@@ -50,7 +50,9 @@ struct SimulatorConfig {
     // Availability resync: recompute each intersection's admission budget
     // from actual occupancy every step, fixing the credit leak that scheduled
     // exits never repay (M10 root cause candidate).
-    bool gate_resync{false};
+    // Default since 2026-08-13: admission budgets are recomputed from actual
+    // zone occupancy every cycle (stateless, self-healing bookkeeping).
+    bool gate_resync{true};
     // Saturated-intersection scheduling: when occupancy exceeds the
     // solvability bound, solve for the innermost bound-many agents per arm and
     // treat deeper cells as walls.  Uses only zone-local occupancy.

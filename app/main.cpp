@@ -106,6 +106,7 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--no-discharge") options.sim.discharge_enabled = false;
         else if (arg == "--rotation") options.sim.rotation_enabled = true;
         else if (arg == "--gate-resync") options.sim.gate_resync = true;
+        else if (arg == "--no-gate-resync") options.sim.gate_resync = false;
         else if (arg == "--subset-scheduling") options.sim.subset_scheduling = true;
         else if (arg == "--goal-behavior") {
             const auto name = value();
@@ -187,7 +188,7 @@ bool has_non_default_config(const Options& options) {
         || options.sim.discharge.partial_stall != 1.0
         || options.sim.isolation.hysteresis != 0
         || options.sim.rotation_enabled
-        || options.sim.gate_resync
+        || !options.sim.gate_resync
         || options.sim.subset_scheduling
         || options.sim.goal_behavior != lima::GoalBehavior::Disappear
         || !options.sim.discharge_enabled

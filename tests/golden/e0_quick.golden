@@ -4,7 +4,7 @@ cross_3030.map|510|0|status=completed steps=444 completed=510/510 moves=93793 wa
 cross_3030.map|510|1|status=completed steps=424 completed=510/510 moves=95141 waits=2565 deadlocks=3281 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
 cross_3030.map|1020|0|status=completed steps=570 completed=1020/1020 moves=227955 waits=24478 deadlocks=19643 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
 cross_3030.map|1020|1|status=completed steps=634 completed=1020/1020 moves=230299 waits=23009 deadlocks=19608 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
-cross_3030.map|2040|0|status=completed steps=977 completed=2040/2040 moves=605228 waits=208803 deadlocks=89975 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
-cross_3030.map|2040|1|status=completed steps=942 completed=2040/2040 moves=611497 waits=209480 deadlocks=89685 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
-cross_3030.map|3060|1|status=completed steps=1976 completed=3060/3060 moves=1150993 waits=788468 deadlocks=211321 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
-cross_3030.map|3060|2|status=completed steps=1568 completed=3060/3060 moves=1149125 waits=759341 deadlocks=210329 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
+cross_3030.map|2040|0|status=completed steps=1230 completed=2040/2040 moves=620800 waits=237137 deadlocks=93201 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
+cross_3030.map|2040|1|status=completed steps=997 completed=2040/2040 moves=619149 waits=221350 deadlocks=91163 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
+cross_3030.map|3060|1|status=completed steps=2322 completed=3060/3060 moves=1215299 waits=881253 deadlocks=228727 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
+cross_3030.map|3060|2|status=completed steps=2293 completed=3060/3060 moves=1167395 waits=787117 deadlocks=211529 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
