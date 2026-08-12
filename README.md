@@ -148,3 +148,50 @@ Run the following command to display the complete option list:
 ```bash
 ./build/lima --help
 ```
+
+## Experiment and debug tooling (revision branch)
+
+Every solve summary now ends with provenance fields (`solver=`, `routing=`, `capacity=`, `commit=`).
+
+### Algorithm knobs
+
+| Option | Effect |
+|---|---|
+| `--solver ida\|greedy` | Local intersection solver (default `ida`) |
+| `--solver-iterations N` | IDA* threshold-restart limit |
+| `--bound-step N` | Scaled threshold increment between IDA* iterations; `0` = textbook next-bound schedule (optimal solutions) |
+| `--no-fastpath` | Disable the deterministic single-move fast path |
+| `--routing dor\|direct` | Global router: highway alignment (default) or plain shortest path |
+| `--capacity-formula code\|paper` | Isolation bound: sum-max (shipped) or Eq. 9 sum-max+1 |
+| `--isolation-cap N` | Operational ceiling on the isolation bound |
+| `--no-discharge` | Disable discharge gating |
+
+### Instrumentation
+
+`--metrics DIR` writes `solver_invocations.csv`, `discharge_events.csv`, `comm_steps.csv`, and `agents.csv` without changing behavior.
+
+`--trace-jsonl FILE` records the instance and one JSON record per step. Verify a trace offline:
+
+```bash
+python3 tools/verify_trace.py trace.jsonl
+```
+
+The checker enforces move adjacency, vertex/edge conflict freedom, goal-only deactivation, and topological route preservation outside intersection zones.
+
+### Step-by-step debugging for agents
+
+```bash
+./build/lima --mode debug --map data/maps/warehouse_10_20.map \
+  --scenario data/scenarios/warehouse-10-20/warehouse-10-20_s0.scen \
+  --agents 40 --planner bfs --seed 0
+```
+
+The process answers on stdout in JSON to stdin commands: `step [n]`, `state`, `agent ID`, `intersection ID`, `summary`, `invariants`, `quit`.
+
+### Golden regression
+
+```bash
+python3 tools/regress.py
+```
+
+Re-runs the pinned cells in `tests/golden/e0_quick.golden` and requires the deterministic summary fields to match exactly. Regenerate the golden set from baseline grid logs with `tools/make_golden.py`.

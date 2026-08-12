@@ -184,17 +184,8 @@ def main() -> int:
                 violate("end", f"P5 agent {i} completed away from goal")
             if not is_subsequence(milestones, seen):
                 violate("end", f"P5 agent {i} skipped assigned-route cells outside intersections")
-        else:
-            consumed = 0
-            it = iter(seen)
-            for cell in milestones:
-                if any(cell == v for v in it):
-                    consumed += 1
-                else:
-                    break
-            # incomplete agents must still be consistent with a prefix
-            if consumed < len([c for c in milestones[:consumed]]):
-                violate("end", f"P5 agent {i} out-of-order route prefix")
+        # Incomplete agents admit any milestone prefix, so P5 only binds on
+        # completed agents; P1-P4 already covered their physical moves.
 
     print(json.dumps({
         "trace": args.trace,
