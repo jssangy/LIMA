@@ -28,9 +28,12 @@ class IntersectionCoordinator {
 public:
     explicit IntersectionCoordinator(StackSolver& solver) : solver_(solver) {}
 
+    // arm_limits caps the usable depth of each arm (cells beyond the limit are
+    // treated as walls); pass the arm sizes for the classic full-arm behavior.
     std::optional<std::vector<ScheduledPath>> schedule(
         const Intersection& intersection, std::span<const IntersectionIntent> intents,
-        const std::array<int, 4>& stack_quotas, ScheduleTelemetry* telemetry = nullptr) const;
+        const std::array<int, 4>& stack_quotas, const std::array<int, 4>& arm_limits,
+        ScheduleTelemetry* telemetry = nullptr) const;
 
 private:
     StackSolver& solver_;

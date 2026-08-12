@@ -64,14 +64,20 @@ std::optional<std::vector<CellId>> make_trimmed_egress(
 
 std::optional<std::vector<ScheduledPath>> IntersectionCoordinator::schedule(
     const Intersection& intersection, const std::span<const IntersectionIntent> intents,
-    const std::array<int, 4>& stack_quotas, ScheduleTelemetry* const telemetry) const {
+    const std::array<int, 4>& stack_quotas, const std::array<int, 4>& arm_limits,
+    ScheduleTelemetry* const telemetry) const {
     std::vector<Direction> directions;
-    for (std::size_t d = 0; d < 4; ++d) if (!intersection.arms[d].empty()) directions.push_back(static_cast<Direction>(d));
+    for (std::size_t d = 0; d < 4; ++d) {
+        if (!intersection.arms[d].empty() && arm_limits[d] > 0) directions.push_back(static_cast<Direction>(d));
+    }
     if (directions.size() < 3 || intents.size() < 2) return std::nullopt;
+    const auto limit_of = [&](const std::size_t d) {
+        return std::min(static_cast<std::size_t>(arm_limits[d]), intersection.arms[d].size());
+    };
 
     std::unordered_map<AgentId, Direction> desired_direction;
     std::array<Lane, 4> current;
-    for (const Direction d : directions) current[static_cast<std::size_t>(d)].resize(intersection.arms[static_cast<std::size_t>(d)].size());
+    for (const Direction d : directions) current[static_cast<std::size_t>(d)].resize(limit_of(static_cast<std::size_t>(d)));
     std::optional<AgentId> center_agent;
     for (const auto& intent : intents) {
         desired_direction[intent.agent] = intent.exit;
@@ -85,7 +91,9 @@ std::optional<std::vector<ScheduledPath>> IntersectionCoordinator::schedule(
         const auto& cells = intersection.arms[d];
         const auto found = std::find(cells.begin(), cells.end(), intent.position);
         if (found == cells.end()) return std::nullopt;
-        current[d][static_cast<std::size_t>(found - cells.begin())] = intent.agent;
+        const auto index = static_cast<std::size_t>(found - cells.begin());
+        if (index >= limit_of(d)) return std::nullopt;  // participant beyond the usable depth
+        current[d][index] = intent.agent;
     }
 
     std::vector<const IntersectionIntent*> participants;
@@ -295,8 +303,9 @@ std::optional<std::vector<ScheduledPath>> IntersectionCoordinator::schedule(
         for (std::size_t i = 0; i + 1 < path.size(); ++i)
             if (!adjacent_or_equal(path[i], path[i + 1], intersection)) return std::nullopt;
         const auto direction = static_cast<std::size_t>(intent->exit);
-        if (direction >= 4 || intersection.arms[direction].empty()) return std::nullopt;
-        scheduled_paths.push_back({intent->agent, std::move(path), intersection.arms[direction].back()});
+        if (direction >= 4 || intersection.arms[direction].empty() || limit_of(direction) == 0) return std::nullopt;
+        scheduled_paths.push_back({intent->agent, std::move(path),
+                                   intersection.arms[direction][limit_of(direction) - 1]});
     }
     if (scheduled_paths.empty()) return std::nullopt;
     return scheduled_paths;

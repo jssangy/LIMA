@@ -13,27 +13,27 @@ namespace lima {
 namespace {
 
 std::optional<std::array<int, 4>> predict_final_stack_lengths(
-    const Intersection& intersection, const std::span<const IntersectionIntent> intents,
+    const std::array<int, 4>& arm_limits, const std::span<const IntersectionIntent> intents,
     const std::array<int, 4>& quotas) {
     std::array<int, 4> needs{};
     std::array<int, 4> lengths{};
     std::array<bool, 4> overflow{};
     for (const auto& intent : intents) {
         const auto d = static_cast<std::size_t>(intent.exit);
-        if (d < 4 && !intersection.arms[d].empty()) ++needs[d];
+        if (d < 4 && arm_limits[d] > 0) ++needs[d];
     }
     for (std::size_t d = 0; d < 4; ++d) {
-        const int capacity = static_cast<int>(intersection.arms[d].size());
+        const int capacity = arm_limits[d];
         overflow[d] = needs[d] > capacity;
         lengths[d] = overflow[d] ? capacity : needs[d];
     }
     for (std::size_t type = 0; type < 4; ++type) {
-        int extra = overflow[type] ? needs[type] - static_cast<int>(intersection.arms[type].size()) : 0;
+        int extra = overflow[type] ? needs[type] - arm_limits[type] : 0;
         while (extra-- > 0) {
             int destination = -1;
             for (std::size_t d = 0; d < 4; ++d) {
-                if (d == type || overflow[d] || intersection.arms[d].empty()
-                    || lengths[d] >= static_cast<int>(intersection.arms[d].size())) continue;
+                if (d == type || overflow[d] || arm_limits[d] == 0
+                    || lengths[d] >= arm_limits[d]) continue;
                 if (destination < 0 || lengths[d] < lengths[static_cast<std::size_t>(destination)]) destination = static_cast<int>(d);
             }
             if (destination < 0) return std::nullopt;
@@ -54,7 +54,7 @@ std::optional<std::array<int, 4>> predict_final_stack_lengths(
         int destination = -1;
         int best_slack = 0;
         for (std::size_t d = 0; d < 4; ++d) {
-            if (static_cast<int>(d) == source || intersection.arms[d].empty()) continue;
+            if (static_cast<int>(d) == source || arm_limits[d] == 0) continue;
             const int slack = quotas[d] - lengths[d];
             if (slack > best_slack) {
                 best_slack = slack;
@@ -71,7 +71,8 @@ std::optional<std::array<int, 4>> predict_final_stack_lengths(
 }  // namespace
 
 Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const PlannerKind planner_kind,
-                     const std::uint64_t seed, SimulatorConfig config)
+                     const std::uint64_t seed, SimulatorConfig config,
+                     const std::span<const std::vector<Coord>> preset_routes)
     : map_(std::move(map)), config_(std::move(config)), rng_(seed),
       planner_(make_planner(planner_kind, map_, rng_)),
       topology_(IntersectionTopology::build(map_)),
@@ -83,7 +84,21 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
         const CellId goal = map_.in_bounds(tasks[i].goal) ? map_.cell(tasks[i].goal) : kInvalidCell;
         if (!map_.traversable(start) || !map_.traversable(goal)) throw std::runtime_error("task endpoint is not traversable");
         if (!occupied.insert(start).second) throw std::runtime_error("duplicate task start position");
-        auto route = plan_global(start, goal);
+        std::vector<CellId> route;
+        if (i < preset_routes.size() && !preset_routes[i].empty()) {
+            route.reserve(preset_routes[i].size());
+            for (const Coord c : preset_routes[i]) {
+                if (!map_.traversable(c)) throw std::runtime_error("preset route leaves traversable space");
+                if (!route.empty()) {
+                    const Coord prev = map_.coord(route.back());
+                    if (std::abs(prev.x - c.x) + std::abs(prev.y - c.y) > 1)
+                        throw std::runtime_error("preset route is not 4-connected");
+                }
+                route.push_back(map_.cell(c));
+            }
+        } else {
+            route = plan_global(start, goal);
+        }
         if (route.empty() || route.front() != start || route.back() != goal) throw std::runtime_error("task has no route");
         Agent agent;
         agent.id = static_cast<AgentId>(i);
@@ -354,11 +369,62 @@ bool Simulator::step() {
             continue;
         }
         const Intersection& intersection = topology_.intersections()[iid];
+        std::array<int, 4> arm_limits{};
+        for (std::size_t d = 0; d < 4; ++d) arm_limits[d] = static_cast<int>(intersection.arms[d].size());
+        std::span<const IntersectionIntent> intersection_intents = intents_[iid];
+        std::vector<IntersectionIntent> subset;
         if (inside_counts_[iid] > static_cast<std::size_t>(intersection_capacity_[iid])) {
-            deadlock_waiting_[iid] = true;
-            continue;
+            if (!config_.subset_scheduling) {
+                deadlock_waiting_[iid] = true;
+                continue;
+            }
+            // Saturated regime: solve for the innermost bound-many agents per
+            // arm and treat everything deeper as a wall (zone-local knowledge).
+            std::array<std::vector<std::pair<int, const IntersectionIntent*>>, 4> by_direction;
+            const IntersectionIntent* center_intent = nullptr;
+            for (const auto& intent : intents_[iid]) {
+                if (intent.current == Direction::Center) {
+                    center_intent = &intent;
+                    continue;
+                }
+                const auto d = static_cast<std::size_t>(intent.current);
+                if (d >= 4) continue;
+                const auto& arm = intersection.arms[d];
+                const auto found = std::find(arm.begin(), arm.end(), intent.position);
+                if (found == arm.end()) continue;
+                by_direction[d].emplace_back(static_cast<int>(found - arm.begin()), &intent);
+            }
+            for (auto& entries : by_direction) {
+                std::sort(entries.begin(), entries.end(),
+                          [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+            }
+            int budget = intersection_capacity_[iid] - (center_intent ? 1 : 0);
+            std::array<int, 4> take{};
+            bool progress = true;
+            while (budget > 0 && progress) {
+                progress = false;
+                for (std::size_t d = 0; d < 4 && budget > 0; ++d) {
+                    if (take[d] < static_cast<int>(by_direction[d].size())) {
+                        ++take[d];
+                        --budget;
+                        progress = true;
+                    }
+                }
+            }
+            subset.clear();
+            if (center_intent) subset.push_back(*center_intent);
+            for (std::size_t d = 0; d < 4; ++d) {
+                for (int k = 0; k < take[d]; ++k) subset.push_back(*by_direction[d][static_cast<std::size_t>(k)].second);
+                arm_limits[d] = take[d] < static_cast<int>(by_direction[d].size())
+                    ? by_direction[d][static_cast<std::size_t>(take[d])].first
+                    : static_cast<int>(intersection.arms[d].size());
+            }
+            if (subset.size() < 2) {
+                deadlock_waiting_[iid] = true;
+                continue;
+            }
+            intersection_intents = subset;
         }
-        const auto& intersection_intents = intents_[iid];
         std::array<int, 4> quotas{};
         std::array<int, 4> initial{};
         int quota_sum = 0;
@@ -367,7 +433,7 @@ bool Simulator::step() {
             if (d < 4) ++initial[d];
         }
         for (std::size_t d = 0; d < 4; ++d) {
-            const int capacity = static_cast<int>(intersection.arms[d].size());
+            const int capacity = arm_limits[d];
             if (capacity == 0) continue;
             int neighbor_available = capacity;
             const IntersectionId neighbor = intersection.neighbors[d];
@@ -376,7 +442,7 @@ bool Simulator::step() {
             quotas[d] = std::min(capacity, neighbor_available + initial[d]);
             quota_sum += quotas[d];
         }
-        const auto final_lengths = predict_final_stack_lengths(intersection, intersection_intents, quotas);
+        const auto final_lengths = predict_final_stack_lengths(arm_limits, intersection_intents, quotas);
         if (quota_sum < static_cast<int>(intersection_intents.size()) || !final_lengths) {
             deadlock_waiting_[iid] = true;
             continue;
@@ -387,7 +453,7 @@ bool Simulator::step() {
                 intersection_available_[static_cast<std::size_t>(neighbor)] -= (*final_lengths)[d] - initial[d];
         }
         ScheduleTelemetry telemetry;
-        auto plan = coordinator_.schedule(intersection, intersection_intents, quotas,
+        auto plan = coordinator_.schedule(intersection, intersection_intents, quotas, arm_limits,
                                           metrics_ ? &telemetry : nullptr);
         if (metrics_) metrics_->on_solver_invocation(stats_.timestep, iid_value, telemetry, plan.has_value());
         if (!plan) {

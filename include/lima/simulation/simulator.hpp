@@ -45,6 +45,10 @@ struct SimulatorConfig {
     // from actual occupancy every step, fixing the credit leak that scheduled
     // exits never repay (M10 root cause candidate).
     bool gate_resync{false};
+    // Saturated-intersection scheduling: when occupancy exceeds the
+    // solvability bound, solve for the innermost bound-many agents per arm and
+    // treat deeper cells as walls.  Uses only zone-local occupancy.
+    bool subset_scheduling{false};
     bool direct_routing{false};   // skip the highway-alignment (DoR-style) global router
     std::string metrics_dir;      // W1 instrumentation output; empty = disabled
     std::string trace_path;       // JSONL step trace for the debug harness; empty = disabled
@@ -53,8 +57,12 @@ struct SimulatorConfig {
 
 class Simulator {
 public:
+    // preset_routes[i], when non-empty, replaces the global router for agent i
+    // (external planner injection, e.g. CBS-timeout reference routes); agents
+    // without a preset route fall back to the built-in router.
     Simulator(GridMap map, std::span<const Task> tasks, PlannerKind planner_kind, std::uint64_t seed = 0,
-              SimulatorConfig config = {});
+              SimulatorConfig config = {},
+              std::span<const std::vector<Coord>> preset_routes = {});
 
     [[nodiscard]] bool step();
     [[nodiscard]] bool done() const noexcept { return stats_.completed == agents_.size(); }
