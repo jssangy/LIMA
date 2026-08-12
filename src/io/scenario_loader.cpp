@@ -57,18 +57,25 @@ std::vector<Task> make_random_tasks(const GridMap& map, const std::size_t count,
         }
     }
 
+    // Build and shuffle the pool exactly as the submitted simulator did so
+    // that every seed it could run reproduces the identical task set; the
+    // reachability mask is applied only while SELECTING, so pocket starts are
+    // skipped (which previously aborted the run) without disturbing the
+    // random stream of surviving seeds.
     std::vector<CellId> starts;
     starts.reserve(map.traversable_cells().size());
     const std::unordered_set<CellId> goals(map.goal_cells().begin(), map.goal_cells().end());
+    std::size_t usable = 0;
     for (const CellId id : map.traversable_cells()) {
         const Coord c = map.coord(id);
         if (c.x == 0 || c.y == 0 || c.x + 1 == map.width() || c.y + 1 == map.height()) continue;
-        if (!reachable[static_cast<std::size_t>(id)]) continue;
-        if (!goals.contains(id)) starts.push_back(id);
+        if (goals.contains(id)) continue;
+        starts.push_back(id);
+        if (reachable[static_cast<std::size_t>(id)]) ++usable;
     }
-    if (count > starts.size()) {
+    if (count > usable) {
         throw std::runtime_error("requested " + std::to_string(count) + " agents but only "
-                                 + std::to_string(starts.size()) + " goal-reachable start cells exist");
+                                 + std::to_string(usable) + " goal-reachable start cells exist");
     }
 
     std::mt19937_64 rng(seed);
@@ -76,7 +83,8 @@ std::vector<Task> make_random_tasks(const GridMap& map, const std::size_t count,
     std::uniform_int_distribution<std::size_t> choose_goal(0, map.goal_cells().size() - 1);
     std::vector<Task> tasks;
     tasks.reserve(count);
-    for (std::size_t i = 0; i < count; ++i) {
+    for (std::size_t i = 0; i < starts.size() && tasks.size() < count; ++i) {
+        if (!reachable[static_cast<std::size_t>(starts[i])]) continue;
         const CellId goal = map.goal_cells()[choose_goal(rng)];
         tasks.push_back({map.coord(starts[i]), map.coord(goal)});
     }

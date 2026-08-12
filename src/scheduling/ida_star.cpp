@@ -208,16 +208,19 @@ SearchResult search(State& state, const int depth, const int bound2,
     return {next_bound, false};
 }
 
-// Returns nullopt when the instance violates the representation limits.
-std::optional<State> make_state(const std::vector<std::vector<int>>& stacks, const std::vector<int>& capacities) {
+// Returns nullopt when the instance violates the representation limits or the
+// configured acceptance bound.
+std::optional<State> make_state(const std::vector<std::vector<int>>& stacks, const std::vector<int>& capacities,
+                                const int max_capacity) {
     if (stacks.empty() || stacks.size() > kMaxStacks || stacks.size() != capacities.size()) {
         return std::nullopt;
     }
+    const int accept = std::min(max_capacity, kMaxCapacity);
     State state;
     state.count = static_cast<int>(stacks.size());
     std::array<int, kMaxStacks> item_counts{};
     for (int s = 0; s < state.count; ++s) {
-        if (capacities[s] < 0 || capacities[s] > kMaxCapacity || stacks[s].size() > static_cast<std::size_t>(capacities[s])) {
+        if (capacities[s] < 0 || capacities[s] > accept || stacks[s].size() > static_cast<std::size_t>(capacities[s])) {
             return std::nullopt;
         }
         state.capacity[s] = static_cast<std::uint8_t>(capacities[s]);
@@ -247,7 +250,7 @@ std::optional<std::vector<StackMove>> IdaStarSolver::solve(
         out.wall_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
     };
 
-    auto state_opt = make_state(problem.stacks, problem.capacities);
+    auto state_opt = make_state(problem.stacks, problem.capacities, options_.max_capacity);
     if (!state_opt) {
         finish("rejected");
         return std::nullopt;

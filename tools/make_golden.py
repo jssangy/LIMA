@@ -5,11 +5,14 @@ Selects completed cells with small elapsed time across maps and densities so a
 refactored binary can be checked for behavioral identity in a couple of
 minutes.  Golden lines keep only deterministic summary fields.
 """
+import argparse
 import re
 import sys
 from pathlib import Path
 
-LOGS = Path.home() / "lima/results/E0_grid/logs"
+parser = argparse.ArgumentParser()
+parser.add_argument("--logs", type=Path, default=Path.home() / "lima/results/E0_grid/logs")
+LOGS = parser.parse_args().logs
 OUT = Path(__file__).resolve().parent.parent / "tests/golden/e0_quick.golden"
 DETERMINISTIC = ("status", "steps", "completed", "moves", "waits", "deadlocks",
                  "intersections", "validation", "vertex_conflicts", "edge_conflicts")
@@ -17,6 +20,9 @@ MAX_ELAPSED = 45.0
 SEEDS_PER_CELL = 2
 
 def main() -> int:
+    if not LOGS.is_dir():
+        print(f"baseline log directory not found: {LOGS}", file=sys.stderr)
+        return 1
     cells = {}
     for line_file in sorted(LOGS.glob("*_run.line")):
         text = line_file.read_text(encoding="utf-8").strip()

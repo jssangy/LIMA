@@ -26,6 +26,8 @@ def run_cell(binary: Path, map_name: str, agents: int, seed: int) -> dict:
              "--agents", str(agents), "--planner", "bfs", "--seed", str(seed),
              "--output", tmp.name, "--validate-conflicts"],
             cwd=ROOT, capture_output=True, text=True, timeout=600)
+    if proc.returncode != 0:
+        raise RuntimeError(f"exit code {proc.returncode}; stderr tail: {proc.stderr.strip()[-300:]}")
     summary = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
     return dict(re.findall(r"(\w+)=([^ ]+)", summary))
 

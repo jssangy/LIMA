@@ -30,6 +30,7 @@ public:
     void add_discharge(IntersectionId intersection, std::vector<AgentId> agents);
     void add_completion(AgentId agent);
     void flush_step(std::uint64_t timestep, std::span<const Agent> agents);
+    void finish();  // flush and fail loudly on write errors
 
 private:
     std::ofstream out_;

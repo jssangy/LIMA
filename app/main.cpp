@@ -72,6 +72,7 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--solver-iterations") options.sim.solver.max_iterations = std::stoull(std::string(value()));
         else if (arg == "--bound-step") options.sim.solver.bound_step = std::stoi(std::string(value()));
         else if (arg == "--no-fastpath") options.sim.solver.greedy_fastpath = false;
+        else if (arg == "--solver-max-capacity") options.sim.solver.max_capacity = std::stoi(std::string(value()));
         else if (arg == "--isolation-cap") options.sim.isolation.cap = std::stoi(std::string(value()));
         else if (arg == "--no-discharge") options.sim.discharge_enabled = false;
         else if (arg == "--metrics") options.sim.metrics_dir = std::string(value());
@@ -129,7 +130,25 @@ std::uint64_t random_seed() {
         ^ static_cast<std::uint64_t>(device()) ^ now;
 }
 
+bool has_non_default_config(const Options& options) {
+    const lima::SolverConfig defaults;
+    return options.sim.solver.kind != defaults.kind
+        || options.sim.solver.max_iterations != defaults.max_iterations
+        || options.sim.solver.bound_step != defaults.bound_step
+        || options.sim.solver.greedy_fastpath != defaults.greedy_fastpath
+        || options.sim.solver.max_capacity != defaults.max_capacity
+        || options.sim.isolation.formula != lima::CapacityFormula::SumMinusMax
+        || options.sim.isolation.cap >= 0
+        || !options.sim.discharge_enabled
+        || options.sim.direct_routing
+        || !options.sim.metrics_dir.empty()
+        || !options.sim.trace_path.empty();
+}
+
+// Keeps default-flag stdout byte-compatible with the submitted simulator:
+// the provenance suffix appears only when a non-default knob is active.
 void print_provenance(const Options& options) {
+    if (!has_non_default_config(options)) return;
     std::cout << " solver=" << options.sim.solver.kind
               << " routing=" << (options.sim.direct_routing ? "direct" : "dor")
               << " capacity=" << (options.sim.isolation.formula == lima::CapacityFormula::SumMinusMax ? "code" : "paper");
@@ -186,9 +205,16 @@ int run_debug(lima::Simulator& simulator, const Options& options, lima::Solution
         if (command.empty()) continue;
         if (command == "quit" || command == "exit") break;
         if (command == "step") {
-            std::uint64_t requested = 1;
-            input >> requested;
-            if (requested == 0) requested = 1;
+            std::int64_t parsed = 1;
+            if (!(input >> parsed) && !input.eof()) {
+                std::cout << "{\"error\":\"bad step count\"}\n" << std::flush;
+                continue;
+            }
+            if (parsed < 0) {
+                std::cout << "{\"error\":\"step count must be positive\"}\n" << std::flush;
+                continue;
+            }
+            std::uint64_t requested = parsed == 0 ? 1 : static_cast<std::uint64_t>(parsed);
             std::uint64_t advanced = 0;
             bool alive = true;
             while (advanced < requested && !simulator.done()
@@ -210,7 +236,10 @@ int run_debug(lima::Simulator& simulator, const Options& options, lima::Solution
             std::cout << "]}\n" << std::flush;
         } else if (command == "agent") {
             std::int64_t id = -1;
-            input >> id;
+            if (!(input >> id)) {
+                std::cout << "{\"error\":\"unknown agent\"}\n" << std::flush;
+                continue;
+            }
             const auto& agents = simulator.agents();
             if (id < 0 || static_cast<std::size_t>(id) >= agents.size()) {
                 std::cout << "{\"error\":\"unknown agent\"}\n" << std::flush;
@@ -219,7 +248,10 @@ int run_debug(lima::Simulator& simulator, const Options& options, lima::Solution
             }
         } else if (command == "intersection") {
             std::int64_t id = -1;
-            input >> id;
+            if (!(input >> id)) {
+                std::cout << "{\"error\":\"unknown intersection\"}\n" << std::flush;
+                continue;
+            }
             const auto& intersections = simulator.topology().intersections();
             if (id < 0 || static_cast<std::size_t>(id) >= intersections.size()) {
                 std::cout << "{\"error\":\"unknown intersection\"}\n" << std::flush;
@@ -268,6 +300,9 @@ int main(int argc, char** argv) {
         if (options.mode == RunMode::Bench) {
             options.bench.seed = options.seed.value_or(random_seed());
             options.bench.csv_path = options.output.string();
+            // Stress instances may exceed the baseline acceptance bound on purpose.
+            for (const int capacity : options.bench.capacities)
+                options.sim.solver.max_capacity = std::max(options.sim.solver.max_capacity, capacity);
             const auto solver = lima::make_solver(options.sim.solver);
             return lima::bench::run(*solver, options.bench);
         }
@@ -305,7 +340,11 @@ int main(int argc, char** argv) {
             throw std::invalid_argument("--validate-conflicts requires solve mode or --output FILE");
         if (options.mode == RunMode::Debug) {
             const int result = run_debug(simulator, options, recorder.get());
-            if (recorder) recorder->save(output_path, simulator.map(), simulator.done());
+            if (recorder) {
+                recorder->set_computation_time(std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - solve_started).count());
+                recorder->save(output_path, simulator.map(), simulator.done());
+            }
             return result;
         }
         if (options.mode == RunMode::Realtime) {

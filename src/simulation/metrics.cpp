@@ -39,10 +39,10 @@ void MetricsCollector::on_discharge(const std::uint64_t timestep, const Intersec
 }
 
 void MetricsCollector::flush_step(const std::uint64_t timestep) {
-    if (step_acquisitions_ != 0 || step_broadcasts_ != 0 || step_gate_signals_ != 0) {
-        comm_csv_ << timestep << ',' << step_acquisitions_ << ',' << step_broadcasts_ << ','
-                  << step_gate_signals_ << '\n';
-    }
+    // One row per simulated step (including all-zero steps) so per-step
+    // statistics have their denominator in-band.
+    comm_csv_ << timestep << ',' << step_acquisitions_ << ',' << step_broadcasts_ << ','
+              << step_gate_signals_ << '\n';
     step_acquisitions_ = 0;
     step_broadcasts_ = 0;
     step_gate_signals_ = 0;
@@ -74,6 +74,9 @@ void MetricsCollector::finalize(const std::span<const Agent> agents,
     discharge_csv_.flush();
     comm_csv_.flush();
     agents_csv_.flush();
+    for (const std::ofstream* stream : {&solver_csv_, &discharge_csv_, &comm_csv_, &agents_csv_}) {
+        if (!stream->good()) throw std::runtime_error("metrics write failed (disk full?)");
+    }
 }
 
 }  // namespace lima

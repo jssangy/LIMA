@@ -142,7 +142,7 @@ public:
 std::unique_ptr<StackSolver> make_solver(const SolverConfig& config) {
     if (config.kind == "ida") {
         return std::make_unique<IdaStarSolver>(IdaStarOptions{
-            config.max_iterations, config.greedy_fastpath, config.bound_step});
+            config.max_iterations, config.greedy_fastpath, config.bound_step, config.max_capacity});
     }
     if (config.kind == "greedy") {
         return std::make_unique<GreedySolver>();

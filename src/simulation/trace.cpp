@@ -1,5 +1,6 @@
 #include "lima/simulation/trace.hpp"
 
+#include <cstdio>
 #include <stdexcept>
 
 namespace lima {
@@ -27,13 +28,30 @@ void write_group_events(std::ofstream& out, const std::vector<StepTracer::GroupE
 
 }  // namespace
 
+namespace {
+
+std::string json_escape(const std::string& text) {
+    std::string escaped;
+    escaped.reserve(text.size());
+    for (const char c : text) {
+        if (c == '\\') escaped += "\\\\";
+        else if (c == '"') escaped += "\\\"";
+        else if (static_cast<unsigned char>(c) < 0x20) {
+            char buffer[8];
+            std::snprintf(buffer, sizeof buffer, "\\u%04x", c);
+            escaped += buffer;
+        } else escaped += c;
+    }
+    return escaped;
+}
+
+}  // namespace
+
 StepTracer::StepTracer(const std::filesystem::path& path, const GridMap& map, std::string map_file,
                        const std::uint64_t seed, const std::span<const Agent> agents) {
     out_.open(path, std::ios::trunc);
     if (!out_) throw std::runtime_error("cannot open trace file: " + path.string());
-    // JSON string escaping is unnecessary here: the map path is caller-provided
-    // and used verbatim; keep it free of quotes and backslashes.
-    out_ << "{\"type\":\"header\",\"map\":\"" << map_file << "\",\"width\":" << map.width()
+    out_ << "{\"type\":\"header\",\"map\":\"" << json_escape(map_file) << "\",\"width\":" << map.width()
          << ",\"height\":" << map.height() << ",\"seed\":" << seed
          << ",\"agents\":" << agents.size() << ",\"starts\":[";
     for (std::size_t i = 0; i < agents.size(); ++i) {
@@ -89,6 +107,11 @@ void StepTracer::flush_step(const std::uint64_t timestep, const std::span<const 
     schedules_.clear();
     discharges_.clear();
     completions_.clear();
+}
+
+void StepTracer::finish() {
+    out_.flush();
+    if (!out_) throw std::runtime_error("trace write failed (disk full?)");
 }
 
 }  // namespace lima

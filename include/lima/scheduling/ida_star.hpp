@@ -12,6 +12,10 @@ struct IdaStarOptions {
     std::size_t max_iterations{1'000'000};
     bool deterministic_move{true};
     int bound_step{6};
+    // Baseline acceptance bound: instances with a stack capacity above this
+    // are rejected (nullopt).  Storage allows up to 64; raise explicitly for
+    // long-corridor stress studies only.
+    int max_capacity{16};
 };
 
 class IdaStarSolver final : public StackSolver {

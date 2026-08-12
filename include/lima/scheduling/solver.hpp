@@ -50,6 +50,7 @@ struct SolverConfig {
     // schedule (optimal solutions, more re-expansions).
     int bound_step{6};
     bool greedy_fastpath{true};          // try the single-move fast path first (IDA*)
+    int max_capacity{16};                // baseline stack-capacity acceptance bound (storage limit 64)
 };
 
 [[nodiscard]] std::unique_ptr<StackSolver> make_solver(const SolverConfig& config);

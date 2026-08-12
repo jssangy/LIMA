@@ -28,6 +28,8 @@ def load_map(path: Path):
     height = int(lines[1].split()[1])
     width = int(lines[2].split()[1])
     grid = lines[4:4 + height]
+    if len(grid) < height or any(len(row) < width for row in grid):
+        raise OSError(f"map body shorter than declared {width}x{height}")
     trav = set()
     goals = set()
     for y, row in enumerate(grid):
@@ -111,11 +113,15 @@ def main() -> int:
 
     width = header["width"]
     map_path = Path(args.map_root) / header["map"]
-    map_width, _, trav, _goals = load_map(map_path)
-    if map_width != width:
-        print(f"map width mismatch: trace {width} vs file {map_width}", file=sys.stderr)
+    try:
+        map_width, map_height, trav, goal_cells = load_map(map_path)
+    except OSError as error:
+        print(f"cannot read map {map_path} (try --map-root): {error}", file=sys.stderr)
         return 1
-    _, _, _, goal_cells = load_map(map_path)
+    if map_width != width or map_height != header["height"]:
+        print(f"map size mismatch: trace {width}x{header['height']} vs file {map_width}x{map_height}",
+              file=sys.stderr)
+        return 1
     zones_xy = zone_cells(width, header["height"], trav, goal_cells)
     zones = {y * width + x for (x, y) in zones_xy}
     trav_ids = {y * width + x for (x, y) in trav}
@@ -136,33 +142,38 @@ def main() -> int:
         t = record["t"]
         pos = record["pos"]
         active = record["active"]
+        def check_move(i, a, b):
+            ax, ay = a % width, a // width
+            bx, by = b % width, b // width
+            if abs(ax - bx) + abs(ay - by) != 1:
+                violate(t, f"P1 agent {i} teleported {a}->{b}")
+            if b not in trav_ids:
+                violate(t, f"P1 agent {i} entered blocked cell {b}")
+
         for i in range(n):
             if prev_active[i] and active[i]:
-                a, b = prev_pos[i], pos[i]
-                if a != b:
-                    ax, ay = a % width, a // width
-                    bx, by = b % width, b // width
-                    if abs(ax - bx) + abs(ay - by) != 1:
-                        violate(t, f"P1 agent {i} teleported {a}->{b}")
-                    if b not in trav_ids:
-                        violate(t, f"P1 agent {i} entered blocked cell {b}")
-                    visited[i].append(b)
+                if prev_pos[i] != pos[i]:
+                    check_move(i, prev_pos[i], pos[i])
+                    visited[i].append(pos[i])
             elif not prev_active[i] and active[i]:
                 violate(t, f"P4 agent {i} reactivated")
             elif prev_active[i] and not active[i]:
                 if pos[i] != goals[i]:
                     violate(t, f"P4 agent {i} deactivated away from its goal")
                 if pos[i] != prev_pos[i]:
+                    check_move(i, prev_pos[i], pos[i])
                     visited[i].append(pos[i])
+        # P2/P3 are keyed on activity at the START of the step so agents that
+        # complete during the step still participate in conflict checking.
         occupied = {}
         for i in range(n):
-            if not active[i]:
+            if not prev_active[i]:
                 continue
             if pos[i] in occupied:
                 violate(t, f"P2 vertex conflict: agents {occupied[pos[i]]} and {i} at {pos[i]}")
             occupied[pos[i]] = i
         for i in range(n):
-            if not (active[i] and prev_active[i]) or pos[i] == prev_pos[i]:
+            if not prev_active[i] or pos[i] == prev_pos[i]:
                 continue
             j = occupied.get(prev_pos[i])
             if j is not None and j != i and prev_active[j] and prev_pos[j] == pos[i]:

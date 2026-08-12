@@ -522,6 +522,7 @@ std::string Simulator::check_invariants() const {
 
 void Simulator::write_metrics() {
     if (metrics_) metrics_->finalize(agents_, initial_route_lengths_, completion_steps_);
+    if (tracer_) tracer_->finish();
 }
 
 std::vector<CellId> Simulator::plan_global(const CellId start, const CellId goal) {
