@@ -9,6 +9,15 @@ option(LIMA_ENABLE_LTO "Enable link-time optimization for release builds" ON)
 option(LIMA_NATIVE_OPTIMIZATION "Optimize release builds for the current CPU" OFF)
 option(LIMA_BUILD_GUI "Build the SDL2 graphical viewer when SDL2 is available" ON)
 
+# Build provenance: regenerated on every build so experiment summaries always
+# carry the exact commit hash (plus -dirty when the tree has local edits).
+set(LIMA_VERSION_HEADER ${CMAKE_BINARY_DIR}/generated/lima_version.hpp)
+add_custom_target(lima_version
+    COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR} -DOUT=${LIMA_VERSION_HEADER}
+            -P ${CMAKE_SOURCE_DIR}/cmake/version.cmake
+    BYPRODUCTS ${LIMA_VERSION_HEADER}
+    COMMENT "Stamping git commit into lima_version.hpp")
+
 add_library(lima_core
     src/core/grid_map.cpp
     src/io/scenario_loader.cpp
@@ -17,7 +26,9 @@ add_library(lima_core
     src/intersection/topology.cpp
     src/intersection/deadlock_detector.cpp
     src/intersection/coordinator.cpp
+    src/intersection/gating.cpp
     src/scheduling/ida_star.cpp
+    src/scheduling/solver.cpp
     src/simulation/simulator.cpp
 )
 target_include_directories(lima_core PUBLIC include)
@@ -39,6 +50,8 @@ endif()
 
 add_executable(lima app/main.cpp)
 target_link_libraries(lima PRIVATE lima_core)
+add_dependencies(lima lima_version)
+target_include_directories(lima PRIVATE ${CMAKE_BINARY_DIR}/generated)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     if(LIMA_NATIVE_OPTIMIZATION)

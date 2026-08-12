@@ -4,6 +4,8 @@
 #include "lima/simulation/simulator.hpp"
 #include "lima/viewer/viewer.hpp"
 
+#include "lima_version.hpp"
+
 #include <cstdlib>
 #include <chrono>
 #include <filesystem>
@@ -31,12 +33,16 @@ struct Options {
     RunMode mode{RunMode::Realtime};
     std::filesystem::path output;
     std::filesystem::path replay;
+    lima::SimulatorConfig sim;
 };
 
 void usage() {
     std::cout << "usage: lima [--map FILE] [--scenario FILE] [--agents N] [--planner bfs|astar]"
                  " [--seed N] [--max-steps N] [--fps N] [--validate-conflicts]"
-                 " [--mode realtime|solve|replay] [--output FILE] [--replay FILE]\n";
+                 " [--mode realtime|solve|replay] [--output FILE] [--replay FILE]\n"
+                 "            [--solver ida|greedy] [--solver-iterations N] [--bound-step N] [--no-fastpath]\n"
+                 "            [--routing dor|direct] [--capacity-formula code|paper] [--isolation-cap N]\n"
+                 "            [--no-discharge]\n";
 }
 
 Options parse(const int argc, char** argv) {
@@ -56,6 +62,24 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--validate-conflicts") options.validate_conflicts = true;
         else if (arg == "--output") options.output = value();
         else if (arg == "--replay") options.replay = value();
+        else if (arg == "--solver") options.sim.solver.kind = std::string(value());
+        else if (arg == "--solver-iterations") options.sim.solver.max_iterations = std::stoull(std::string(value()));
+        else if (arg == "--bound-step") options.sim.solver.bound_step = std::stoi(std::string(value()));
+        else if (arg == "--no-fastpath") options.sim.solver.greedy_fastpath = false;
+        else if (arg == "--isolation-cap") options.sim.isolation.cap = std::stoi(std::string(value()));
+        else if (arg == "--no-discharge") options.sim.discharge_enabled = false;
+        else if (arg == "--routing") {
+            const auto name = value();
+            if (name == "dor") options.sim.direct_routing = false;
+            else if (name == "direct") options.sim.direct_routing = true;
+            else throw std::invalid_argument("routing must be dor or direct");
+        }
+        else if (arg == "--capacity-formula") {
+            const auto name = value();
+            if (name == "code") options.sim.isolation.formula = lima::CapacityFormula::SumMinusMax;
+            else if (name == "paper") options.sim.isolation.formula = lima::CapacityFormula::SumMinusMaxPlusOne;
+            else throw std::invalid_argument("capacity-formula must be code or paper");
+        }
         else if (arg == "--mode") {
             const auto name = value();
             if (name == "realtime") options.mode = RunMode::Realtime;
@@ -84,6 +108,15 @@ std::uint64_t random_seed() {
         ^ static_cast<std::uint64_t>(device()) ^ now;
 }
 
+void print_provenance(const Options& options) {
+    std::cout << " solver=" << options.sim.solver.kind
+              << " routing=" << (options.sim.direct_routing ? "direct" : "dor")
+              << " capacity=" << (options.sim.isolation.formula == lima::CapacityFormula::SumMinusMax ? "code" : "paper");
+    if (options.sim.isolation.cap >= 0) std::cout << " cap=" << options.sim.isolation.cap;
+    if (!options.sim.discharge_enabled) std::cout << " discharge=off";
+    std::cout << " commit=" << LIMA_COMMIT;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -110,7 +143,7 @@ int main(int argc, char** argv) {
         if (tasks.empty()) throw std::runtime_error("no tasks were loaded");
         if (options.scenario.empty()) std::cout << "seed=" << task_seed << '\n';
 
-        lima::Simulator simulator(std::move(map), tasks, options.planner, task_seed);
+        lima::Simulator simulator(std::move(map), tasks, options.planner, task_seed, options.sim);
         std::filesystem::path output_path = options.output;
         if (options.mode == RunMode::Solve && output_path.empty()) output_path = "build/result.txt";
         std::unique_ptr<lima::SolutionTrace> recorder;
@@ -159,6 +192,7 @@ int main(int argc, char** argv) {
                           << " edge_conflicts=" << recorder->edge_conflicts();
             }
         }
+        print_provenance(options);
         std::cout << '\n';
         return simulator.done() ? 0 : 2;
     } catch (const std::exception& error) {

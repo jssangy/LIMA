@@ -1,23 +1,34 @@
 #pragma once
 
+#include "lima/scheduling/solver.hpp"
+
 #include <cstddef>
 #include <utility>
 #include <vector>
 
 namespace lima {
 
-using StackMove = std::pair<int, int>;
-
 struct IdaStarOptions {
     std::size_t max_iterations{1'000'000};
     bool deterministic_move{true};
+    int bound_step{6};
 };
 
-// Stack entries are target stack indices and are ordered bottom-to-top.
+class IdaStarSolver final : public StackSolver {
+public:
+    explicit IdaStarSolver(IdaStarOptions options = {}) : options_(options) {}
+    [[nodiscard]] std::string_view name() const noexcept override { return "ida"; }
+    [[nodiscard]] std::optional<std::vector<StackMove>> solve(
+        const StackProblem& problem, SolverStats* stats = nullptr) override;
+
+private:
+    IdaStarOptions options_;
+};
+
+// Legacy convenience wrapper kept for tools and tests: throws on failure.
 std::vector<StackMove> solve_stack_rearrangement(
     const std::vector<std::vector<int>>& stacks,
     const std::vector<int>& capacities,
     IdaStarOptions options = {});
 
 }  // namespace lima
-

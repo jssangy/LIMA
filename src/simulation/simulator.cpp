@@ -11,16 +11,6 @@
 namespace lima {
 namespace {
 
-std::size_t scheduling_capacity(const Intersection& intersection) {
-    std::size_t total = 0;
-    std::size_t longest = 0;
-    for (const auto& arm : intersection.arms) {
-        total += arm.size();
-        longest = std::max(longest, arm.size());
-    }
-    return total - longest;
-}
-
 std::optional<std::array<int, 4>> predict_final_stack_lengths(
     const Intersection& intersection, const std::span<const IntersectionIntent> intents,
     const std::array<int, 4>& quotas) {
@@ -80,9 +70,11 @@ std::optional<std::array<int, 4>> predict_final_stack_lengths(
 }  // namespace
 
 Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const PlannerKind planner_kind,
-                     const std::uint64_t seed)
-    : map_(std::move(map)), rng_(seed), planner_(make_planner(planner_kind, map_, rng_)),
-      topology_(IntersectionTopology::build(map_)) {
+                     const std::uint64_t seed, SimulatorConfig config)
+    : map_(std::move(map)), config_(std::move(config)), rng_(seed),
+      planner_(make_planner(planner_kind, map_, rng_)),
+      topology_(IntersectionTopology::build(map_)),
+      solver_(make_solver(config_.solver)), coordinator_(*solver_) {
     agents_.reserve(tasks.size());
     std::unordered_set<CellId> occupied;
     for (std::size_t i = 0; i < tasks.size(); ++i) {
@@ -113,7 +105,7 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
     deadlock_priority_.resize(topology_.intersections().size(), 0);
     for (const Intersection& intersection : topology_.intersections()) {
         const auto iid = static_cast<std::size_t>(intersection.id);
-        intersection_capacity_[iid] = static_cast<int>(scheduling_capacity(intersection));
+        intersection_capacity_[iid] = scheduling_capacity(intersection, config_.isolation);
         intersection_available_[iid] = intersection_capacity_[iid];
     }
     for (const Agent& agent : agents_) if (agent.active) {
@@ -385,7 +377,9 @@ bool Simulator::step() {
         }
     }
 
-    recover_stalled_intersections(members_, stalled_);
+    if (config_.discharge_enabled) {
+        (void)discharge_.run({topology_, agents_, members_, stalled_, deadlock_active_, *planner_, rng_});
+    }
 
     std::fill(occupancy_.begin(), occupancy_.end(), kNoAgent);
     for (const Agent& agent : agents_) if (agent.active)
@@ -451,101 +445,9 @@ bool Simulator::step() {
     return true;
 }
 
-bool Simulator::recover_stalled_intersections(const std::vector<std::vector<AgentId>>& members,
-                                              const std::vector<bool>& stalled) {
-    const auto active = [&](const IntersectionId iid) {
-        return deadlock_active_[static_cast<std::size_t>(iid)] != 0;
-    };
-    bool changed = false;
-    const auto& intersections = topology_.intersections();
-    for (const Intersection& source : intersections) {
-        const std::size_t source_index = static_cast<std::size_t>(source.id);
-        if (!stalled[source_index] || active(source.id)) continue;
-
-        struct CycleCandidate {
-            std::size_t direction{};
-            std::vector<std::array<IntersectionId, 4>> cycles;
-        };
-        std::vector<CycleCandidate> candidates;
-        for (std::size_t d = 0; d < 4; ++d) {
-            const IntersectionId b = source.neighbors[d];
-            if (b < 0 || stalled[static_cast<std::size_t>(b)] || active(b)) continue;
-            const Intersection& bi = intersections[static_cast<std::size_t>(b)];
-            std::vector<IntersectionId> around_b;
-            for (const IntersectionId neighbor : bi.neighbors)
-                if (neighbor >= 0 && neighbor != source.id) around_b.push_back(neighbor);
-            CycleCandidate candidate;
-            candidate.direction = d;
-            for (std::size_t i = 0; i < around_b.size(); ++i) {
-                for (std::size_t j = i + 1; j < around_b.size(); ++j) {
-                    const IntersectionId c = around_b[i];
-                    const IntersectionId e = around_b[j];
-                    const Intersection& ci = intersections[static_cast<std::size_t>(c)];
-                    const Intersection& ei = intersections[static_cast<std::size_t>(e)];
-                    for (const IntersectionId common : ci.neighbors) {
-                        if (common < 0 || common == b || common == c || common == e) continue;
-                        if (std::find(ei.neighbors.begin(), ei.neighbors.end(), common) != ei.neighbors.end())
-                            candidate.cycles.push_back({b, c, common, e});
-                    }
-                }
-            }
-            if (!candidate.cycles.empty()) candidates.push_back(std::move(candidate));
-        }
-        if (candidates.empty()) continue;
-        std::uniform_int_distribution<std::size_t> choose_candidate(0, candidates.size() - 1);
-        CycleCandidate& selected = candidates[choose_candidate(rng_)];
-        std::uniform_int_distribution<std::size_t> choose_cycle(0, selected.cycles.size() - 1);
-        std::array<IntersectionId, 4> cycle = selected.cycles[choose_cycle(rng_)];
-        std::bernoulli_distribution reverse_cycle(0.5);
-        if (reverse_cycle(rng_)) std::swap(cycle[1], cycle[3]);
-        const std::size_t source_direction = selected.direction;
-
-        const auto& escape_arm = source.arms[source_direction];
-        for (const AgentId id : members[source_index]) {
-            Agent& agent = agents_[static_cast<std::size_t>(id)];
-            if (!agent.active || agent.scheduled()) continue;
-            if (agent.position != source.center
-                && std::find(escape_arm.begin(), escape_arm.end(), agent.position) == escape_arm.end()) continue;
-            const CellId first_center = intersections[static_cast<std::size_t>(cycle[0])].center;
-            if (std::find(agent.route.begin() + static_cast<std::ptrdiff_t>(agent.route_cursor),
-                          agent.route.end(), first_center) != agent.route.end()) continue;
-
-            std::vector<CellId> detour{agent.position};
-            CellId cursor = agent.position;
-            bool valid = true;
-            const std::array<CellId, 6> waypoints{{
-                intersections[static_cast<std::size_t>(cycle[0])].center,
-                intersections[static_cast<std::size_t>(cycle[1])].center,
-                intersections[static_cast<std::size_t>(cycle[2])].center,
-                intersections[static_cast<std::size_t>(cycle[3])].center,
-                intersections[static_cast<std::size_t>(cycle[0])].center,
-                agent.position}};
-            for (const CellId waypoint : waypoints) {
-                auto segment = planner_->plan(cursor, waypoint);
-                if (segment.empty()) {
-                    valid = false;
-                    break;
-                }
-                detour.insert(detour.end(), segment.begin() + 1, segment.end());
-                cursor = waypoint;
-            }
-            if (!valid) continue;
-            std::vector<CellId> inserted;
-            inserted.reserve(agent.route.size() + detour.size());
-            inserted.insert(inserted.end(), agent.route.begin(),
-                agent.route.begin() + static_cast<std::ptrdiff_t>(agent.route_cursor + 1));
-            inserted.insert(inserted.end(), detour.begin() + 1, detour.end());
-            inserted.insert(inserted.end(),
-                agent.route.begin() + static_cast<std::ptrdiff_t>(agent.route_cursor + 1), agent.route.end());
-            agent.route = std::move(inserted);
-            changed = true;
-        }
-    }
-    return changed;
-}
-
 std::vector<CellId> Simulator::plan_global(const CellId start, const CellId goal) {
     if (start == goal) return {start};
+    if (config_.direct_routing) return planner_->plan(start, goal);
     const Coord source = map_.coord(start);
     const Coord destination = map_.coord(goal);
     std::vector<int> center_xs;

@@ -1,7 +1,5 @@
 #include "lima/intersection/coordinator.hpp"
 
-#include "lima/scheduling/ida_star.hpp"
-
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -66,7 +64,7 @@ std::optional<std::vector<CellId>> make_trimmed_egress(
 
 std::optional<std::vector<ScheduledPath>> IntersectionCoordinator::schedule(
     const Intersection& intersection, const std::span<const IntersectionIntent> intents,
-    const std::array<int, 4>& stack_quotas) const {
+    const std::array<int, 4>& stack_quotas, ScheduleTelemetry* const telemetry) const {
     std::vector<Direction> directions;
     for (std::size_t d = 0; d < 4; ++d) if (!intersection.arms[d].empty()) directions.push_back(static_cast<Direction>(d));
     if (directions.size() < 3 || intents.size() < 2) return std::nullopt;
@@ -177,12 +175,14 @@ std::optional<std::vector<ScheduledPath>> IntersectionCoordinator::schedule(
         }
     }
 
-    std::vector<StackMove> actions;
-    try {
-        actions = solve_stack_rearrangement(solver_stacks, capacities);
-    } catch (const std::exception&) {
-        return std::nullopt;
+    SolverStats solver_stats;
+    auto actions_opt = solver_.solve({solver_stacks, capacities}, &solver_stats);
+    if (telemetry) {
+        telemetry->intents = intents.size();
+        telemetry->solver = solver_stats;
     }
+    if (!actions_opt) return std::nullopt;
+    std::vector<StackMove> actions = std::move(*actions_opt);
 
     // Apply neighbor-capacity quotas as a lightweight post-process. Overflow
     // robots may be parked on another arm.

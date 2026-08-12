@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <memory_resource>
@@ -12,8 +13,8 @@ namespace lima {
 namespace {
 
 constexpr int kMaxStacks = 4;
-constexpr int kMaxCapacity = 16;
-constexpr int kEmpty = 16;
+constexpr int kMaxCapacity = 64;  // raised from 16 for long-corridor stress studies
+constexpr int kEmpty = 16;        // sentinel value; item values stay in 0..3
 
 struct Key {
     std::uint64_t first{};
@@ -180,7 +181,8 @@ using Visited = std::pmr::unordered_map<Key, int, KeyHash>;
 
 SearchResult search(State& state, const int depth, const int bound2,
                     Visited& visited, std::vector<StackMove>& path,
-                    const bool deterministic) {
+                    const bool deterministic, std::uint64_t& expanded) {
+    ++expanded;
     if (const auto found = visited.find(state.hash); found != visited.end() && found->second <= depth) {
         return {std::numeric_limits<int>::max(), false};
     }
@@ -197,7 +199,7 @@ SearchResult search(State& state, const int depth, const int bound2,
         Undo undo;
         apply(state, move.first, move.second, undo);
         path.push_back(move);
-        const SearchResult result = search(state, depth + 1, bound2, visited, path, deterministic);
+        const SearchResult result = search(state, depth + 1, bound2, visited, path, deterministic, expanded);
         if (result.found) return result;
         next_bound = std::min(next_bound, result.bound2);
         path.pop_back();
@@ -206,22 +208,23 @@ SearchResult search(State& state, const int depth, const int bound2,
     return {next_bound, false};
 }
 
-State make_state(const std::vector<std::vector<int>>& stacks, const std::vector<int>& capacities) {
+// Returns nullopt when the instance violates the representation limits.
+std::optional<State> make_state(const std::vector<std::vector<int>>& stacks, const std::vector<int>& capacities) {
     if (stacks.empty() || stacks.size() > kMaxStacks || stacks.size() != capacities.size()) {
-        throw std::invalid_argument("stack count must be 1..4 and match capacities");
+        return std::nullopt;
     }
     State state;
     state.count = static_cast<int>(stacks.size());
     std::array<int, kMaxStacks> item_counts{};
     for (int s = 0; s < state.count; ++s) {
         if (capacities[s] < 0 || capacities[s] > kMaxCapacity || stacks[s].size() > static_cast<std::size_t>(capacities[s])) {
-            throw std::invalid_argument("invalid stack capacity");
+            return std::nullopt;
         }
         state.capacity[s] = static_cast<std::uint8_t>(capacities[s]);
         state.size[s] = static_cast<std::uint8_t>(stacks[s].size());
         for (int p = 0; p < capacities[s]; ++p) {
             const int value = p < static_cast<int>(stacks[s].size()) ? stacks[s][p] : kEmpty;
-            if (value < 0 || (value >= state.count && value != kEmpty)) throw std::invalid_argument("invalid target stack index");
+            if (value < 0 || (value >= state.count && value != kEmpty)) return std::nullopt;
             state.cells[s][p] = static_cast<std::uint8_t>(value);
             state.hash.first ^= kZobrist.first[s][p][value];
             state.hash.second ^= kZobrist.second[s][p][value];
@@ -234,22 +237,40 @@ State make_state(const std::vector<std::vector<int>>& stacks, const std::vector<
 
 }  // namespace
 
-std::vector<StackMove> solve_stack_rearrangement(const std::vector<std::vector<int>>& stacks,
-                                                 const std::vector<int>& capacities,
-                                                 const IdaStarOptions options) {
-    State state = make_state(stacks, capacities);
+std::optional<std::vector<StackMove>> IdaStarSolver::solve(
+    const StackProblem& problem, SolverStats* const stats) {
+    SolverStats local;
+    SolverStats& out = stats ? *stats : local;
+    const auto started = std::chrono::steady_clock::now();
+    const auto finish = [&](const std::string_view outcome) {
+        out.outcome = outcome;
+        out.wall_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    };
+
+    auto state_opt = make_state(problem.stacks, problem.capacities);
+    if (!state_opt) {
+        finish("rejected");
+        return std::nullopt;
+    }
+    State state = *state_opt;
     const int initial_bound = heuristic2(state);
     int bound = initial_bound;
-    bool deterministic = options.deterministic_move;
+    bool deterministic = options_.deterministic_move;
     std::vector<StackMove> path;
     path.reserve(256);
     std::pmr::unsynchronized_pool_resource visited_pool;
     Visited visited{&visited_pool};
     visited.reserve(200'000);
-    for (std::size_t iteration = 0; iteration < options.max_iterations; ++iteration) {
+    for (std::size_t iteration = 0; iteration < options_.max_iterations; ++iteration) {
+        ++out.iterations;
         visited.clear();
-        const SearchResult result = search(state, 0, bound, visited, path, deterministic);
-        if (result.found) return path;
+        const SearchResult result = search(state, 0, bound, visited, path, deterministic, out.expanded_nodes);
+        if (result.found) {
+            out.solution_length = path.size();
+            out.fastpath_solved = deterministic;
+            finish("solved");
+            return path;
+        }
         if (result.bound2 == std::numeric_limits<int>::max()) {
             if (deterministic) {
                 deterministic = false;
@@ -258,12 +279,24 @@ std::vector<StackMove> solve_stack_rearrangement(const std::vector<std::vector<i
                 iteration = static_cast<std::size_t>(-1);
                 continue;
             }
-            throw std::runtime_error("IDA*: no solution");
+            finish("no_solution");
+            return std::nullopt;
         }
-        bound = std::max(result.bound2, bound + 6);
+        bound = options_.bound_step > 0 ? std::max(result.bound2, bound + options_.bound_step) : result.bound2;
         path.clear();
     }
-    throw std::runtime_error("IDA*: iteration limit exceeded");
+    finish("iteration_limit");
+    return std::nullopt;
+}
+
+std::vector<StackMove> solve_stack_rearrangement(const std::vector<std::vector<int>>& stacks,
+                                                 const std::vector<int>& capacities,
+                                                 const IdaStarOptions options) {
+    IdaStarSolver solver(options);
+    SolverStats stats;
+    auto result = solver.solve({stacks, capacities}, &stats);
+    if (!result) throw std::runtime_error("IDA*: " + std::string(stats.outcome));
+    return std::move(*result);
 }
 
 }  // namespace lima
