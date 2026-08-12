@@ -4,10 +4,12 @@
 
 #include <algorithm>
 #include <fstream>
+#include <queue>
 #include <random>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 namespace lima {
 
@@ -32,16 +34,42 @@ std::vector<Task> load_scenario(const std::filesystem::path& path, const std::si
 }
 
 std::vector<Task> make_random_tasks(const GridMap& map, const std::size_t count, const std::uint64_t seed) {
+    if (map.goal_cells().empty()) throw std::runtime_error("random mode requires S or G cells in the map");
+
+    // Benchmark maps may contain traversable pockets that are walled off from
+    // the workstations.  Restrict start sampling to cells that can actually
+    // reach a goal, otherwise routing fails for agents spawned in a pocket.
+    std::vector<std::uint8_t> reachable(static_cast<std::size_t>(map.cell_count()), 0);
+    std::queue<CellId> frontier;
+    for (const CellId goal : map.goal_cells()) {
+        if (!reachable[static_cast<std::size_t>(goal)]) {
+            reachable[static_cast<std::size_t>(goal)] = 1;
+            frontier.push(goal);
+        }
+    }
+    while (!frontier.empty()) {
+        const CellId current = frontier.front();
+        frontier.pop();
+        for (const CellId next : map.neighbors(current)) {
+            if (reachable[static_cast<std::size_t>(next)]) continue;
+            reachable[static_cast<std::size_t>(next)] = 1;
+            frontier.push(next);
+        }
+    }
+
     std::vector<CellId> starts;
     starts.reserve(map.traversable_cells().size());
     const std::unordered_set<CellId> goals(map.goal_cells().begin(), map.goal_cells().end());
     for (const CellId id : map.traversable_cells()) {
         const Coord c = map.coord(id);
         if (c.x == 0 || c.y == 0 || c.x + 1 == map.width() || c.y + 1 == map.height()) continue;
+        if (!reachable[static_cast<std::size_t>(id)]) continue;
         if (!goals.contains(id)) starts.push_back(id);
     }
-    if (map.goal_cells().empty()) throw std::runtime_error("random mode requires S or G cells in the map");
-    if (count > starts.size()) throw std::runtime_error("requested more agents than unique start cells");
+    if (count > starts.size()) {
+        throw std::runtime_error("requested " + std::to_string(count) + " agents but only "
+                                 + std::to_string(starts.size()) + " goal-reachable start cells exist");
+    }
 
     std::mt19937_64 rng(seed);
     std::shuffle(starts.begin(), starts.end(), rng);
