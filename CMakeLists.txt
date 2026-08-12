@@ -13,11 +13,14 @@ add_library(lima_core
     src/core/grid_map.cpp
     src/io/scenario_loader.cpp
     src/io/solution_trace.cpp
+    src/io/debug_trace.cpp
     src/planning/planner.cpp
     src/intersection/topology.cpp
     src/intersection/deadlock_detector.cpp
     src/intersection/coordinator.cpp
     src/scheduling/ida_star.cpp
+    src/simulation/goal_allocator.cpp
+    src/simulation/pibt_resolver.cpp
     src/simulation/simulator.cpp
 )
 target_include_directories(lima_core PUBLIC include)

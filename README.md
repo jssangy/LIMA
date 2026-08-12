@@ -2,6 +2,13 @@
 
 LIMA simulates multiple AMRs on grid maps and schedules their movements through intersections.
 
+Global routes are generated with BFS or A*. Outside managed intersection regions, AMRs use PIBT
+(priority inheritance with backtracking) to select collision-free moves for the next timestep.
+Inside managed intersections, the intersection scheduler remains authoritative and PIBT is not used.
+Temporary PIBT deviations preserve the global route and rejoin it at a future route cell.
+An unscheduled AMR leaving a managed intersection participates only as a high-priority boundary-exit
+root, allowing an outside blocker to inherit its priority and move out of the way.
+
 ## Build
 
 ```bash
@@ -57,9 +64,39 @@ Specify a seed to reproduce the same randomly generated tasks.
 
 When `--seed` is omitted, LIMA generates a new seed for each run.
 
+Maps without `S` or `G` cells are also supported in random mode. In that case,
+goal positions are sampled from traversable cells outside managed intersection regions.
+
+## Lifelong mode
+
+One-shot workloads are the default. Use `--workload lifelong` to assign a new random goal whenever
+an AMR completes its current task. The AMR population remains fixed and the run continues until
+`--max-steps` is reached.
+
+```bash
+./build/lima \
+  --mode realtime \
+  --workload lifelong \
+  --map data/maps/warehouse_10_20.map \
+  --agents 500 \
+  --planner bfs \
+  --seed 7 \
+  --max-steps 10000 \
+  --fps 30
+```
+
+New goals are unique among active tasks and are assigned only after the current timestep has been
+committed. The goal generator uses a random stream separate from intersection scheduling, so the
+same seed produces the same task stream when scheduler internals are unchanged. Random lifelong
+workloads require at least one more valid goal candidate than the number of AMRs.
+
+The final summary reports `tasks_completed`, throughput in tasks per timestep, and average task
+latency. Lifelong runs that reach `--max-steps` finish with `status=horizon_reached`.
+
 ## Scenario mode
 
 Use `--scenario` to load tasks from a MovingAI scenario instead of generating random tasks. `--agents` controls how many tasks are read from the beginning of the scenario.
+Because AMRs remain in the simulation, the selected initial scenario tasks must have unique goals.
 
 ```bash
 ./build/lima \
@@ -100,9 +137,61 @@ Conflict validation is disabled by default. Enable it when vertex and edge confl
   --validate-conflicts
 ```
 
+## Debug mode
+
+Debug mode runs headlessly and records a complete, searchable snapshot of the simulation at every
+timestep. Conflict validation is enabled automatically.
+
+```bash
+./build/lima \
+  --mode debug \
+  --map data/maps/cross_3030.map \
+  --agents 2000 \
+  --planner bfs \
+  --seed 4043428185036662755 \
+  --max-steps 1000 \
+  --debug-dir results/debug/cross_3030_seed4043428185036662755
+```
+
+If `--debug-dir` is omitted, logs are written under
+`results/debug/<map>_<agents>_seed<seed>/`. The directory contains:
+
+| File | Contents |
+|---|---|
+| `metadata.json` | Run options, map information, and static intersection topology |
+| `steps.jsonl` | Per-timestep summary, deadlock queue, candidates, and new schedules |
+| `agents.jsonl` | Every AMR's before/after movement state, route cursor, scheduling state, PIBT decision, arm, and target exit |
+| `intersections.jsonl` | Every intersection's active/waiting/blocked state, members, intents, capacity, and rescue state |
+| `schedules.jsonl` | Complete paths returned by each newly activated intersection schedule |
+| `routes.jsonl` | Complete route whenever an AMR route is inserted or changed |
+| `events.jsonl` | Schedule activation/release, completion, group changes, and long-wait transitions |
+| `anomalies.jsonl` | Vertex conflicts, edge conflicts, invalid moves, and schedule ownership violations |
+| `summary.json` | Final status and aggregate counters |
+| `solution.txt` | Replayable solution trace with conflict validation results |
+
+Each `.jsonl` file contains one JSON object per line. Examples:
+
+```bash
+# Everything involving timestep 500
+rg '"timestep":500[,}]' results/debug/cross_3030_seed4043428185036662755
+
+# State of intersection 289 at timestep 500
+jq 'select(.timestep == 500 and .id == 289)' \
+  results/debug/cross_3030_seed4043428185036662755/intersections.jsonl
+
+# Full history of AMR 534
+jq 'select(.id == 534)' \
+  results/debug/cross_3030_seed4043428185036662755/agents.jsonl
+```
+
+The logger flushes each timestep, so completed frames remain available even if a run is interrupted.
+Full debug logs can be large for dense maps; use debug mode only when diagnosing a reproducible run.
+
 ## Replay mode
 
-Replay a saved solution without running the planner or scheduler again.
+Replay a saved solution without running the planner or scheduler again. Lifelong solution files
+also store the assigned goal of every AMR at every timestep, so goal markers and goal lines follow
+task changes during replay.
 
 ```bash
 ./build/lima \
@@ -131,16 +220,18 @@ Replay mode also supports `--fps 0`.
 
 | Option | Description |
 |---|---|
-| `--mode realtime\|solve\|replay` | Select the execution mode |
+| `--mode realtime\|solve\|replay\|debug` | Select the execution mode |
 | `--map FILE` | Select the map file |
 | `--scenario FILE` | Load a MovingAI scenario |
 | `--agents N` | Set the number of AMRs or scenario tasks |
 | `--planner bfs\|astar` | Select the global path planner |
+| `--workload oneshot\|lifelong` | Use a finite one-shot workload or continuously assign new goals |
 | `--seed N` | Set the random seed for reproducible runs |
 | `--max-steps N` | Set the maximum number of timesteps |
 | `--fps N` | Set the timestep rate; `0` removes the limit |
 | `--output FILE` | Set the solution output path |
 | `--replay FILE` | Select a solution trace to replay |
+| `--debug-dir DIR` | Select the debug trace directory in debug mode |
 | `--validate-conflicts` | Enable vertex and edge conflict validation |
 
 Run the following command to display the complete option list:

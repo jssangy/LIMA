@@ -73,4 +73,3 @@ const std::vector<CellId>& GridMap::neighbors(const CellId id) const {
 }
 
 }  // namespace lima
-

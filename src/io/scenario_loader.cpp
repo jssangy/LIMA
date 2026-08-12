@@ -1,6 +1,7 @@
 #include "lima/io/scenario_loader.hpp"
 
 #include "lima/core/grid_map.hpp"
+#include "lima/intersection/topology.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -31,7 +32,33 @@ std::vector<Task> load_scenario(const std::filesystem::path& path, const std::si
     return tasks;
 }
 
+std::vector<CellId> make_goal_candidates(const GridMap& map) {
+    std::vector<CellId> goal_candidates = map.goal_cells();
+    if (goal_candidates.empty()) {
+        const IntersectionTopology topology = IntersectionTopology::build(map);
+        goal_candidates.reserve(map.traversable_cells().size());
+        for (const CellId id : map.traversable_cells()) {
+            if (!topology.memberships(id).empty()) continue;
+            const bool discharge_portal = std::any_of(
+                map.neighbors(id).begin(), map.neighbors(id).end(), [&](const CellId neighbor) {
+                    return !topology.memberships(neighbor).empty();
+                });
+            // Persistent goal occupancy must not turn a one-cell warehouse
+            // gateway into a parking position. PIBT may use these cells for
+            // transit, but completed AMRs park deeper in the outside area.
+            if (!discharge_portal) goal_candidates.push_back(id);
+        }
+    }
+    if (goal_candidates.empty())
+        throw std::runtime_error("random mode found no valid goal cells outside intersections");
+    return goal_candidates;
+}
+
 std::vector<Task> make_random_tasks(const GridMap& map, const std::size_t count, const std::uint64_t seed) {
+    std::vector<CellId> goal_candidates = make_goal_candidates(map);
+    if (count > goal_candidates.size())
+        throw std::runtime_error("persistent AMRs require at least one unique goal cell per agent");
+
     std::vector<CellId> starts;
     starts.reserve(map.traversable_cells().size());
     const std::unordered_set<CellId> goals(map.goal_cells().begin(), map.goal_cells().end());
@@ -40,17 +67,23 @@ std::vector<Task> make_random_tasks(const GridMap& map, const std::size_t count,
         if (c.x == 0 || c.y == 0 || c.x + 1 == map.width() || c.y + 1 == map.height()) continue;
         if (!goals.contains(id)) starts.push_back(id);
     }
-    if (map.goal_cells().empty()) throw std::runtime_error("random mode requires S or G cells in the map");
     if (count > starts.size()) throw std::runtime_error("requested more agents than unique start cells");
 
     std::mt19937_64 rng(seed);
     std::shuffle(starts.begin(), starts.end(), rng);
-    std::uniform_int_distribution<std::size_t> choose_goal(0, map.goal_cells().size() - 1);
+    std::shuffle(goal_candidates.begin(), goal_candidates.end(), rng);
     std::vector<Task> tasks;
     tasks.reserve(count);
     for (std::size_t i = 0; i < count; ++i) {
-        const CellId goal = map.goal_cells()[choose_goal(rng)];
-        tasks.push_back({map.coord(starts[i]), map.coord(goal)});
+        if (goal_candidates[i] == starts[i]) {
+            const auto replacement = std::find_if(
+                goal_candidates.begin() + static_cast<std::ptrdiff_t>(i + 1), goal_candidates.end(),
+                [&](const CellId candidate) { return candidate != starts[i]; });
+            if (replacement == goal_candidates.end())
+                throw std::runtime_error("random mode cannot choose a unique goal different from its start");
+            std::iter_swap(goal_candidates.begin() + static_cast<std::ptrdiff_t>(i), replacement);
+        }
+        tasks.push_back({map.coord(starts[i]), map.coord(goal_candidates[i])});
     }
     return tasks;
 }

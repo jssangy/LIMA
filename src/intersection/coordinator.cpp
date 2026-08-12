@@ -58,8 +58,53 @@ std::optional<std::vector<CellId>> make_trimmed_egress(
         }
     }
     if (farthest_distance < 0 || farthest + 1 >= full_path.size()) return std::nullopt;
+    const auto direction = static_cast<std::size_t>(intent.exit);
+    if (direction >= 4 || intersection.arms[direction].empty()
+        || full_path[farthest] != intersection.arms[direction].back()) {
+        // An early handoff inside a one-cell-wide arm is unsafe: another
+        // scheduled AMR may still occupy the outward continuation, leaving no
+        // room for PIBT to resolve the resulting head-on pair. Keep the full
+        // coordinated timeline until the AMR actually reaches the arm tip.
+        return std::nullopt;
+    }
     return std::vector<CellId>(full_path.begin(),
         full_path.begin() + static_cast<std::ptrdiff_t>(farthest + 1));
+}
+
+bool follows_natural_egress(const Intersection& intersection, const IntersectionIntent& intent) {
+    const auto direction = static_cast<std::size_t>(intent.current);
+    if (direction >= 4 || intent.current != intent.exit) return false;
+
+    const auto& arm = intersection.arms[direction];
+    const auto current = std::find(arm.begin(), arm.end(), intent.position);
+    if (current == arm.end()) return false;
+    if (intent.next == intent.position) return true;
+
+    const auto next = std::find(arm.begin(), arm.end(), intent.next);
+    if (next != arm.end()) return next > current;
+
+    // From the arm tip, a next cell outside this intersection is the normal
+    // discharge step. Any other unclassified move is kept under scheduling.
+    return current + 1 == arm.end() && intersection.direction_of(intent.next) == Direction::None;
+}
+
+bool has_inward_schedule_motion(
+    const Intersection& intersection, const Direction direction,
+    const std::unordered_map<AgentId, std::vector<CellId>>& paths) {
+    const auto d = static_cast<std::size_t>(direction);
+    if (d >= 4) return true;
+    const auto& arm = intersection.arms[d];
+    for (const auto& [id, path] : paths) {
+        (void)id;
+        for (std::size_t i = 0; i + 1 < path.size(); ++i) {
+            const auto from = std::find(arm.begin(), arm.end(), path[i]);
+            if (from == arm.end()) continue;
+            if (path[i + 1] == intersection.center) return true;
+            const auto to = std::find(arm.begin(), arm.end(), path[i + 1]);
+            if (to != arm.end() && to < from) return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace
@@ -276,7 +321,13 @@ std::optional<std::vector<ScheduledPath>> IntersectionCoordinator::schedule(
     for (const IntersectionIntent* intent : participants) {
         const auto& path = paths.at(intent->agent);
         const bool center_visited = std::find(path.begin(), path.end(), intersection.center) != path.end();
-        if (!center_visited && intent->current == intent->exit) omitted.insert(intent->agent);
+        // Releasing an AMR is safe only if its actual next route step is
+        // outward. current==exit alone also includes U-turn routes whose next
+        // step enters the center; releasing those routes lets them edge-swap
+        // with the active schedule.
+        if (!center_visited && follows_natural_egress(intersection, *intent)
+            && !has_inward_schedule_motion(intersection, intent->current, paths))
+            omitted.insert(intent->agent);
     }
     for (const IntersectionIntent* intent : participants) {
         if (omitted.contains(intent->agent)) continue;

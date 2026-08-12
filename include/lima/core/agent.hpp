@@ -29,10 +29,16 @@ struct Agent {
     std::uint32_t wait_steps{};
     WaitReason wait_reason{WaitReason::None};
     std::uint64_t moves{};
+    std::uint64_t tasks_completed{};
+    std::uint64_t task_started_timestep{};
+    bool completed{false};
     bool active{true};
+    bool awaiting_goal{false};
 
     [[nodiscard]] CellId intended_cell() const noexcept {
-        return route_cursor + 1 < route.size() ? route[route_cursor + 1] : position;
+        // A robot displaced from its completed goal by PIBT keeps the goal as
+        // its local target and returns after yielding to passing traffic.
+        return route_cursor + 1 < route.size() ? route[route_cursor + 1] : goal;
     }
 
     [[nodiscard]] bool scheduled() const noexcept { return scheduling_remaining > 0; }
