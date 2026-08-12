@@ -29,7 +29,9 @@ add_library(lima_core
     src/intersection/gating.cpp
     src/scheduling/ida_star.cpp
     src/scheduling/solver.cpp
+    src/simulation/metrics.cpp
     src/simulation/simulator.cpp
+    src/simulation/trace.cpp
 )
 target_include_directories(lima_core PUBLIC include)
 target_compile_options(lima_core PRIVATE -Wall -Wextra -Wpedantic)

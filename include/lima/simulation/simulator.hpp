@@ -6,12 +6,15 @@
 #include "lima/intersection/gating.hpp"
 #include "lima/planning/planner.hpp"
 #include "lima/scheduling/solver.hpp"
+#include "lima/simulation/metrics.hpp"
+#include "lima/simulation/trace.hpp"
 
 #include <memory>
 #include <random>
 #include <array>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <unordered_set>
 
 namespace lima {
@@ -30,7 +33,10 @@ struct SimulatorConfig {
     SolverConfig solver{};
     IsolationConfig isolation{};
     bool discharge_enabled{true};
-    bool direct_routing{false};  // skip the highway-alignment (DoR-style) global router
+    bool direct_routing{false};   // skip the highway-alignment (DoR-style) global router
+    std::string metrics_dir;      // W1 instrumentation output; empty = disabled
+    std::string trace_path;       // JSONL step trace for the debug harness; empty = disabled
+    std::string map_file;         // recorded in the trace header
 };
 
 class Simulator {
@@ -45,6 +51,18 @@ public:
     [[nodiscard]] const std::vector<Agent>& agents() const noexcept { return agents_; }
     [[nodiscard]] const IntersectionTopology& topology() const noexcept { return topology_; }
     [[nodiscard]] const SimulatorConfig& config() const noexcept { return config_; }
+
+    // Debug-harness views (read only).
+    [[nodiscard]] const std::vector<int>& intersection_available() const noexcept { return intersection_available_; }
+    [[nodiscard]] const std::vector<int>& intersection_capacity() const noexcept { return intersection_capacity_; }
+    [[nodiscard]] const std::vector<std::uint8_t>& deadlock_active() const noexcept { return deadlock_active_; }
+    [[nodiscard]] std::vector<bool> deadlock_waiting() const { return deadlock_waiting_; }
+    // Returns an empty string when every internal invariant holds, otherwise a
+    // description of the first violation.
+    [[nodiscard]] std::string check_invariants() const;
+
+    // Writes per-agent metrics; call once after the run when metrics are on.
+    void write_metrics();
 
 private:
     struct PendingSchedule {
@@ -61,6 +79,10 @@ private:
     std::unique_ptr<StackSolver> solver_;
     IntersectionCoordinator coordinator_;
     RecirculationDischarge discharge_;
+    std::unique_ptr<MetricsCollector> metrics_;
+    std::unique_ptr<StepTracer> tracer_;
+    std::vector<std::size_t> initial_route_lengths_;
+    std::vector<std::uint64_t> completion_steps_;
     std::vector<IntersectionId> deadlock_queue_;
     std::vector<std::unordered_set<AgentId>> scheduled_members_;
     std::vector<bool> deadlock_waiting_;
@@ -88,6 +110,7 @@ private:
     void update_available_on_move(CellId current, CellId next);
     void insert_scheduled_path(Agent& agent, const ScheduledPath& scheduled, IntersectionId intersection);
     void move_agent(Agent& agent);
+    void count_zone_entries(CellId current, CellId next);
     std::vector<CellId> plan_global(CellId start, CellId goal);
 };
 

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -97,6 +98,13 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
             ++stats_.completed;
         }
     }
+    initial_route_lengths_.reserve(agents_.size());
+    for (const Agent& agent : agents_) initial_route_lengths_.push_back(agent.route.size());
+    completion_steps_.resize(agents_.size(), 0);
+    if (!config_.metrics_dir.empty()) metrics_ = std::make_unique<MetricsCollector>(config_.metrics_dir);
+    if (!config_.trace_path.empty()) {
+        tracer_ = std::make_unique<StepTracer>(config_.trace_path, map_, config_.map_file, seed, agents_);
+    }
     intersection_available_.resize(topology_.intersections().size());
     intersection_capacity_.resize(topology_.intersections().size());
     scheduled_members_.resize(topology_.intersections().size());
@@ -181,6 +189,16 @@ void Simulator::update_available_on_move(const CellId current, const CellId next
         intersection_available_[static_cast<std::size_t>(iid)] = std::max(
             0, intersection_available_[static_cast<std::size_t>(iid)] - 1);
     }
+}
+
+void Simulator::count_zone_entries(const CellId current, const CellId next) {
+    if (!metrics_ || current == next) return;
+    const auto& from = topology_.memberships(current);
+    int gained = 0;
+    for (const IntersectionId iid : topology_.memberships(next)) {
+        if (std::find(from.begin(), from.end(), iid) == from.end()) ++gained;
+    }
+    if (gained > 0) metrics_->add_acquisitions(gained);
 }
 
 void Simulator::insert_scheduled_path(Agent& agent, const ScheduledPath& scheduled,
@@ -350,7 +368,10 @@ bool Simulator::step() {
             if (neighbor >= 0)
                 intersection_available_[static_cast<std::size_t>(neighbor)] -= (*final_lengths)[d] - initial[d];
         }
-        auto plan = coordinator_.schedule(intersection, intersection_intents, quotas);
+        ScheduleTelemetry telemetry;
+        auto plan = coordinator_.schedule(intersection, intersection_intents, quotas,
+                                          metrics_ ? &telemetry : nullptr);
+        if (metrics_) metrics_->on_solver_invocation(stats_.timestep, iid_value, telemetry, plan.has_value());
         if (!plan) {
             for (std::size_t d = 0; d < 4; ++d) {
                 const IntersectionId neighbor = intersection.neighbors[d];
@@ -364,21 +385,40 @@ bool Simulator::step() {
         deadlock_queue_.push_back(iid_value);
         deadlock_active_[iid] = 1;
         deadlock_priority_[iid] = deadlock_queue_.size() - 1;
+        if (metrics_) {
+            int neighbor_count = 0;
+            for (const IntersectionId neighbor : intersection.neighbors) if (neighbor >= 0) ++neighbor_count;
+            metrics_->add_gate_signals(neighbor_count);
+        }
         pending_.push_back({iid_value, std::move(*plan)});
     }
     std::sort(pending_.begin(), pending_.end(), [](const PendingSchedule& lhs, const PendingSchedule& rhs) {
         return lhs.intersection < rhs.intersection;
     });
+    const bool observe_schedules = metrics_ != nullptr || tracer_ != nullptr;
     for (auto& schedule : pending_) {
+        std::vector<AgentId> applied;
         for (const ScheduledPath& path : schedule.paths) {
             Agent& agent = agents_[static_cast<std::size_t>(path.agent)];
             insert_scheduled_path(agent, path, schedule.intersection);
-            if (agent.scheduled()) scheduled_members_[static_cast<std::size_t>(schedule.intersection)].insert(agent.id);
+            if (agent.scheduled()) {
+                scheduled_members_[static_cast<std::size_t>(schedule.intersection)].insert(agent.id);
+                if (observe_schedules) applied.push_back(agent.id);
+            }
         }
+        if (metrics_) metrics_->add_broadcasts(static_cast<int>(applied.size()));
+        if (tracer_ && !applied.empty()) tracer_->add_schedule(schedule.intersection, std::move(applied));
     }
 
     if (config_.discharge_enabled) {
-        (void)discharge_.run({topology_, agents_, members_, stalled_, deadlock_active_, *planner_, rng_});
+        auto discharge_events = discharge_.run({topology_, agents_, members_, stalled_, deadlock_active_, *planner_, rng_});
+        for (auto& event : discharge_events) {
+            if (metrics_) {
+                metrics_->on_discharge(stats_.timestep, event.intersection, event.agent_ids, event.loop_cells);
+                for (const AgentId id : event.agent_ids) metrics_->note_discharged_agent(id);
+            }
+            if (tracer_) tracer_->add_discharge(event.intersection, std::move(event.agent_ids));
+        }
     }
 
     std::fill(occupancy_.begin(), occupancy_.end(), kNoAgent);
@@ -397,6 +437,7 @@ bool Simulator::step() {
         if (occupancy_[static_cast<std::size_t>(next)] == kNoAgent) {
             occupancy_[static_cast<std::size_t>(agent.position)] = kNoAgent;
             update_available_on_move(agent.position, next);
+            count_zone_entries(agent.position, next);
             move_agent(agent);
             occupancy_[static_cast<std::size_t>(agent.position)] = agent.id;
         } else {
@@ -432,7 +473,9 @@ bool Simulator::step() {
             continue;
         }
         occupancy_[static_cast<std::size_t>(agent.position)] = kNoAgent;
+        const CellId previous = agent.position;
         move_agent(agent);
+        count_zone_entries(previous, agent.position);
         occupancy_[static_cast<std::size_t>(agent.position)] = agent.id;
     }
 
@@ -440,9 +483,45 @@ bool Simulator::step() {
         if (agent.active && agent.position == agent.goal) {
             agent.active = false;
             ++stats_.completed;
+            completion_steps_[static_cast<std::size_t>(agent.id)] = stats_.timestep;
+            if (tracer_) tracer_->add_completion(agent.id);
         }
     }
+    if (metrics_) metrics_->flush_step(stats_.timestep);
+    if (tracer_) tracer_->flush_step(stats_.timestep, agents_);
     return true;
+}
+
+std::string Simulator::check_invariants() const {
+    std::unordered_set<CellId> seen;
+    for (const Agent& agent : agents_) {
+        if (!agent.active) continue;
+        std::ostringstream problem;
+        if (!map_.traversable(agent.position)) {
+            problem << "agent " << agent.id << " stands on non-traversable cell " << agent.position;
+            return problem.str();
+        }
+        if (!seen.insert(agent.position).second) {
+            problem << "vertex conflict at cell " << agent.position << " involving agent " << agent.id;
+            return problem.str();
+        }
+        if (agent.route_cursor >= agent.route.size() || agent.route[agent.route_cursor] != agent.position) {
+            problem << "agent " << agent.id << " desynchronized from its route cursor";
+            return problem.str();
+        }
+    }
+    for (std::size_t iid = 0; iid < scheduled_members_.size(); ++iid) {
+        if (deadlock_active_[iid] == 0 && !scheduled_members_[iid].empty()) {
+            std::ostringstream problem;
+            problem << "intersection " << iid << " holds scheduled members while inactive";
+            return problem.str();
+        }
+    }
+    return {};
+}
+
+void Simulator::write_metrics() {
+    if (metrics_) metrics_->finalize(agents_, initial_route_lengths_, completion_steps_);
 }
 
 std::vector<CellId> Simulator::plan_global(const CellId start, const CellId goal) {

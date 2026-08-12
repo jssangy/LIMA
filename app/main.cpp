@@ -6,6 +6,7 @@
 
 #include "lima_version.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <chrono>
 #include <filesystem>
@@ -13,13 +14,14 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 
 namespace {
 
-enum class RunMode { Realtime, Solve, Replay };
+enum class RunMode { Realtime, Solve, Replay, Debug };
 
 struct Options {
     std::filesystem::path map{"data/maps/cross_1.map"};
@@ -39,10 +41,12 @@ struct Options {
 void usage() {
     std::cout << "usage: lima [--map FILE] [--scenario FILE] [--agents N] [--planner bfs|astar]"
                  " [--seed N] [--max-steps N] [--fps N] [--validate-conflicts]"
-                 " [--mode realtime|solve|replay] [--output FILE] [--replay FILE]\n"
+                 " [--mode realtime|solve|replay|debug] [--output FILE] [--replay FILE]\n"
                  "            [--solver ida|greedy] [--solver-iterations N] [--bound-step N] [--no-fastpath]\n"
                  "            [--routing dor|direct] [--capacity-formula code|paper] [--isolation-cap N]\n"
-                 "            [--no-discharge]\n";
+                 "            [--no-discharge] [--metrics DIR] [--trace-jsonl FILE]\n"
+                 "debug mode reads commands from stdin and answers in JSON:\n"
+                 "            step [n] | state | agent ID | intersection ID | summary | invariants | quit\n";
 }
 
 Options parse(const int argc, char** argv) {
@@ -68,6 +72,8 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--no-fastpath") options.sim.solver.greedy_fastpath = false;
         else if (arg == "--isolation-cap") options.sim.isolation.cap = std::stoi(std::string(value()));
         else if (arg == "--no-discharge") options.sim.discharge_enabled = false;
+        else if (arg == "--metrics") options.sim.metrics_dir = std::string(value());
+        else if (arg == "--trace-jsonl") options.sim.trace_path = std::string(value());
         else if (arg == "--routing") {
             const auto name = value();
             if (name == "dor") options.sim.direct_routing = false;
@@ -85,7 +91,8 @@ Options parse(const int argc, char** argv) {
             if (name == "realtime") options.mode = RunMode::Realtime;
             else if (name == "solve") options.mode = RunMode::Solve;
             else if (name == "replay") options.mode = RunMode::Replay;
-            else throw std::invalid_argument("mode must be realtime, solve, or replay");
+            else if (name == "debug") options.mode = RunMode::Debug;
+            else throw std::invalid_argument("mode must be realtime, solve, replay, or debug");
         }
         else if (arg == "--planner") {
             const auto name = value();
@@ -117,11 +124,134 @@ void print_provenance(const Options& options) {
     std::cout << " commit=" << LIMA_COMMIT;
 }
 
+constexpr std::array<std::string_view, 8> kWaitReasonNames{
+    "none", "scheduled_hold", "intersection_reserved", "intersection_capacity",
+    "vertex_conflict", "edge_swap", "dependency", "schedule_group"};
+
+// Interactive JSON REPL so an AI agent can advance the simulation one step at
+// a time and verify state and invariants programmatically.
+int run_debug(lima::Simulator& simulator, const Options& options, lima::SolutionTrace* recorder) {
+    const auto& map = simulator.map();
+    const auto coord_json = [&](const lima::CellId cell) {
+        std::ostringstream text;
+        const lima::Coord c = map.coord(cell);
+        text << '[' << c.x << ',' << c.y << ']';
+        return text.str();
+    };
+    const auto agent_json = [&](const lima::Agent& agent) {
+        std::ostringstream text;
+        text << "{\"id\":" << agent.id << ",\"pos\":" << coord_json(agent.position)
+             << ",\"cell\":" << agent.position
+             << ",\"goal\":" << coord_json(agent.goal)
+             << ",\"active\":" << (agent.active ? "true" : "false")
+             << ",\"scheduled\":" << (agent.scheduled() ? "true" : "false")
+             << ",\"wait_steps\":" << agent.wait_steps
+             << ",\"wait_reason\":\"" << kWaitReasonNames[static_cast<std::size_t>(agent.wait_reason)] << '"'
+             << ",\"moves\":" << agent.moves
+             << ",\"route_remaining\":" << (agent.route.size() - 1 - agent.route_cursor)
+             << ",\"next\":" << coord_json(agent.intended_cell()) << '}';
+        return text.str();
+    };
+    const auto summary_json = [&]() {
+        const auto& stats = simulator.stats();
+        std::ostringstream text;
+        text << "{\"t\":" << stats.timestep << ",\"completed\":" << stats.completed
+             << ",\"agents\":" << simulator.agents().size()
+             << ",\"moves\":" << stats.committed_moves << ",\"waits\":" << stats.waits
+             << ",\"deadlocks\":" << stats.detected_deadlocks
+             << ",\"done\":" << (simulator.done() ? "true" : "false") << '}';
+        return text.str();
+    };
+
+    std::cout << summary_json() << '\n' << std::flush;
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        std::istringstream input(line);
+        std::string command;
+        input >> command;
+        if (command.empty()) continue;
+        if (command == "quit" || command == "exit") break;
+        if (command == "step") {
+            std::uint64_t requested = 1;
+            input >> requested;
+            if (requested == 0) requested = 1;
+            std::uint64_t advanced = 0;
+            bool alive = true;
+            while (advanced < requested && !simulator.done()
+                   && simulator.stats().timestep < options.max_steps) {
+                alive = simulator.step();
+                if (!alive) break;
+                if (recorder) recorder->append(simulator.agents());
+                ++advanced;
+            }
+            std::cout << "{\"advanced\":" << advanced << ",\"stalled\":" << (alive ? "false" : "true")
+                      << ",\"summary\":" << summary_json() << "}\n" << std::flush;
+        } else if (command == "state") {
+            std::cout << "{\"summary\":" << summary_json() << ",\"agents\":[";
+            const auto& agents = simulator.agents();
+            for (std::size_t i = 0; i < agents.size(); ++i) {
+                if (i > 0) std::cout << ',';
+                std::cout << agent_json(agents[i]);
+            }
+            std::cout << "]}\n" << std::flush;
+        } else if (command == "agent") {
+            std::int64_t id = -1;
+            input >> id;
+            const auto& agents = simulator.agents();
+            if (id < 0 || static_cast<std::size_t>(id) >= agents.size()) {
+                std::cout << "{\"error\":\"unknown agent\"}\n" << std::flush;
+            } else {
+                std::cout << agent_json(agents[static_cast<std::size_t>(id)]) << '\n' << std::flush;
+            }
+        } else if (command == "intersection") {
+            std::int64_t id = -1;
+            input >> id;
+            const auto& intersections = simulator.topology().intersections();
+            if (id < 0 || static_cast<std::size_t>(id) >= intersections.size()) {
+                std::cout << "{\"error\":\"unknown intersection\"}\n" << std::flush;
+                continue;
+            }
+            const auto& intersection = intersections[static_cast<std::size_t>(id)];
+            const auto iid = static_cast<std::size_t>(id);
+            std::cout << "{\"id\":" << id << ",\"center\":" << coord_json(intersection.center)
+                      << ",\"arms\":[" << intersection.arms[0].size() << ',' << intersection.arms[1].size()
+                      << ',' << intersection.arms[2].size() << ',' << intersection.arms[3].size() << ']'
+                      << ",\"capacity\":" << simulator.intersection_capacity()[iid]
+                      << ",\"available\":" << simulator.intersection_available()[iid]
+                      << ",\"active\":" << (simulator.deadlock_active()[iid] != 0 ? "true" : "false")
+                      << ",\"waiting\":" << (simulator.deadlock_waiting()[iid] ? "true" : "false")
+                      << ",\"members\":[";
+            bool first = true;
+            for (const lima::Agent& agent : simulator.agents()) {
+                if (!agent.active) continue;
+                const auto& memberships = simulator.topology().memberships(agent.position);
+                if (std::find(memberships.begin(), memberships.end(),
+                              static_cast<lima::IntersectionId>(id)) == memberships.end()) continue;
+                if (!first) std::cout << ',';
+                std::cout << agent.id;
+                first = false;
+            }
+            std::cout << "]}\n" << std::flush;
+        } else if (command == "summary") {
+            std::cout << summary_json() << '\n' << std::flush;
+        } else if (command == "invariants") {
+            const std::string violation = simulator.check_invariants();
+            if (violation.empty()) std::cout << "{\"ok\":true}\n" << std::flush;
+            else std::cout << "{\"ok\":false,\"violation\":\"" << violation << "\"}\n" << std::flush;
+        } else {
+            std::cout << "{\"error\":\"unknown command\",\"commands\":[\"step\",\"state\",\"agent\",\"intersection\",\"summary\",\"invariants\",\"quit\"]}\n" << std::flush;
+        }
+    }
+    simulator.write_metrics();
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     try {
-        const Options options = parse(argc, argv);
+        Options options = parse(argc, argv);
+        options.sim.map_file = options.map.string();
         lima::GridMap map = lima::GridMap::load(options.map);
         if (options.fps < 0.0) throw std::invalid_argument("fps must be zero or greater");
 
@@ -141,7 +271,7 @@ int main(int argc, char** argv) {
             ? lima::make_random_tasks(map, options.agents, task_seed)
             : lima::load_scenario(options.scenario, options.agents);
         if (tasks.empty()) throw std::runtime_error("no tasks were loaded");
-        if (options.scenario.empty()) std::cout << "seed=" << task_seed << '\n';
+        if (options.scenario.empty() && options.mode != RunMode::Debug) std::cout << "seed=" << task_seed << '\n';
 
         lima::Simulator simulator(std::move(map), tasks, options.planner, task_seed, options.sim);
         std::filesystem::path output_path = options.output;
@@ -153,10 +283,16 @@ int main(int argc, char** argv) {
         }
         if (options.validate_conflicts && !recorder)
             throw std::invalid_argument("--validate-conflicts requires solve mode or --output FILE");
+        if (options.mode == RunMode::Debug) {
+            const int result = run_debug(simulator, options, recorder.get());
+            if (recorder) recorder->save(output_path, simulator.map(), simulator.done());
+            return result;
+        }
         if (options.mode == RunMode::Realtime) {
 #ifdef LIMA_HAS_SDL2
             const int viewer_result = lima::run_viewer(simulator, {options.fps, options.max_steps}, recorder.get());
             if (recorder) recorder->save(output_path, simulator.map(), simulator.done());
+            simulator.write_metrics();
             const auto& stats = simulator.stats();
             std::cout << "status=" << (simulator.done() ? "completed" : "closed") << " steps=" << stats.timestep
                       << " completed=" << stats.completed << '/' << tasks.size() << " moves=" << stats.committed_moves
@@ -175,6 +311,7 @@ int main(int argc, char** argv) {
             std::chrono::steady_clock::now() - solve_started).count();
         if (recorder) recorder->set_computation_time(solve_seconds);
         if (recorder) recorder->save(output_path, simulator.map(), simulator.done());
+        simulator.write_metrics();
         const auto& stats = simulator.stats();
         std::cout << "status=" << (simulator.done() ? "completed" : "step_limit")
                   << " steps=" << stats.timestep

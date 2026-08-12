@@ -108,6 +108,7 @@ std::vector<RecirculationDischarge::Event> RecirculationDischarge::run(const Con
             agent.route = std::move(inserted);
             ++event.rerouted;
             event.loop_cells = std::max(event.loop_cells, detour.size());
+            event.agent_ids.push_back(agent.id);
         }
         if (event.rerouted > 0) events.push_back(event);
     }

@@ -41,6 +41,7 @@ public:
         IntersectionId intersection{-1};
         int rerouted{};
         std::size_t loop_cells{};
+        std::vector<AgentId> agent_ids;
     };
 
     [[nodiscard]] std::vector<Event> run(const Context& context) const;
