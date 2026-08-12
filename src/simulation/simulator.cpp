@@ -164,7 +164,7 @@ bool Simulator::block_intersection(const CellId current, const CellId next, cons
         }
     }
     if (entering < 0) return false;
-    if (normal_only && intersection_available_[static_cast<std::size_t>(entering)] <= 0) return true;
+    if (normal_only && intersection_available_[static_cast<std::size_t>(entering)] <= config_.isolation.hysteresis) return true;
 
     const auto priority = [&](const IntersectionId iid) {
         return deadlock_active_[static_cast<std::size_t>(iid)] != 0
@@ -280,9 +280,18 @@ bool Simulator::step() {
     }
     for (std::size_t iid = 0; iid < intersection_count; ++iid) {
         if (!members_[iid].empty()) {
-            stalled_[iid] = std::all_of(members_[iid].begin(), members_[iid].end(), [&](const AgentId id) {
-                return agents_[static_cast<std::size_t>(id)].wait_steps >= 1;
-            });
+            if (config_.discharge.partial_stall >= 1.0) {
+                stalled_[iid] = std::all_of(members_[iid].begin(), members_[iid].end(), [&](const AgentId id) {
+                    return agents_[static_cast<std::size_t>(id)].wait_steps >= 1;
+                });
+            } else {
+                const std::size_t waiting = static_cast<std::size_t>(std::count_if(
+                    members_[iid].begin(), members_[iid].end(), [&](const AgentId id) {
+                        return agents_[static_cast<std::size_t>(id)].wait_steps >= 1;
+                    }));
+                stalled_[iid] = static_cast<double>(waiting)
+                    >= config_.discharge.partial_stall * static_cast<double>(members_[iid].size());
+            }
         }
         check_[iid] = check_[iid] || stalled_[iid] || deadlock_waiting_[iid];
     }
@@ -420,7 +429,8 @@ bool Simulator::step() {
     }
 
     if (config_.discharge_enabled) {
-        auto discharge_events = discharge_.run({topology_, agents_, members_, stalled_, deadlock_active_, *planner_, rng_});
+        auto discharge_events = discharge_.run({topology_, agents_, members_, stalled_, deadlock_active_, *planner_, rng_,
+                                                &intersection_available_});
         for (auto& event : discharge_events) {
             if (metrics_) {
                 metrics_->on_discharge(stats_.timestep, event.intersection, event.agent_ids, event.loop_cells);

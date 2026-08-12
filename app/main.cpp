@@ -79,6 +79,9 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--discharge-all-arms") options.sim.discharge.all_arms = true;
         else if (arg == "--discharge-stalled-neighbor") options.sim.discharge.allow_stalled_neighbor = true;
         else if (arg == "--discharge-deterministic") options.sim.discharge.deterministic_cycle = true;
+        else if (arg == "--discharge-avail-weighted") options.sim.discharge.avail_weighted = true;
+        else if (arg == "--discharge-partial") options.sim.discharge.partial_stall = std::stod(std::string(value()));
+        else if (arg == "--admit-hysteresis") options.sim.isolation.hysteresis = std::stoi(std::string(value()));
         else if (arg == "--no-discharge") options.sim.discharge_enabled = false;
         else if (arg == "--rotation") options.sim.rotation_enabled = true;
         else if (arg == "--gate-resync") options.sim.gate_resync = true;
@@ -151,6 +154,9 @@ bool has_non_default_config(const Options& options) {
         || options.sim.discharge.all_arms
         || options.sim.discharge.allow_stalled_neighbor
         || options.sim.discharge.deterministic_cycle
+        || options.sim.discharge.avail_weighted
+        || options.sim.discharge.partial_stall != 1.0
+        || options.sim.isolation.hysteresis != 0
         || options.sim.rotation_enabled
         || options.sim.gate_resync
         || !options.sim.discharge_enabled

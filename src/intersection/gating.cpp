@@ -64,7 +64,19 @@ std::vector<RecirculationDischarge::Event> RecirculationDischarge::run(const Con
         std::size_t candidate_index = 0;
         std::size_t cycle_index = 0;
         bool reversed = false;
-        if (config_.deterministic_cycle) {
+        if (config_.avail_weighted && context.available) {
+            // Escape toward the neighbor advertising the most admission slack;
+            // uses only the 1-hop availability the modules already exchange.
+            int best_slack = std::numeric_limits<int>::min();
+            for (std::size_t ci = 0; ci < candidates.size(); ++ci) {
+                const IntersectionId b = source.neighbors[candidates[ci].direction];
+                const int slack = (*context.available)[static_cast<std::size_t>(b)];
+                if (slack > best_slack) {
+                    best_slack = slack;
+                    candidate_index = ci;
+                }
+            }
+        } else if (config_.deterministic_cycle) {
             // Least-loaded choice: prefer the cycle whose member intersections
             // currently hold the fewest agents, breaking ties by index.
             std::size_t best_load = std::numeric_limits<std::size_t>::max();

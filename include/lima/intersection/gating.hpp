@@ -18,8 +18,9 @@ enum class CapacityFormula : std::uint8_t { SumMinusMax, SumMinusMaxPlusOne };
 
 struct IsolationConfig {
     CapacityFormula formula{CapacityFormula::SumMinusMax};
-    int cap{-1};     // operational ceiling on the bound; -1 disables (experiment E11)
-    int margin{0};   // reserve slack subtracted from the bound (gating study)
+    int cap{-1};       // operational ceiling on the bound; -1 disables (experiment E11)
+    int margin{0};     // reserve slack subtracted from the bound (gating study)
+    int hysteresis{0}; // admit only while available > hysteresis (0 = baseline)
 };
 
 // Discharge behavior variants for the gating study; defaults reproduce the
@@ -28,6 +29,8 @@ struct DischargeConfig {
     bool all_arms{false};              // reroute members on every arm, not just the escape arm
     bool allow_stalled_neighbor{false};// permit loops that start at a stalled neighbor (jam erosion)
     bool deterministic_cycle{false};   // least-loaded cycle choice instead of random draws
+    bool avail_weighted{false};        // pick the escape neighbor with the most admission slack (1-hop info)
+    double partial_stall{1.0};         // waiting-member fraction that marks an intersection stalled
 };
 
 [[nodiscard]] int scheduling_capacity(const Intersection& intersection, const IsolationConfig& config);
@@ -47,6 +50,7 @@ public:
         const std::vector<std::uint8_t>& deadlock_active;
         Planner& planner;
         std::mt19937_64& rng;
+        const std::vector<int>* available{nullptr};  // per-intersection admission slack (1-hop knowledge)
     };
     struct Event {
         IntersectionId intersection{-1};
