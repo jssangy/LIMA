@@ -567,11 +567,31 @@ bool Simulator::step() {
     if (config_.rotation_enabled) rotate_blocked_cycles();
 
     for (Agent& agent : agents_) {
-        if (agent.active && agent.position == agent.goal) {
+        if (!agent.active || agent.position != agent.goal) continue;
+        if (config_.goal_behavior == GoalBehavior::Disappear) {
             agent.active = false;
             ++stats_.completed;
             completion_steps_[static_cast<std::size_t>(agent.id)] = stats_.timestep;
             if (tracer_) tracer_->add_completion(agent.id);
+        } else if (config_.goal_behavior == GoalBehavior::Stay) {
+            if (!agent.reached) {
+                agent.reached = true;
+                ++stats_.completed;
+                completion_steps_[static_cast<std::size_t>(agent.id)] = stats_.timestep;
+                if (tracer_) tracer_->add_completion(agent.id);
+            }
+        } else {  // Lifelong: serve the task and draw the next goal
+            ++stats_.completed;
+            completion_steps_[static_cast<std::size_t>(agent.id)] = stats_.timestep;
+            if (tracer_) tracer_->add_completion(agent.id);
+            std::uniform_int_distribution<std::size_t> choose_goal(0, map_.goal_cells().size() - 1);
+            const CellId next_goal = map_.goal_cells()[choose_goal(rng_)];
+            if (next_goal == agent.position) continue;  // redraw on a later step
+            auto route = plan_global(agent.position, next_goal);
+            if (route.empty() || route.front() != agent.position || route.back() != next_goal) continue;
+            agent.goal = next_goal;
+            agent.route = std::move(route);
+            agent.route_cursor = 0;
         }
     }
     if (metrics_) metrics_->flush_step(stats_.timestep);

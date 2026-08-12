@@ -107,6 +107,13 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--rotation") options.sim.rotation_enabled = true;
         else if (arg == "--gate-resync") options.sim.gate_resync = true;
         else if (arg == "--subset-scheduling") options.sim.subset_scheduling = true;
+        else if (arg == "--goal-behavior") {
+            const auto name = value();
+            if (name == "disappear") options.sim.goal_behavior = lima::GoalBehavior::Disappear;
+            else if (name == "stay") options.sim.goal_behavior = lima::GoalBehavior::Stay;
+            else if (name == "lifelong") options.sim.goal_behavior = lima::GoalBehavior::Lifelong;
+            else throw std::invalid_argument("goal-behavior must be disappear, stay, or lifelong");
+        }
         else if (arg == "--metrics") options.sim.metrics_dir = std::string(value());
         else if (arg == "--trace-jsonl") options.sim.trace_path = std::string(value());
         else if (arg == "--bench-arms") {
@@ -182,6 +189,7 @@ bool has_non_default_config(const Options& options) {
         || options.sim.rotation_enabled
         || options.sim.gate_resync
         || options.sim.subset_scheduling
+        || options.sim.goal_behavior != lima::GoalBehavior::Disappear
         || !options.sim.discharge_enabled
         || options.sim.direct_routing
         || !options.sim.metrics_dir.empty()

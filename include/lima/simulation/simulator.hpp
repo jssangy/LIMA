@@ -27,6 +27,12 @@ struct SimulationStats {
     std::uint64_t detected_deadlocks{};
 };
 
+enum class GoalBehavior : std::uint8_t {
+    Disappear,  // paper default: exit process, agent leaves the system
+    Stay,       // agent parks on its goal and becomes an obstacle (E8)
+    Lifelong,   // agent immediately receives a fresh goal (E9 task stream)
+};
+
 // Composition of the pluggable pieces.  Defaults reproduce the shipped
 // behavior exactly; every knob exists for a specific revision experiment.
 struct SimulatorConfig {
@@ -49,6 +55,7 @@ struct SimulatorConfig {
     // solvability bound, solve for the innermost bound-many agents per arm and
     // treat deeper cells as walls.  Uses only zone-local occupancy.
     bool subset_scheduling{false};
+    GoalBehavior goal_behavior{GoalBehavior::Disappear};
     bool direct_routing{false};   // skip the highway-alignment (DoR-style) global router
     std::string metrics_dir;      // W1 instrumentation output; empty = disabled
     std::string trace_path;       // JSONL step trace for the debug harness; empty = disabled
@@ -65,7 +72,9 @@ public:
               std::span<const std::vector<Coord>> preset_routes = {});
 
     [[nodiscard]] bool step();
-    [[nodiscard]] bool done() const noexcept { return stats_.completed == agents_.size(); }
+    [[nodiscard]] bool done() const noexcept {
+        return config_.goal_behavior != GoalBehavior::Lifelong && stats_.completed == agents_.size();
+    }
     [[nodiscard]] const SimulationStats& stats() const noexcept { return stats_; }
     [[nodiscard]] const GridMap& map() const noexcept { return map_; }
     [[nodiscard]] const std::vector<Agent>& agents() const noexcept { return agents_; }

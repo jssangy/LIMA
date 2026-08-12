@@ -30,6 +30,7 @@ struct Agent {
     WaitReason wait_reason{WaitReason::None};
     std::uint64_t moves{};
     bool active{true};
+    bool reached{false};  // stay-at-goal mode: first arrival already counted
 
     [[nodiscard]] CellId intended_cell() const noexcept {
         return route_cursor + 1 < route.size() ? route[route_cursor + 1] : position;
