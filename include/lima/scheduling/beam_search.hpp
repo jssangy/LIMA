@@ -7,15 +7,16 @@
 
 namespace lima {
 
-struct IdaStarOptions {
-    std::size_t max_iterations{1'000'000};
-    bool deterministic_move{true};
+struct BeamSearchOptions {
+    std::size_t beam_width{2'048};
+    std::size_t max_depth{512};
+    std::size_t max_expanded_nodes{1'000'000};
 };
 
 // Stack entries are target stack indices and are ordered bottom-to-top.
-std::vector<StackMove> solve_stack_rearrangement(
+std::vector<StackMove> solve_stack_rearrangement_beam(
     const std::vector<std::vector<int>>& stacks,
     const std::vector<int>& capacities,
-    IdaStarOptions options = {});
+    BeamSearchOptions options = {});
 
 }  // namespace lima

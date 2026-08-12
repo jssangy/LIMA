@@ -29,6 +29,10 @@ public:
     }
     [[nodiscard]] std::span<const CellId> frame(std::size_t timestep) const;
     [[nodiscard]] std::span<const CellId> goal_frame(std::size_t timestep) const;
+    [[nodiscard]] bool active(std::size_t timestep, std::size_t agent) const noexcept {
+        const std::size_t index = timestep * agent_count() + agent;
+        return index >= active_configurations_.size() || active_configurations_[index] != 0;
+    }
     [[nodiscard]] const std::vector<CellId>& starts() const noexcept { return starts_; }
     [[nodiscard]] const std::vector<CellId>& goals() const noexcept { return goals_; }
     [[nodiscard]] const std::string& map_file() const noexcept { return map_file_; }
@@ -46,6 +50,7 @@ private:
     std::vector<CellId> starts_;
     std::vector<CellId> goals_;
     std::vector<CellId> configurations_;
+    std::vector<std::uint8_t> active_configurations_;
     std::vector<CellId> goal_configurations_;
     std::vector<std::uint64_t> task_counts_;
     std::vector<bool> previous_active_;

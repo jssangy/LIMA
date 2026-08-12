@@ -5,6 +5,8 @@ LIMA simulates multiple AMRs on grid maps and schedules their movements through 
 Global routes are generated with BFS or A*. Outside managed intersection regions, AMRs use PIBT
 (priority inheritance with backtracking) to select collision-free moves for the next timestep.
 Inside managed intersections, the intersection scheduler remains authoritative and PIBT is not used.
+Intersection stack rearrangement uses bounded Beam Search, keeping scheduling latency predictable as
+the number of AMRs in an intersection grows.
 Temporary PIBT deviations preserve the global route and rejoin it at a future route cell.
 An unscheduled AMR leaving a managed intersection participates only as a high-priority boundary-exit
 root, allowing an outside blocker to inherit its priority and move out of the way.
@@ -64,14 +66,42 @@ Specify a seed to reproduce the same randomly generated tasks.
 
 When `--seed` is omitted, LIMA generates a new seed for each run.
 
-Maps without `S` or `G` cells are also supported in random mode. In that case,
-goal positions are sampled from traversable cells outside managed intersection regions.
+### Map endpoints and completion
+
+Map endpoint markers determine how random goals and completed AMRs are handled:
+
+- `S` is a shared sink. If a map contains any `S` cells, random goals are selected only from those
+  cells. Multiple AMRs may target the same sink, and an AMR is removed from the simulation as soon as
+  it enters its sink.
+- `G` is a persistent goal when the map has no `S` cells. Completed AMRs remain on these cells and
+  continue to occupy them.
+- If a map has neither `S` nor `G`, random goals are sampled from traversable cells outside managed
+  intersection regions. These goals are also persistent.
+
+Random starts are unique and never placed on an `S` or `G` cell. Sink removal is recorded in solution
+traces, so removed AMRs also disappear when the result is replayed.
+
+For example, run the single-intersection warehouse with 12 AMRs as follows:
+
+```bash
+./build/lima \
+  --mode realtime \
+  --map data/maps/warehouse_1.map \
+  --agents 12 \
+  --planner bfs \
+  --seed 7 \
+  --max-steps 1000 \
+  --fps 30
+```
 
 ## Lifelong mode
 
 One-shot workloads are the default. Use `--workload lifelong` to assign a new random goal whenever
 an AMR completes its current task. The AMR population remains fixed and the run continues until
 `--max-steps` is reached.
+
+Lifelong workloads are intended for maps without `S` sinks. On an `S` map, reaching a sink always
+removes the AMR instead of assigning another task.
 
 ```bash
 ./build/lima \
@@ -95,8 +125,20 @@ latency. Lifelong runs that reach `--max-steps` finish with `status=horizon_reac
 
 ## Scenario mode
 
-Use `--scenario` to load tasks from a MovingAI scenario instead of generating random tasks. `--agents` controls how many tasks are read from the beginning of the scenario.
-Because AMRs remain in the simulation, the selected initial scenario tasks must have unique goals.
+Use `--scenario` to load tasks from a MovingAI scenario instead of generating random tasks. `--agents`
+controls how many tasks are read from the beginning of the scenario. On a map containing `S` cells,
+every scenario goal must be an `S` cell, but goals may be shared because AMRs disappear at the sink.
+On maps without `S` cells, selected tasks must have unique persistent goals.
+
+The following reproducible commands exercise Beam Search on the small single-intersection maps:
+
+```bash
+./build/lima --mode solve --map data/maps/cross_1.map \
+  --agents 15 --seed 7 --validate-conflicts
+
+./build/lima --mode solve --map data/maps/warehouse_1.map \
+  --agents 12 --seed 7 --validate-conflicts
+```
 
 ```bash
 ./build/lima \
@@ -189,9 +231,10 @@ Full debug logs can be large for dense maps; use debug mode only when diagnosing
 
 ## Replay mode
 
-Replay a saved solution without running the planner or scheduler again. Lifelong solution files
-also store the assigned goal of every AMR at every timestep, so goal markers and goal lines follow
-task changes during replay.
+Replay a saved solution without running the planner or scheduler again. Solution files store whether
+each AMR is active at every timestep, so AMRs removed at an `S` sink remain hidden during replay.
+Lifelong solution files also store the assigned goal of every AMR at every timestep, allowing goal
+markers and goal lines to follow task changes.
 
 ```bash
 ./build/lima \

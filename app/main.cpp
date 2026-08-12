@@ -128,6 +128,7 @@ int main(int argc, char** argv) {
             : lima::load_scenario(options.scenario, options.agents);
         if (tasks.empty()) throw std::runtime_error("no tasks were loaded");
         if (options.workload == lima::WorkloadMode::Lifelong && options.scenario.empty()
+            && map.sink_cells().empty()
             && lima::make_goal_candidates(map).size() <= tasks.size()) {
             throw std::runtime_error(
                 "lifelong random mode requires more goal candidates than agents");

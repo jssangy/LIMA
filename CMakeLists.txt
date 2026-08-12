@@ -18,7 +18,7 @@ add_library(lima_core
     src/intersection/topology.cpp
     src/intersection/deadlock_detector.cpp
     src/intersection/coordinator.cpp
-    src/scheduling/ida_star.cpp
+    src/scheduling/beam_search.cpp
     src/simulation/goal_allocator.cpp
     src/simulation/pibt_resolver.cpp
     src/simulation/simulator.cpp

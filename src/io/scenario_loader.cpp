@@ -33,7 +33,10 @@ std::vector<Task> load_scenario(const std::filesystem::path& path, const std::si
 }
 
 std::vector<CellId> make_goal_candidates(const GridMap& map) {
-    std::vector<CellId> goal_candidates = map.goal_cells();
+    // S cells are shared exits: many AMRs may target the same cell because an
+    // AMR is removed as soon as it enters. G cells remain persistent goals.
+    std::vector<CellId> goal_candidates = map.sink_cells().empty()
+        ? map.goal_cells() : map.sink_cells();
     if (goal_candidates.empty()) {
         const IntersectionTopology topology = IntersectionTopology::build(map);
         goal_candidates.reserve(map.traversable_cells().size());
@@ -56,7 +59,8 @@ std::vector<CellId> make_goal_candidates(const GridMap& map) {
 
 std::vector<Task> make_random_tasks(const GridMap& map, const std::size_t count, const std::uint64_t seed) {
     std::vector<CellId> goal_candidates = make_goal_candidates(map);
-    if (count > goal_candidates.size())
+    const bool shared_sinks = !map.sink_cells().empty();
+    if (!shared_sinks && count > goal_candidates.size())
         throw std::runtime_error("persistent AMRs require at least one unique goal cell per agent");
 
     std::vector<CellId> starts;
@@ -75,15 +79,16 @@ std::vector<Task> make_random_tasks(const GridMap& map, const std::size_t count,
     std::vector<Task> tasks;
     tasks.reserve(count);
     for (std::size_t i = 0; i < count; ++i) {
-        if (goal_candidates[i] == starts[i]) {
+        const std::size_t goal_index = shared_sinks ? i % goal_candidates.size() : i;
+        if (goal_candidates[goal_index] == starts[i]) {
             const auto replacement = std::find_if(
-                goal_candidates.begin() + static_cast<std::ptrdiff_t>(i + 1), goal_candidates.end(),
+                goal_candidates.begin() + static_cast<std::ptrdiff_t>(goal_index + 1), goal_candidates.end(),
                 [&](const CellId candidate) { return candidate != starts[i]; });
             if (replacement == goal_candidates.end())
                 throw std::runtime_error("random mode cannot choose a unique goal different from its start");
-            std::iter_swap(goal_candidates.begin() + static_cast<std::ptrdiff_t>(i), replacement);
+            std::iter_swap(goal_candidates.begin() + static_cast<std::ptrdiff_t>(goal_index), replacement);
         }
-        tasks.push_back({map.coord(starts[i]), map.coord(goal_candidates[i])});
+        tasks.push_back({map.coord(starts[i]), map.coord(goal_candidates[goal_index])});
     }
     return tasks;
 }

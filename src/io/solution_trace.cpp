@@ -63,7 +63,10 @@ void SolutionTrace::append(const std::span<const Agent> agents) {
     const bool has_previous = frame_count() > 0;
     const auto previous = has_previous ? frame(frame_count() - 1) : std::span<const CellId>{};
     current_frame_.clear();
-    for (const Agent& agent : agents) current_frame_.push_back(agent.position);
+    for (const Agent& agent : agents) {
+        current_frame_.push_back(agent.position);
+        active_configurations_.push_back(agent.active ? 1 : 0);
+    }
     if (lifelong_) {
         for (const Agent& agent : agents) goal_configurations_.push_back(agent.goal);
         std::uint64_t tasks_completed = 0;
@@ -178,6 +181,13 @@ void SolutionTrace::save(const std::filesystem::path& path, const GridMap& map, 
             output << '\n';
         }
     }
+    output << "active_solution=\n";
+    for (std::size_t timestep = 0; timestep < frame_count(); ++timestep) {
+        output << timestep << ':';
+        for (std::size_t agent = 0; agent < agent_count(); ++agent)
+            output << (active(timestep, agent) ? 1 : 0) << ',';
+        output << '\n';
+    }
     output << "solution=\n";
     for (std::size_t timestep = 0; timestep < frame_count(); ++timestep) {
         output << timestep << ':';
@@ -196,6 +206,7 @@ SolutionTrace SolutionTrace::load(const std::filesystem::path& path, const GridM
     std::size_t declared_agents = 0;
     bool reading_solution = false;
     bool reading_goals = false;
+    bool reading_active = false;
     std::string line;
     while (std::getline(input, line)) {
         if (line.starts_with("agents=")) declared_agents = std::stoull(line.substr(7));
@@ -216,10 +227,17 @@ SolutionTrace SolutionTrace::load(const std::filesystem::path& path, const GridM
         else if (line == "goal_solution=") {
             reading_goals = true;
             reading_solution = false;
+            reading_active = false;
+        }
+        else if (line == "active_solution=") {
+            reading_active = true;
+            reading_goals = false;
+            reading_solution = false;
         }
         else if (line == "solution=") {
             reading_solution = true;
             reading_goals = false;
+            reading_active = false;
         }
         else if (reading_goals && !line.empty()) {
             const std::size_t colon = line.find(':');
@@ -227,6 +245,24 @@ SolutionTrace SolutionTrace::load(const std::filesystem::path& path, const GridM
             auto cells = to_cells(parse_coordinates(std::string_view(line).substr(colon + 1)), map);
             if (cells.size() != declared_agents) throw std::runtime_error("goal frame agent count mismatch");
             trace.goal_configurations_.insert(trace.goal_configurations_.end(), cells.begin(), cells.end());
+        }
+        else if (reading_active && !line.empty()) {
+            const std::size_t colon = line.find(':');
+            if (colon == std::string::npos) throw std::runtime_error("malformed active frame");
+            std::size_t cursor = colon + 1;
+            std::size_t count = 0;
+            while (cursor < line.size()) {
+                const std::size_t comma = line.find(',', cursor);
+                if (comma == std::string::npos) break;
+                if (comma != cursor) {
+                    const int value = std::stoi(line.substr(cursor, comma - cursor));
+                    if (value != 0 && value != 1) throw std::runtime_error("invalid active frame value");
+                    trace.active_configurations_.push_back(static_cast<std::uint8_t>(value));
+                    ++count;
+                }
+                cursor = comma + 1;
+            }
+            if (count != declared_agents) throw std::runtime_error("active frame agent count mismatch");
         }
         else if (reading_solution && !line.empty()) {
             const std::size_t colon = line.find(':');
@@ -245,6 +281,9 @@ SolutionTrace SolutionTrace::load(const std::filesystem::path& path, const GridM
         throw std::runtime_error("solution goal frame count mismatch");
     if (!trace.task_counts_.empty() && trace.task_counts_.size() != trace.frame_count())
         throw std::runtime_error("solution task count frame mismatch");
+    if (!trace.active_configurations_.empty()
+        && trace.active_configurations_.size() != trace.configurations_.size())
+        throw std::runtime_error("solution active frame count mismatch");
     return trace;
 }
 

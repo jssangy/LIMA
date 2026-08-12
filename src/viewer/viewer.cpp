@@ -315,6 +315,7 @@ int run_viewer_impl(Simulator* simulator, const GridMap& map, const SolutionTrac
                 ? std::clamp(accumulator / interval, 0.0, 1.0) : 0.0;
             if (show_goal_lines) {
                 for (std::size_t i = 0; i < replay->agent_count(); ++i) {
+                    if (!replay->active(replay_cursor, i)) continue;
                     if (positions[i] == goals[i]) continue;
                     const Coord from = map.coord(positions[i]);
                     const Coord to = map.coord(next_positions[i]);
@@ -324,8 +325,9 @@ int run_viewer_impl(Simulator* simulator, const GridMap& map, const SolutionTrac
                 }
             }
             for (std::size_t i = 0; i < replay->agent_count(); ++i)
-                draw_goal(static_cast<AgentId>(i), goals[i]);
+                if (replay->active(replay_cursor, i)) draw_goal(static_cast<AgentId>(i), goals[i]);
             for (std::size_t i = 0; i < replay->agent_count(); ++i) {
+                if (!replay->active(replay_cursor, i)) continue;
                 const Coord from = map.coord(positions[i]);
                 const Coord to = map.coord(next_positions[i]);
                 const double x = static_cast<double>(from.x) + (to.x - from.x) * raw_alpha;
@@ -339,8 +341,9 @@ int run_viewer_impl(Simulator* simulator, const GridMap& map, const SolutionTrac
                     draw_goal_line(agent.id, position.x, position.y, agent.goal);
                 }
             }
-            for (const Agent& agent : simulator->agents()) draw_goal(agent.id, agent.goal);
-            for (const Agent& agent : simulator->agents()) {
+            for (const Agent& agent : simulator->agents())
+                if (agent.active) draw_goal(agent.id, agent.goal);
+            for (const Agent& agent : simulator->agents()) if (agent.active) {
                 const Coord position = map.coord(agent.position);
                 draw_agent_at(agent.id, position.x, position.y, agent.scheduled());
             }
@@ -370,7 +373,8 @@ int run_viewer_impl(Simulator* simulator, const GridMap& map, const SolutionTrac
             lifelong = replay->lifelong();
             if (lifelong) completed = replay->tasks_completed(replay_cursor);
             else for (std::size_t i = 0; i < total_agents; ++i)
-                completed += positions[i] == replay->goals()[i] ? 1 : 0;
+                completed += !replay->active(replay_cursor, i)
+                    || positions[i] == replay->goals()[i] ? 1 : 0;
         } else {
             lifelong = simulator->lifelong();
             completed = lifelong ? simulator->stats().completed_tasks : simulator->stats().completed;

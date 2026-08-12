@@ -34,6 +34,7 @@ GridMap GridMap::load(const std::filesystem::path& path) {
             map.blocked_[static_cast<std::size_t>(id)] = free ? 0 : 1;
             if (free) map.free_cells_.push_back(id);
             if (value == 'S' || value == 'G') map.goals_.push_back(id);
+            if (value == 'S') map.sinks_.push_back(id);
         }
     }
 

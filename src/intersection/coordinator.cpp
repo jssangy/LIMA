@@ -1,6 +1,6 @@
 #include "lima/intersection/coordinator.hpp"
 
-#include "lima/scheduling/ida_star.hpp"
+#include "lima/scheduling/beam_search.hpp"
 
 #include <algorithm>
 #include <array>
@@ -224,7 +224,7 @@ std::optional<std::vector<ScheduledPath>> IntersectionCoordinator::schedule(
 
     std::vector<StackMove> actions;
     try {
-        actions = solve_stack_rearrangement(solver_stacks, capacities);
+        actions = solve_stack_rearrangement_beam(solver_stacks, capacities);
     } catch (const std::exception&) {
         return std::nullopt;
     }

@@ -18,6 +18,12 @@ std::size_t scheduling_capacity(const Intersection& intersection) {
         total += arm.size();
         longest = std::max(longest, arm.size());
     }
+    const bool isolated = std::none_of(
+        intersection.neighbors.begin(), intersection.neighbors.end(),
+        [](const IntersectionId neighbor) { return neighbor >= 0; });
+    // With no downstream intersection there is no neighbor-discharge space
+    // to reserve. All arm slots can safely participate in the local schedule.
+    if (isolated) return total;
     return total - longest;
 }
 
@@ -82,7 +88,8 @@ std::optional<std::array<int, 4>> predict_final_stack_lengths(
 Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const PlannerKind planner_kind,
                      const std::uint64_t seed, const WorkloadMode workload)
     : map_(std::move(map)), rng_(seed), planner_(make_planner(planner_kind, map_, rng_)),
-      topology_(IntersectionTopology::build(map_)), workload_(workload), pibt_(map_, seed) {
+      topology_(IntersectionTopology::build(map_)), workload_(workload),
+      despawn_at_goal_(!map_.sink_cells().empty()), pibt_(map_, seed) {
     agents_.reserve(tasks.size());
     std::unordered_set<CellId> occupied;
     std::unordered_set<CellId> assigned_goals;
@@ -90,8 +97,11 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
         const CellId start = map_.in_bounds(tasks[i].start) ? map_.cell(tasks[i].start) : kInvalidCell;
         const CellId goal = map_.in_bounds(tasks[i].goal) ? map_.cell(tasks[i].goal) : kInvalidCell;
         if (!map_.traversable(start) || !map_.traversable(goal)) throw std::runtime_error("task endpoint is not traversable");
+        if (despawn_at_goal_
+            && std::find(map_.sink_cells().begin(), map_.sink_cells().end(), goal) == map_.sink_cells().end())
+            throw std::runtime_error("maps with S cells require every task goal to be an S cell");
         if (!occupied.insert(start).second) throw std::runtime_error("duplicate task start position");
-        if (!assigned_goals.insert(goal).second)
+        if (!despawn_at_goal_ && !assigned_goals.insert(goal).second)
             throw std::runtime_error("persistent AMRs require unique task goal positions");
         auto route = plan_global(start, goal);
         if (route.empty() || route.front() != start || route.back() != goal) throw std::runtime_error("task has no route");
@@ -102,6 +112,7 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
         agent.route = std::move(route);
         agent.completed = start == goal;
         if (agent.completed) {
+            if (despawn_at_goal_) agent.active = false;
             if (workload_ == WorkloadMode::OneShot) ++stats_.completed;
             else {
                 agent.awaiting_goal = true;
@@ -158,7 +169,7 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
     pibt_next_.resize(agents_.size(), kInvalidCell);
     candidates_.reserve(intersection_count);
     pending_.reserve(intersection_count);
-    if (workload_ == WorkloadMode::Lifelong) {
+    if (workload_ == WorkloadMode::Lifelong && !despawn_at_goal_) {
         constexpr std::uint64_t task_seed_salt = 0x9e3779b97f4a7c15ULL;
         goal_allocator_ = std::make_unique<GoalAllocator>(map_, agents_, seed ^ task_seed_salt);
         assign_lifelong_goals();
@@ -858,12 +869,17 @@ bool Simulator::step() {
         for (Agent& agent : agents_) {
             if (!agent.active || agent.awaiting_goal || agent.position != agent.goal) continue;
             agent.completed = true;
-            agent.awaiting_goal = true;
+            agent.awaiting_goal = !despawn_at_goal_;
+            if (despawn_at_goal_) {
+                agent.active = false;
+                agent.scheduling_remaining = 0;
+                agent.schedule_group = kNoGroup;
+            }
             ++agent.tasks_completed;
             ++stats_.completed_tasks;
             stats_.total_task_latency += stats_.timestep - agent.task_started_timestep;
         }
-        assign_lifelong_goals();
+        if (!despawn_at_goal_) assign_lifelong_goals();
     } else {
         for (Agent& agent : agents_) {
             if (!agent.active) continue;
@@ -871,6 +887,11 @@ bool Simulator::step() {
             if (at_goal && !agent.completed) {
                 agent.completed = true;
                 ++stats_.completed;
+                if (despawn_at_goal_) {
+                    agent.active = false;
+                    agent.scheduling_remaining = 0;
+                    agent.schedule_group = kNoGroup;
+                }
             } else if (!at_goal && agent.completed) {
                 agent.completed = false;
                 --stats_.completed;

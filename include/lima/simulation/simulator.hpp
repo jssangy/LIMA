@@ -71,6 +71,7 @@ private:
     IntersectionTopology topology_;
     std::vector<Agent> agents_;
     WorkloadMode workload_{WorkloadMode::OneShot};
+    bool despawn_at_goal_{};
     std::unique_ptr<GoalAllocator> goal_allocator_;
     IntersectionCoordinator coordinator_;
     std::vector<IntersectionId> deadlock_queue_;
