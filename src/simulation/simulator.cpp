@@ -75,7 +75,7 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
     : map_(std::move(map)), config_(std::move(config)), rng_(seed),
       planner_(make_planner(planner_kind, map_, rng_)),
       topology_(IntersectionTopology::build(map_)),
-      solver_(make_solver(config_.solver)), coordinator_(*solver_) {
+      solver_(make_solver(config_.solver)), coordinator_(*solver_), discharge_(config_.discharge) {
     agents_.reserve(tasks.size());
     std::unordered_set<CellId> occupied;
     for (std::size_t i = 0; i < tasks.size(); ++i) {
@@ -256,8 +256,8 @@ void Simulator::move_agent(Agent& agent) {
 
 bool Simulator::step() {
     if (done()) return false;
-    const bool all_stalled = std::all_of(agents_.begin(), agents_.end(), [](const Agent& agent) {
-        return !agent.active || agent.wait_steps >= 10;
+    const bool all_stalled = std::all_of(agents_.begin(), agents_.end(), [&](const Agent& agent) {
+        return !agent.active || agent.wait_steps >= config_.stall_threshold;
     });
     if (all_stalled) return false;
     ++stats_.timestep;
@@ -285,6 +285,15 @@ bool Simulator::step() {
             });
         }
         check_[iid] = check_[iid] || stalled_[iid] || deadlock_waiting_[iid];
+    }
+    if (config_.gate_resync) {
+        // Ground-truth admission budget.  Quota reservations made below will
+        // re-debit within the same step, so reservations survive while the
+        // leaked (never-repaid) exit credits are restored.
+        for (std::size_t iid = 0; iid < intersection_count; ++iid) {
+            intersection_available_[iid] = intersection_capacity_[iid]
+                - static_cast<int>(inside_counts_[iid]);
+        }
     }
 
     bool queue_changed = false;
@@ -479,6 +488,8 @@ bool Simulator::step() {
         occupancy_[static_cast<std::size_t>(agent.position)] = agent.id;
     }
 
+    if (config_.rotation_enabled) rotate_blocked_cycles();
+
     for (Agent& agent : agents_) {
         if (agent.active && agent.position == agent.goal) {
             agent.active = false;
@@ -490,6 +501,52 @@ bool Simulator::step() {
     if (metrics_) metrics_->flush_step(stats_.timestep);
     if (tracer_) tracer_->flush_step(stats_.timestep, agents_);
     return true;
+}
+
+void Simulator::rotate_blocked_cycles() {
+    std::vector<std::uint8_t> visited(agents_.size(), 0);
+    std::vector<AgentId> chain;
+    for (const Agent& seed : agents_) {
+        if (!seed.active || seed.scheduled() || seed.wait_steps == 0) continue;
+        if (visited[static_cast<std::size_t>(seed.id)]) continue;
+        chain.clear();
+        AgentId current = seed.id;
+        std::size_t cycle_start = chain.max_size();
+        while (true) {
+            const Agent& agent = agents_[static_cast<std::size_t>(current)];
+            if (visited[static_cast<std::size_t>(current)]) {
+                const auto found = std::find(chain.begin(), chain.end(), current);
+                if (found != chain.end()) cycle_start = static_cast<std::size_t>(found - chain.begin());
+                break;
+            }
+            visited[static_cast<std::size_t>(current)] = 1;
+            chain.push_back(current);
+            // Only unscheduled agents that waited this step participate.
+            if (!agent.active || agent.scheduled() || agent.wait_steps == 0) break;
+            const CellId next = agent.intended_cell();
+            if (next == agent.position) break;
+            const AgentId occupant = occupancy_[static_cast<std::size_t>(next)];
+            if (occupant == kNoAgent) break;
+            current = occupant;
+        }
+        if (cycle_start == chain.max_size()) continue;
+        const std::size_t length = chain.size() - cycle_start;
+        if (length < 3) continue;  // a 2-cycle would be a forbidden swap
+        // Cyclic permutation: every member steps into the cell its successor
+        // vacates in the same timestep.
+        for (std::size_t k = cycle_start; k < chain.size(); ++k) {
+            Agent& agent = agents_[static_cast<std::size_t>(chain[k])];
+            const CellId previous = agent.position;
+            update_available_on_move(previous, agent.intended_cell());
+            count_zone_entries(previous, agent.intended_cell());
+            occupancy_[static_cast<std::size_t>(previous)] = kNoAgent;
+            move_agent(agent);
+        }
+        for (std::size_t k = cycle_start; k < chain.size(); ++k) {
+            const Agent& agent = agents_[static_cast<std::size_t>(chain[k])];
+            occupancy_[static_cast<std::size_t>(agent.position)] = agent.id;
+        }
+    }
 }
 
 std::string Simulator::check_invariants() const {

@@ -18,7 +18,16 @@ enum class CapacityFormula : std::uint8_t { SumMinusMax, SumMinusMaxPlusOne };
 
 struct IsolationConfig {
     CapacityFormula formula{CapacityFormula::SumMinusMax};
-    int cap{-1};  // operational ceiling on the bound; -1 disables (experiment E11)
+    int cap{-1};     // operational ceiling on the bound; -1 disables (experiment E11)
+    int margin{0};   // reserve slack subtracted from the bound (gating study)
+};
+
+// Discharge behavior variants for the gating study; defaults reproduce the
+// shipped recirculation policy exactly.
+struct DischargeConfig {
+    bool all_arms{false};              // reroute members on every arm, not just the escape arm
+    bool allow_stalled_neighbor{false};// permit loops that start at a stalled neighbor (jam erosion)
+    bool deterministic_cycle{false};   // least-loaded cycle choice instead of random draws
 };
 
 [[nodiscard]] int scheduling_capacity(const Intersection& intersection, const IsolationConfig& config);
@@ -28,6 +37,8 @@ struct IsolationConfig {
 // neighboring intersections and rejoin their original route afterwards.
 class RecirculationDischarge {
 public:
+    RecirculationDischarge() = default;
+    explicit RecirculationDischarge(DischargeConfig config) : config_(config) {}
     struct Context {
         const IntersectionTopology& topology;
         std::span<Agent> agents;
@@ -45,6 +56,9 @@ public:
     };
 
     [[nodiscard]] std::vector<Event> run(const Context& context) const;
+
+private:
+    DischargeConfig config_{};
 };
 
 }  // namespace lima

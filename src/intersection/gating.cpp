@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 
 namespace lima {
 
@@ -14,6 +15,7 @@ int scheduling_capacity(const Intersection& intersection, const IsolationConfig&
     }
     int capacity = static_cast<int>(total - longest);
     if (config.formula == CapacityFormula::SumMinusMaxPlusOne) ++capacity;
+    capacity = std::max(0, capacity - config.margin);
     if (config.cap >= 0) capacity = std::min(capacity, config.cap);
     return capacity;
 }
@@ -35,7 +37,8 @@ std::vector<RecirculationDischarge::Event> RecirculationDischarge::run(const Con
         std::vector<CycleCandidate> candidates;
         for (std::size_t d = 0; d < 4; ++d) {
             const IntersectionId b = source.neighbors[d];
-            if (b < 0 || context.stalled[static_cast<std::size_t>(b)] || active(b)) continue;
+            if (b < 0 || active(b)) continue;
+            if (context.stalled[static_cast<std::size_t>(b)] && !config_.allow_stalled_neighbor) continue;
             const Intersection& bi = intersections[static_cast<std::size_t>(b)];
             std::vector<IntersectionId> around_b;
             for (const IntersectionId neighbor : bi.neighbors)
@@ -58,12 +61,36 @@ std::vector<RecirculationDischarge::Event> RecirculationDischarge::run(const Con
             if (!candidate.cycles.empty()) candidates.push_back(std::move(candidate));
         }
         if (candidates.empty()) continue;
-        std::uniform_int_distribution<std::size_t> choose_candidate(0, candidates.size() - 1);
-        CycleCandidate& selected = candidates[choose_candidate(context.rng)];
-        std::uniform_int_distribution<std::size_t> choose_cycle(0, selected.cycles.size() - 1);
-        std::array<IntersectionId, 4> cycle = selected.cycles[choose_cycle(context.rng)];
-        std::bernoulli_distribution reverse_cycle(0.5);
-        if (reverse_cycle(context.rng)) std::swap(cycle[1], cycle[3]);
+        std::size_t candidate_index = 0;
+        std::size_t cycle_index = 0;
+        bool reversed = false;
+        if (config_.deterministic_cycle) {
+            // Least-loaded choice: prefer the cycle whose member intersections
+            // currently hold the fewest agents, breaking ties by index.
+            std::size_t best_load = std::numeric_limits<std::size_t>::max();
+            for (std::size_t ci = 0; ci < candidates.size(); ++ci) {
+                for (std::size_t ki = 0; ki < candidates[ci].cycles.size(); ++ki) {
+                    std::size_t load = 0;
+                    for (const IntersectionId node : candidates[ci].cycles[ki])
+                        load += context.members[static_cast<std::size_t>(node)].size();
+                    if (load < best_load) {
+                        best_load = load;
+                        candidate_index = ci;
+                        cycle_index = ki;
+                    }
+                }
+            }
+        } else {
+            std::uniform_int_distribution<std::size_t> choose_candidate(0, candidates.size() - 1);
+            candidate_index = choose_candidate(context.rng);
+            std::uniform_int_distribution<std::size_t> choose_cycle(0, candidates[candidate_index].cycles.size() - 1);
+            cycle_index = choose_cycle(context.rng);
+            std::bernoulli_distribution reverse_cycle(0.5);
+            reversed = reverse_cycle(context.rng);
+        }
+        CycleCandidate& selected = candidates[candidate_index];
+        std::array<IntersectionId, 4> cycle = selected.cycles[cycle_index];
+        if (reversed) std::swap(cycle[1], cycle[3]);
         const std::size_t source_direction = selected.direction;
 
         Event event;
@@ -72,7 +99,7 @@ std::vector<RecirculationDischarge::Event> RecirculationDischarge::run(const Con
         for (const AgentId id : context.members[source_index]) {
             Agent& agent = context.agents[static_cast<std::size_t>(id)];
             if (!agent.active || agent.scheduled()) continue;
-            if (agent.position != source.center
+            if (!config_.all_arms && agent.position != source.center
                 && std::find(escape_arm.begin(), escape_arm.end(), agent.position) == escape_arm.end()) continue;
             const CellId first_center = intersections[static_cast<std::size_t>(cycle[0])].center;
             if (std::find(agent.route.begin() + static_cast<std::ptrdiff_t>(agent.route_cursor),

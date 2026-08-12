@@ -32,7 +32,19 @@ struct SimulationStats {
 struct SimulatorConfig {
     SolverConfig solver{};
     IsolationConfig isolation{};
+    DischargeConfig discharge{};
+    std::uint32_t stall_threshold{10};  // all-active-waiting steps before the run is declared stalled
     bool discharge_enabled{true};
+    // Gridlock rotation: when blocked agents form a closed mutual-wait cycle
+    // spanning intersections (each one's next cell held by the next agent),
+    // advance the whole ring one step simultaneously.  Length >= 3 only, so
+    // the no-swap constraint is preserved; the move set is a cyclic
+    // permutation, so it is vertex- and edge-conflict free by construction.
+    bool rotation_enabled{false};
+    // Availability resync: recompute each intersection's admission budget
+    // from actual occupancy every step, fixing the credit leak that scheduled
+    // exits never repay (M10 root cause candidate).
+    bool gate_resync{false};
     bool direct_routing{false};   // skip the highway-alignment (DoR-style) global router
     std::string metrics_dir;      // W1 instrumentation output; empty = disabled
     std::string trace_path;       // JSONL step trace for the debug harness; empty = disabled
@@ -111,6 +123,7 @@ private:
     void insert_scheduled_path(Agent& agent, const ScheduledPath& scheduled, IntersectionId intersection);
     void move_agent(Agent& agent);
     void count_zone_entries(CellId current, CellId next);
+    void rotate_blocked_cycles();
     std::vector<CellId> plan_global(CellId start, CellId goal);
 };
 

@@ -74,7 +74,14 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--no-fastpath") options.sim.solver.greedy_fastpath = false;
         else if (arg == "--solver-max-capacity") options.sim.solver.max_capacity = std::stoi(std::string(value()));
         else if (arg == "--isolation-cap") options.sim.isolation.cap = std::stoi(std::string(value()));
+        else if (arg == "--isolation-margin") options.sim.isolation.margin = std::stoi(std::string(value()));
+        else if (arg == "--stall-threshold") options.sim.stall_threshold = static_cast<std::uint32_t>(std::stoul(std::string(value())));
+        else if (arg == "--discharge-all-arms") options.sim.discharge.all_arms = true;
+        else if (arg == "--discharge-stalled-neighbor") options.sim.discharge.allow_stalled_neighbor = true;
+        else if (arg == "--discharge-deterministic") options.sim.discharge.deterministic_cycle = true;
         else if (arg == "--no-discharge") options.sim.discharge_enabled = false;
+        else if (arg == "--rotation") options.sim.rotation_enabled = true;
+        else if (arg == "--gate-resync") options.sim.gate_resync = true;
         else if (arg == "--metrics") options.sim.metrics_dir = std::string(value());
         else if (arg == "--trace-jsonl") options.sim.trace_path = std::string(value());
         else if (arg == "--bench-arms") {
@@ -139,6 +146,13 @@ bool has_non_default_config(const Options& options) {
         || options.sim.solver.max_capacity != defaults.max_capacity
         || options.sim.isolation.formula != lima::CapacityFormula::SumMinusMax
         || options.sim.isolation.cap >= 0
+        || options.sim.isolation.margin != 0
+        || options.sim.stall_threshold != 10
+        || options.sim.discharge.all_arms
+        || options.sim.discharge.allow_stalled_neighbor
+        || options.sim.discharge.deterministic_cycle
+        || options.sim.rotation_enabled
+        || options.sim.gate_resync
         || !options.sim.discharge_enabled
         || options.sim.direct_routing
         || !options.sim.metrics_dir.empty()
