@@ -51,6 +51,10 @@ public:
         Planner& planner;
         std::mt19937_64& rng;
         const std::vector<int>* available{nullptr};  // per-intersection admission slack (1-hop knowledge)
+        // Previous-cycle occupancy counts: models load aggregates relayed over
+        // the existing adjacent-module exchange (one cycle stale), keeping
+        // load-aware cycle choice within the limited-communication rule.
+        const std::vector<std::size_t>* stale_loads{nullptr};
     };
     struct Event {
         IntersectionId intersection{-1};

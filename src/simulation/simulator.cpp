@@ -278,6 +278,7 @@ bool Simulator::step() {
     ++stats_.timestep;
 
     const std::size_t intersection_count = topology_.intersections().size();
+    prev_inside_counts_ = inside_counts_;
     std::fill(inside_counts_.begin(), inside_counts_.end(), 0);
     std::fill(check_.begin(), check_.end(), false);
     std::fill(stalled_.begin(), stalled_.end(), false);
@@ -496,7 +497,7 @@ bool Simulator::step() {
 
     if (config_.discharge_enabled) {
         auto discharge_events = discharge_.run({topology_, agents_, members_, stalled_, deadlock_active_, *planner_, rng_,
-                                                &intersection_available_});
+                                                &intersection_available_, &prev_inside_counts_});
         for (auto& event : discharge_events) {
             if (metrics_) {
                 metrics_->on_discharge(stats_.timestep, event.intersection, event.agent_ids, event.loop_cells);

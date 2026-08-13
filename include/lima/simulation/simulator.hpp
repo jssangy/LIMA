@@ -124,6 +124,7 @@ private:
 
     // Per-timestep workspaces retain their capacity between calls to step().
     std::vector<std::size_t> inside_counts_;
+    std::vector<std::size_t> prev_inside_counts_;
     std::vector<std::vector<AgentId>> members_;
     std::vector<std::vector<IntersectionIntent>> intents_;
     std::vector<bool> check_;

@@ -76,6 +76,22 @@ std::vector<RecirculationDischarge::Event> RecirculationDischarge::run(const Con
                     candidate_index = ci;
                 }
             }
+            if (config_.deterministic_cycle && context.stale_loads) {
+                // Composite: within the slack-chosen direction, prefer the
+                // recirculation loop over the least-loaded intersections using
+                // the one-cycle-stale relayed counts.
+                std::size_t best_load = std::numeric_limits<std::size_t>::max();
+                const auto& cycles = candidates[candidate_index].cycles;
+                for (std::size_t ki = 0; ki < cycles.size(); ++ki) {
+                    std::size_t load = 0;
+                    for (const IntersectionId node : cycles[ki])
+                        load += (*context.stale_loads)[static_cast<std::size_t>(node)];
+                    if (load < best_load) {
+                        best_load = load;
+                        cycle_index = ki;
+                    }
+                }
+            }
         } else if (config_.deterministic_cycle) {
             // Least-loaded choice: prefer the cycle whose member intersections
             // currently hold the fewest agents, breaking ties by index.
