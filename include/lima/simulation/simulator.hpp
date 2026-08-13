@@ -6,6 +6,7 @@
 #include "lima/intersection/gating.hpp"
 #include "lima/planning/planner.hpp"
 #include "lima/scheduling/solver.hpp"
+#include "lima/simulation/goal_allocator.hpp"
 #include "lima/simulation/metrics.hpp"
 #include "lima/simulation/trace.hpp"
 
@@ -112,6 +113,7 @@ private:
     RecirculationDischarge discharge_;
     std::unique_ptr<MetricsCollector> metrics_;
     std::unique_ptr<StepTracer> tracer_;
+    std::unique_ptr<GoalAllocator> goal_allocator_;  // lifelong mode only
     std::vector<std::size_t> initial_route_lengths_;
     std::vector<std::uint64_t> completion_steps_;
     std::vector<IntersectionId> deadlock_queue_;
@@ -144,6 +146,7 @@ private:
     void move_agent(Agent& agent);
     void count_zone_entries(CellId current, CellId next);
     void rotate_blocked_cycles();
+    void assign_lifelong_goals();
     std::vector<CellId> plan_global(CellId start, CellId goal);
 };
 

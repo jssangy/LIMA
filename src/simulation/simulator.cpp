@@ -147,6 +147,12 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
     normal_occupied_.resize(static_cast<std::size_t>(map_.cell_count()));
     candidates_.reserve(intersection_count);
     pending_.reserve(intersection_count);
+    if (config_.goal_behavior == GoalBehavior::Lifelong) {
+        // Dedicated task-stream RNG: goal arrivals must never consume rng_,
+        // which drives planner tie-breaking for every mode.
+        constexpr std::uint64_t task_seed_salt = 0x9e3779b97f4a7c15ULL;
+        goal_allocator_ = std::make_unique<GoalAllocator>(map_, agents_, seed ^ task_seed_salt);
+    }
 }
 
 
@@ -581,23 +587,41 @@ bool Simulator::step() {
                 completion_steps_[static_cast<std::size_t>(agent.id)] = stats_.timestep;
                 if (tracer_) tracer_->add_completion(agent.id);
             }
-        } else {  // Lifelong: serve the task and draw the next goal
-            ++stats_.completed;
-            completion_steps_[static_cast<std::size_t>(agent.id)] = stats_.timestep;
-            if (tracer_) tracer_->add_completion(agent.id);
-            std::uniform_int_distribution<std::size_t> choose_goal(0, map_.goal_cells().size() - 1);
-            const CellId next_goal = map_.goal_cells()[choose_goal(rng_)];
-            if (next_goal == agent.position) continue;  // redraw on a later step
-            auto route = plan_global(agent.position, next_goal);
-            if (route.empty() || route.front() != agent.position || route.back() != next_goal) continue;
-            agent.goal = next_goal;
-            agent.route = std::move(route);
-            agent.route_cursor = 0;
+        } else {  // Lifelong: serve the task; the allocator hands out the next one
+            if (!agent.awaiting_goal) {
+                agent.awaiting_goal = true;
+                ++stats_.completed;
+                completion_steps_[static_cast<std::size_t>(agent.id)] = stats_.timestep;
+                if (tracer_) tracer_->add_completion(agent.id);
+            }
         }
     }
+    if (goal_allocator_) assign_lifelong_goals();
     if (metrics_) metrics_->flush_step(stats_.timestep);
     if (tracer_) tracer_->flush_step(stats_.timestep, agents_);
     return true;
+}
+
+void Simulator::assign_lifelong_goals() {
+    for (Agent& agent : agents_) {
+        // Reassignment is deferred while the agent still executes a scheduled
+        // intersection path: replacing its route mid-schedule would corrupt
+        // the coordinator's committed plan.  Deferred agents retry next step.
+        if (!agent.active || !agent.awaiting_goal || agent.scheduled()) continue;
+        std::vector<CellId> route;
+        const auto next_goal = goal_allocator_->reassign(
+            agent.id, agent.goal, agent.position, occupancy_, [&](const CellId candidate) {
+                route = plan_global(agent.position, candidate);
+                return !route.empty() && route.front() == agent.position && route.back() == candidate;
+            });
+        if (!next_goal) continue;
+        agent.goal = *next_goal;
+        agent.route = std::move(route);
+        agent.route_cursor = 0;
+        agent.wait_steps = 0;
+        agent.wait_reason = WaitReason::None;
+        agent.awaiting_goal = false;
+    }
 }
 
 void Simulator::rotate_blocked_cycles() {

@@ -31,6 +31,7 @@ struct Agent {
     std::uint64_t moves{};
     bool active{true};
     bool reached{false};  // stay-at-goal mode: first arrival already counted
+    bool awaiting_goal{false};  // lifelong mode: task served, next goal pending
 
     [[nodiscard]] CellId intended_cell() const noexcept {
         return route_cursor + 1 < route.size() ? route[route_cursor + 1] : position;
