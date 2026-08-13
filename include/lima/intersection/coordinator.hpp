@@ -26,7 +26,14 @@ struct ScheduleTelemetry {
 
 class IntersectionCoordinator {
 public:
-    explicit IntersectionCoordinator(StackSolver& solver) : solver_(solver) {}
+    // strict_release enables the PIBT-corridor companion rules: egress AMRs
+    // are additionally kept under schedule while any scheduled path moves
+    // inward on their arm, and trimmed egress hands off only at the arm tip.
+    // Both rules rely on the PIBT movement phase to evacuate the retained
+    // cohort afterwards; without PIBT they livelock dense cells, so they stay
+    // off in the default configuration.
+    explicit IntersectionCoordinator(StackSolver& solver, const bool strict_release = false)
+        : solver_(solver), strict_release_(strict_release) {}
 
     // arm_limits caps the usable depth of each arm (cells beyond the limit are
     // treated as walls); pass the arm sizes for the classic full-arm behavior.
@@ -37,6 +44,7 @@ public:
 
 private:
     StackSolver& solver_;
+    bool strict_release_{false};
 };
 
 }  // namespace lima
