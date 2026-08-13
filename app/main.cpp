@@ -392,7 +392,8 @@ int main(int argc, char** argv) {
         std::unique_ptr<lima::SolutionTrace> recorder;
         if (!output_path.empty()) {
             recorder = std::make_unique<lima::SolutionTrace>(
-                simulator.map(), simulator.agents(), options.map.string(), options.validate_conflicts);
+                simulator.map(), simulator.agents(), options.map.string(), options.validate_conflicts,
+                options.sim.goal_behavior == lima::GoalBehavior::Lifelong);
         }
         if (options.validate_conflicts && !recorder)
             throw std::invalid_argument("--validate-conflicts requires solve mode or --output FILE");

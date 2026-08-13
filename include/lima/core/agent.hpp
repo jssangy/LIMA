@@ -29,6 +29,7 @@ struct Agent {
     std::uint32_t wait_steps{};
     WaitReason wait_reason{WaitReason::None};
     std::uint64_t moves{};
+    std::uint64_t tasks_completed{};  // lifelong mode: goals served so far
     bool active{true};
     bool reached{false};  // stay-at-goal mode: first arrival already counted
     bool awaiting_goal{false};  // lifelong mode: task served, next goal pending

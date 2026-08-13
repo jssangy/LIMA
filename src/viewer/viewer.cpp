@@ -308,23 +308,26 @@ int run_viewer_impl(Simulator* simulator, const GridMap& map, const SolutionTrac
         };
         if (replay != nullptr) {
             const auto positions = replay->frame(replay_cursor);
+            const auto goals = replay->goal_frame(replay_cursor);
             const std::size_t next_cursor = std::min(replay_cursor + 1, replay->frame_count() - 1);
             const auto next_positions = replay->frame(next_cursor);
             const double raw_alpha = (!unlimited && !paused && next_cursor != replay_cursor)
                 ? std::clamp(accumulator / interval, 0.0, 1.0) : 0.0;
             if (show_goal_lines) {
                 for (std::size_t i = 0; i < replay->agent_count(); ++i) {
-                    if (positions[i] == replay->goals()[i]) continue;
+                    if (!replay->active(replay_cursor, i)) continue;
+                    if (positions[i] == goals[i]) continue;
                     const Coord from = map.coord(positions[i]);
                     const Coord to = map.coord(next_positions[i]);
                     const double x = static_cast<double>(from.x) + (to.x - from.x) * raw_alpha;
                     const double y = static_cast<double>(from.y) + (to.y - from.y) * raw_alpha;
-                    draw_goal_line(static_cast<AgentId>(i), x, y, replay->goals()[i]);
+                    draw_goal_line(static_cast<AgentId>(i), x, y, goals[i]);
                 }
             }
-            for (std::size_t i = 0; i < replay->agent_count(); ++i) draw_goal(static_cast<AgentId>(i), replay->goals()[i]);
+            for (std::size_t i = 0; i < replay->agent_count(); ++i)
+                if (replay->active(replay_cursor, i)) draw_goal(static_cast<AgentId>(i), goals[i]);
             for (std::size_t i = 0; i < replay->agent_count(); ++i) {
-                if (positions[i] == replay->goals()[i]) continue;
+                if (!replay->active(replay_cursor, i)) continue;
                 const Coord from = map.coord(positions[i]);
                 const Coord to = map.coord(next_positions[i]);
                 const double x = static_cast<double>(from.x) + (to.x - from.x) * raw_alpha;
@@ -358,21 +361,29 @@ int run_viewer_impl(Simulator* simulator, const GridMap& map, const SolutionTrac
         fill_circle(renderer, goal_line_button.x + 34, goal_line_button.y + 10, 3);
         SDL_RenderPresent(renderer);
 
-        std::size_t completed = 0;
+        std::uint64_t completed = 0;
         std::size_t total_agents = 0;
         std::size_t timestep = 0;
+        bool lifelong = false;
         if (replay != nullptr) {
             const auto positions = replay->frame(replay_cursor);
             total_agents = replay->agent_count();
             timestep = replay_cursor;
-            for (std::size_t i = 0; i < total_agents; ++i) completed += positions[i] == replay->goals()[i] ? 1 : 0;
+            lifelong = replay->lifelong();
+            if (lifelong) completed = replay->tasks_completed(replay_cursor);
+            else for (std::size_t i = 0; i < total_agents; ++i)
+                completed += !replay->active(replay_cursor, i)
+                    || positions[i] == replay->goals()[i] ? 1 : 0;
         } else {
+            lifelong = simulator->lifelong();
             completed = simulator->stats().completed;
             total_agents = simulator->agents().size();
             timestep = simulator->stats().timestep;
         }
         const std::string title = std::string(replay != nullptr ? "LIMA Replay | " : "LIMA Realtime | ")
-            + std::to_string(completed) + "/" + std::to_string(total_agents) + " completed | step "
+            + (lifelong ? std::to_string(completed) + " tasks completed"
+                        : std::to_string(completed) + "/" + std::to_string(total_agents) + " completed")
+            + " | step "
             + std::to_string(timestep) + (replay != nullptr ? "/" + std::to_string(replay->frame_count() - 1) : "")
             + " | " + (paused ? "paused" : (unlimited ? "unlimited" :
                 std::to_string(static_cast<int>(options.steps_per_second)) + " step/s"))

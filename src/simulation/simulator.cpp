@@ -590,6 +590,7 @@ bool Simulator::step() {
         } else {  // Lifelong: serve the task; the allocator hands out the next one
             if (!agent.awaiting_goal) {
                 agent.awaiting_goal = true;
+                ++agent.tasks_completed;
                 ++stats_.completed;
                 completion_steps_[static_cast<std::size_t>(agent.id)] = stats_.timestep;
                 if (tracer_) tracer_->add_completion(agent.id);

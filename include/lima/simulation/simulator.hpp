@@ -83,6 +83,9 @@ public:
     [[nodiscard]] const std::vector<Agent>& agents() const noexcept { return agents_; }
     [[nodiscard]] const IntersectionTopology& topology() const noexcept { return topology_; }
     [[nodiscard]] const SimulatorConfig& config() const noexcept { return config_; }
+    [[nodiscard]] bool lifelong() const noexcept {
+        return config_.goal_behavior == GoalBehavior::Lifelong;
+    }
 
     // Debug-harness views (read only).
     [[nodiscard]] const std::vector<int>& intersection_available() const noexcept { return intersection_available_; }
