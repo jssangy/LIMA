@@ -59,11 +59,13 @@ struct SimulatorConfig {
     // solvability bound, solve for the innermost bound-many agents per arm and
     // treat deeper cells as walls.  Uses only zone-local occupancy.
     bool subset_scheduling{false};
-    // PIBT corridor movement (opt-in): agents outside managed intersections
-    // move via priority-inheritance backtracking instead of the single-route
-    // wait rule.  Also switches the coordinator to its strict release rules
-    // (inward-motion guard, tip-only trimmed egress).
-    bool pibt_corridor{false};
+    // PIBT corridor movement (default since the open-map instance set):
+    // agents outside managed intersections move via priority-inheritance
+    // backtracking instead of the single-route wait rule.  Also switches the
+    // coordinator to its strict release rules (inward-motion guard, tip-only
+    // trimmed egress) and enables rescue-group rotation.  Disable with
+    // --no-pibt-corridor for ablation.
+    bool pibt_corridor{true};
     GoalBehavior goal_behavior{GoalBehavior::Disappear};
     bool direct_routing{false};   // skip the highway-alignment (DoR-style) global router
     std::string metrics_dir;      // W1 instrumentation output; empty = disabled
