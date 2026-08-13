@@ -28,8 +28,12 @@ struct IsolationConfig {
 struct DischargeConfig {
     bool all_arms{false};              // reroute members on every arm, not just the escape arm
     bool allow_stalled_neighbor{false};// permit loops that start at a stalled neighbor (jam erosion)
-    bool deterministic_cycle{false};   // least-loaded cycle choice instead of random draws
-    bool avail_weighted{false};        // pick the escape neighbor with the most admission slack (1-hop info)
+    // Defaults since 2026-08-13 (tournament winner "dcombo"): escape toward the
+    // 1-hop neighbor with the most admission slack, and within that direction
+    // prefer the loop over the least-loaded intersections (one-cycle-stale
+    // relayed counts).  Fully deterministic; -19.6% makespan on the hard cells.
+    bool deterministic_cycle{true};
+    bool avail_weighted{true};
     double partial_stall{1.0};         // waiting-member fraction that marks an intersection stalled
 };
 
