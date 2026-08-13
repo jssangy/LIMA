@@ -128,6 +128,11 @@ private:
     std::vector<std::uint8_t> pibt_priority_class_;
     std::vector<CellId> pibt_forced_next_;
     std::vector<CellId> pibt_next_;
+    std::vector<std::uint8_t> rescue_candidate_;   // pibt_corridor mode only
+    std::vector<std::uint8_t> rescue_group_;
+    std::vector<IntersectionId> rescue_member_;
+    std::vector<std::uint8_t> scheduled_reserved_;
+    std::vector<CellId> movement_origin_;
     std::vector<std::size_t> initial_route_lengths_;
     std::vector<std::uint64_t> completion_steps_;
     std::vector<IntersectionId> deadlock_queue_;
@@ -165,6 +170,7 @@ private:
     [[nodiscard]] bool adjacent_or_equal(CellId current, CellId next) const;
     [[nodiscard]] CellId active_discharge_target(const Agent& agent) const;
     void run_pibt_movement();
+    void compute_rescue_groups();
     std::vector<CellId> plan_global(CellId start, CellId goal);
 };
 

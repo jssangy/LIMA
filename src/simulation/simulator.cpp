@@ -172,6 +172,11 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
         pibt_priority_class_.resize(agents_.size());
         pibt_forced_next_.resize(agents_.size(), kInvalidCell);
         pibt_next_.resize(agents_.size(), kInvalidCell);
+        rescue_candidate_.resize(intersection_count);
+        rescue_group_.resize(intersection_count);
+        rescue_member_.resize(agents_.size(), kNoGroup);
+        scheduled_reserved_.resize(static_cast<std::size_t>(map_.cell_count()));
+        movement_origin_.resize(agents_.size(), kInvalidCell);
     }
 }
 
@@ -567,6 +572,9 @@ bool Simulator::step() {
     for (const Agent& agent : agents_) if (agent.active && !agent.scheduled())
         normal_occupied_[static_cast<std::size_t>(agent.position)] = true;
     std::fill(blocked_.begin(), blocked_.end(), false);
+    if (config_.pibt_corridor) {
+        compute_rescue_groups();
+    } else {
     for (const IntersectionId iid_value : deadlock_queue_) {
         const auto iid = static_cast<std::size_t>(iid_value);
         for (const AgentId id : scheduled_members_[iid]) {
@@ -579,9 +587,11 @@ bool Simulator::step() {
             }
         }
     }
+    }
     for (Agent& agent : agents_) {
         if (!agent.active || !agent.scheduled()) continue;
         const auto iid = static_cast<std::size_t>(agent.schedule_group);
+        if (iid < rescue_group_.size() && rescue_group_[iid] != 0) continue;
         if (iid < blocked_.size() && blocked_[iid]) {
             ++agent.wait_steps;
             ++stats_.waits;
@@ -706,10 +716,157 @@ CellId Simulator::active_discharge_target(const Agent& agent) const {
     return kInvalidCell;
 }
 
+// Rescue-group detection and atomic rotation (PIBT-corridor mode only).
+// Replaces the plain blocked_ computation: a schedule cohort whose only
+// obstruction is an already released member of the same schedule standing on
+// a scheduled destination is rotated forward as one atomic chain instead of
+// waiting forever (mixed scheduled/released standstill).
+void Simulator::compute_rescue_groups() {
+    std::fill(rescue_candidate_.begin(), rescue_candidate_.end(), 0);
+    std::fill(rescue_group_.begin(), rescue_group_.end(), 0);
+    std::fill(rescue_member_.begin(), rescue_member_.end(), kNoGroup);
+    std::fill(scheduled_reserved_.begin(), scheduled_reserved_.end(), 0);
+
+    // Preserve the normal group-wide scheduling rule. Merely record the
+    // special failure mode where a scheduled destination is occupied by an
+    // already released member of the same schedule.
+    for (const IntersectionId iid_value : deadlock_queue_) {
+        const auto iid = static_cast<std::size_t>(iid_value);
+        for (const AgentId id : scheduled_members_[iid]) {
+            const Agent& agent = agents_[static_cast<std::size_t>(id)];
+            if (!agent.active) continue;
+            const CellId next = agent.intended_cell();
+            if (block_intersection(agent.position, next, false)) {
+                blocked_[iid] = true;
+                break;
+            }
+            if (!normal_occupied_[static_cast<std::size_t>(next)]) continue;
+            const AgentId occupant = occupancy_[static_cast<std::size_t>(next)];
+            if (occupant == kNoAgent) continue;
+            const Agent& dependency = agents_[static_cast<std::size_t>(occupant)];
+            if (!dependency.scheduled() && dependency.schedule_group == iid_value) {
+                rescue_candidate_[iid] = 1;
+            } else {
+                blocked_[iid] = true;
+                break;
+            }
+        }
+        if (!blocked_[iid] && !rescue_candidate_[iid]) {
+            for (const AgentId id : scheduled_members_[iid]) {
+                const Agent& agent = agents_[static_cast<std::size_t>(id)];
+                if (agent.active)
+                    scheduled_reserved_[static_cast<std::size_t>(agent.intended_cell())] = 1;
+            }
+        }
+    }
+
+    // Rescue only a schedule cohort affected by the mixed
+    // scheduled/released standstill. All unaffected intersections keep the
+    // original movement semantics and are not made artificially atomic.
+    for (const IntersectionId iid_value : deadlock_queue_) {
+        const auto iid = static_cast<std::size_t>(iid_value);
+        if (blocked_[iid] || !rescue_candidate_[iid]) continue;
+
+        std::vector<AgentId> members;
+        members.reserve(scheduled_members_[iid].size() + 4);
+        for (const AgentId id : scheduled_members_[iid]) {
+            const Agent& agent = agents_[static_cast<std::size_t>(id)];
+            if (!agent.active || !agent.scheduled()) continue;
+            rescue_member_[static_cast<std::size_t>(id)] = iid_value;
+            members.push_back(id);
+        }
+
+        const auto next_for = [&](const Agent& agent) {
+            const CellId forced = pibt_forced_next_[static_cast<std::size_t>(agent.id)];
+            return !agent.scheduled() && forced != kInvalidCell ? forced : agent.intended_cell();
+        };
+        for (std::size_t cursor = 0; cursor < members.size(); ++cursor) {
+            const Agent& agent = agents_[static_cast<std::size_t>(members[cursor])];
+            const AgentId occupant = occupancy_[static_cast<std::size_t>(next_for(agent))];
+            if (occupant == kNoAgent || occupant == agent.id
+                || rescue_member_[static_cast<std::size_t>(occupant)] == iid_value) continue;
+            const Agent& dependency = agents_[static_cast<std::size_t>(occupant)];
+            const auto& memberships = topology_.memberships(dependency.position);
+            if (!dependency.active || dependency.scheduled()
+                || dependency.schedule_group != iid_value
+                || dependency.position != movement_origin_[static_cast<std::size_t>(occupant)]
+                || std::find(memberships.begin(), memberships.end(), iid_value) == memberships.end()) {
+                blocked_[iid] = true;
+                break;
+            }
+            rescue_member_[static_cast<std::size_t>(occupant)] = iid_value;
+            members.push_back(occupant);
+        }
+
+        std::vector<CellId> destinations;
+        destinations.reserve(members.size());
+        for (const AgentId id : members) {
+            if (blocked_[iid]) break;
+            const Agent& agent = agents_[static_cast<std::size_t>(id)];
+            const CellId next = next_for(agent);
+            if (block_intersection(agent.position, next, false)
+                || scheduled_reserved_[static_cast<std::size_t>(next)] != 0
+                || std::find(destinations.begin(), destinations.end(), next) != destinations.end()) {
+                blocked_[iid] = true;
+                break;
+            }
+            const AgentId occupant = occupancy_[static_cast<std::size_t>(next)];
+            if (occupant != kNoAgent && occupant != id
+                && rescue_member_[static_cast<std::size_t>(occupant)] != iid_value) {
+                blocked_[iid] = true;
+                break;
+            }
+            if (occupant != kNoAgent && occupant != id
+                && next_for(agents_[static_cast<std::size_t>(occupant)]) == agent.position) {
+                blocked_[iid] = true;
+                break;
+            }
+            destinations.push_back(next);
+        }
+        if (blocked_[iid]) {
+            for (const AgentId id : members) rescue_member_[static_cast<std::size_t>(id)] = kNoGroup;
+            continue;
+        }
+        rescue_group_[iid] = 1;
+        for (const CellId destination : destinations)
+            scheduled_reserved_[static_cast<std::size_t>(destination)] = 1;
+    }
+
+    for (const IntersectionId iid_value : deadlock_queue_) {
+        const auto iid = static_cast<std::size_t>(iid_value);
+        if (rescue_group_[iid] == 0) continue;
+        for (const Agent& agent : agents_) {
+            if (agent.active && rescue_member_[static_cast<std::size_t>(agent.id)] == iid_value)
+                occupancy_[static_cast<std::size_t>(agent.position)] = kNoAgent;
+        }
+        for (Agent& agent : agents_) {
+            const auto index = static_cast<std::size_t>(agent.id);
+            if (!agent.active || rescue_member_[index] != iid_value) continue;
+            const CellId forced = pibt_forced_next_[index];
+            if (!agent.scheduled() && agent.wait_steps > 0 && stats_.waits > 0) --stats_.waits;
+            const CellId previous = agent.position;
+            if (agent.scheduled() || forced == kInvalidCell) {
+                if (!agent.scheduled()) update_available_on_move(agent.position, agent.intended_cell());
+                move_agent(agent);
+            } else {
+                update_available_on_move(agent.position, forced);
+                move_agent_to(agent, forced);
+            }
+            count_zone_entries(previous, agent.position);
+            occupancy_[static_cast<std::size_t>(agent.position)] = agent.id;
+        }
+    }
+}
+
 // PIBT-corridor movement phase (opt-in): agents outside managed intersections
 // move via priority-inheritance backtracking; agents inside keep the original
 // single-route semantics except for constrained boundary-exit roots.
 void Simulator::run_pibt_movement() {
+    // Snapshot pre-movement origins: the rescue pass later this step must
+    // verify a released dependency has not already moved via PIBT.
+    for (const Agent& agent : agents_) if (agent.active)
+        movement_origin_[static_cast<std::size_t>(agent.id)] = agent.position;
+
     // Eligibility is captured before any movement. Normal outside agents use
     // PIBT freely. An unscheduled agent crossing from a managed intersection
     // to the outside joins only as a high-priority boundary-exit root, so it
