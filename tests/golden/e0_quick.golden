@@ -1,10 +1,4 @@
-cross_3030.map|102|0|status=completed steps=299 completed=102/102 moves=16262 waits=25 deadlocks=104 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
-cross_3030.map|102|1|status=completed steps=347 completed=102/102 moves=16413 waits=37 deadlocks=137 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
-cross_3030.map|510|0|status=completed steps=405 completed=510/510 moves=93837 waits=2706 deadlocks=4165 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
-cross_3030.map|510|1|status=completed steps=457 completed=510/510 moves=96055 waits=2505 deadlocks=4024 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
-cross_3030.map|1020|0|status=completed steps=550 completed=1020/1020 moves=224397 waits=25732 deadlocks=20377 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
-cross_3030.map|1020|1|status=completed steps=551 completed=1020/1020 moves=227167 waits=22576 deadlocks=20729 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
-cross_3030.map|2040|0|status=completed steps=849 completed=2040/2040 moves=571252 waits=192788 deadlocks=86746 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
-cross_3030.map|2040|1|status=completed steps=941 completed=2040/2040 moves=585565 waits=200140 deadlocks=88703 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
-cross_3030.map|3060|1|status=completed steps=1576 completed=3060/3060 moves=1102379 waits=676716 deadlocks=202390 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
-cross_3030.map|3060|2|status=completed steps=1349 completed=3060/3060 moves=1072503 waits=629418 deadlocks=196179 intersections=900 validation=ok vertex_conflicts=0 edge_conflicts=0
+warehouse_10_20.map|warehouse-10-20|56|0|status=step_limit steps=166 completed=50/56 moves=4083 waits=855 deadlocks=40 intersections=189 validation=ok vertex_conflicts=0 edge_conflicts=0
+warehouse_10_20.map|warehouse-10-20|279|1|status=step_limit steps=334 completed=184/279 moves=26020 waits=30677 deadlocks=1701 intersections=189 validation=ok vertex_conflicts=0 edge_conflicts=0
+warehouse_10_20.map|warehouse-10-20|558|0|status=step_limit steps=521 completed=307/558 moves=61882 waits=131788 deadlocks=7935 intersections=189 validation=ok vertex_conflicts=0 edge_conflicts=0
+warehouse_20_40.map|warehouse-20-40|224|0|status=step_limit steps=370 completed=186/224 moves=33912 waits=12224 deadlocks=413 intersections=779 validation=ok vertex_conflicts=0 edge_conflicts=0
