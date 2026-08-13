@@ -242,14 +242,39 @@ struct MoveList {
     void push_back(const StackMove move) { values[size++] = move; }
 };
 
-MoveList generate_moves(const State& state, const StackMove last, const bool deterministic) {
+// Move filter shared by the fast path and the full generator.  With
+// `dominance` off this is exactly the legacy undo ban.  With it on, two
+// TT18-style dominance rules are added.  Each rule maps any solution that
+// contains the banned adjacency to an equal-or-shorter solution without it
+// (merge a two-move chain of one item into its direct move, which the parent
+// node generates because the intermediate stack is untouched; swap commuting
+// adjacent moves into lexicographic order).  Both rewrites strictly decrease
+// (length, lex-sequence), so a minimal canonical solution survives the
+// pruning: completeness -- and optimality under bf/tt + bound_step 0 +
+// no-fastpath -- are unaffected.
+bool banned_move(const int src, const int dst, const StackMove last, const bool dominance) {
+    if (src == last.second && dst == last.first) return true;  // undo of the last move
+    if (!dominance || last.first < 0) return false;
+    // (a) transitive-move elimination: the top of last.second is the item the
+    // previous move just placed; any second leg src == last.second is
+    // dominated by the direct move generated at the parent node.
+    if (src == last.second) return true;
+    // (b) symmetric no-op pairs: consecutive moves on disjoint stack pairs
+    // commute; keep only the non-decreasing order.
+    if (src != last.first && src != last.second && dst != last.first && dst != last.second
+        && StackMove{src, dst} < last) return true;
+    return false;
+}
+
+MoveList generate_moves(const State& state, const StackMove last, const bool deterministic,
+                        const bool dominance) {
     MoveList result;
     if (deterministic) {
         for (int src = 0; src < state.count; ++src) {
             if (state.size[src] == 0) continue;
             const int dst = state.cells[src][state.size[src] - 1];
             if (dst != src && dst < state.count && state.size[dst] < state.capacity[dst] && target_ready(state, dst)
-                && !(src == last.second && dst == last.first)) {
+                && !banned_move(src, dst, last, dominance)) {
                 result.push_back({src, dst});
                 return result;
             }
@@ -262,7 +287,7 @@ MoveList generate_moves(const State& state, const StackMove last, const bool det
         if (state.size[src] == 0) continue;
         const int item = state.cells[src][state.size[src] - 1];
         for (int dst = 0; dst < state.count; ++dst) {
-            if (src == dst || state.size[dst] >= state.capacity[dst] || (src == last.second && dst == last.first)) continue;
+            if (src == dst || state.size[dst] >= state.capacity[dst] || banned_move(src, dst, last, dominance)) continue;
             int bucket = 3;
             if (dst == item && target_ready(state, dst)) bucket = 0;
             else if (state.size[dst] > 0 && state.cells[dst][state.size[dst] - 1] == item) bucket = 1;
@@ -285,7 +310,7 @@ using Visited = std::pmr::unordered_map<Key, int, KeyHash>;
 
 SearchResult search(State& state, const int depth, const int bound2,
                     Visited& visited, std::vector<StackMove>& path,
-                    const bool deterministic, const IdaLbMode lb_mode,
+                    const bool deterministic, const IdaLbMode lb_mode, const bool dominance,
                     std::uint64_t& expanded) {
     ++expanded;
     if (const auto found = visited.find(state.hash); found != visited.end() && found->second <= depth) {
@@ -297,7 +322,7 @@ SearchResult search(State& state, const int depth, const int bound2,
     if (solved(state)) return {estimate2, true};
 
     const StackMove last = path.empty() ? StackMove{-1, -1} : path.back();
-    const MoveList moves = generate_moves(state, last, deterministic);
+    const MoveList moves = generate_moves(state, last, deterministic, dominance);
     int next_bound = std::numeric_limits<int>::max();
     for (std::size_t i = 0; i < moves.size; ++i) {
         const StackMove move = moves.values[i];
@@ -305,7 +330,7 @@ SearchResult search(State& state, const int depth, const int bound2,
         apply(state, move.first, move.second, undo);
         path.push_back(move);
         const SearchResult result =
-            search(state, depth + 1, bound2, visited, path, deterministic, lb_mode, expanded);
+            search(state, depth + 1, bound2, visited, path, deterministic, lb_mode, dominance, expanded);
         if (result.found) return result;
         next_bound = std::min(next_bound, result.bound2);
         path.pop_back();
@@ -373,8 +398,8 @@ std::optional<std::vector<StackMove>> IdaStarSolver::solve(
     for (std::size_t iteration = 0; iteration < options_.max_iterations; ++iteration) {
         ++out.iterations;
         visited.clear();
-        const SearchResult result =
-            search(state, 0, bound, visited, path, deterministic, options_.lb_mode, out.expanded_nodes);
+        const SearchResult result = search(state, 0, bound, visited, path, deterministic,
+                                           options_.lb_mode, options_.dominance, out.expanded_nodes);
         if (result.found) {
             out.solution_length = path.size();
             out.fastpath_solved = deterministic;

@@ -36,6 +36,17 @@ struct IdaStarOptions {
     // long-corridor stress studies only.
     int max_capacity{16};
     IdaLbMode lb_mode{IdaLbMode::kLegacy};
+    // Opt-in TT18-style dominance pruning (default off, preserving the
+    // shipped search order): (a) transitive-move elimination -- never move
+    // the item that the previous move just placed (the chain a->b, b->c of
+    // one item is dominated by the direct a->c generated at the parent, and
+    // a->b, b->a is the already-banned undo); (b) symmetric no-op pairs --
+    // two consecutive moves touching disjoint stack pairs commute, so only
+    // the lexicographically non-decreasing order is kept.  Both rules map any
+    // solution to an equal-length-or-shorter canonical solution, so
+    // completeness and optimality (under bf/tt + bound_step 0 + no-fastpath)
+    // are preserved.
+    bool dominance{false};
 };
 
 class IdaStarSolver final : public StackSolver {

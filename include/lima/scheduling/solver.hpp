@@ -58,6 +58,8 @@ struct SolverConfig {
     // admissible bound, bound_step == 0, and greedy_fastpath == false the
     // solver is optimal.
     std::string lb_mode{"legacy"};       // legacy | bf | tt
+    // Opt-in TT18-style dominance pruning for IDA* (see IdaStarOptions).
+    bool dominance{false};
 };
 
 [[nodiscard]] std::unique_ptr<StackSolver> make_solver(const SolverConfig& config);
