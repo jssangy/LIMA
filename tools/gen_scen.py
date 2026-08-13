@@ -26,8 +26,8 @@ Output: MovingAI scen format, one file per scenario index:
     0<TAB>map_filename<TAB>width<TAB>height<TAB>sx<TAB>sy<TAB>gx<TAB>gy<TAB>0
 written to data/scenarios/<dashed-map-name>/<dashed-map-name>_s<k>.scen.
 
-Default invocation regenerates s0..s19 for warehouse_10_20 and
-warehouse_20_40 (cross maps are parked and not touched).
+Default invocation regenerates s0..s19 for warehouse_10_20, warehouse_20_40
+and cross_3030 (scenario directory cross-30-30).
 """
 import argparse
 import random
@@ -35,8 +35,10 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MAPS = ["warehouse_10_20", "warehouse_20_40"]
+DEFAULT_MAPS = ["warehouse_10_20", "warehouse_20_40", "cross_3030"]
 MAX_TASKS = 10000
+# scenario directory names that do not follow the plain underscore->dash rule
+DASHED_OVERRIDES = {"cross_3030": "cross-30-30"}
 
 
 def parse_map(path: Path):
@@ -66,7 +68,7 @@ def generate(map_name: str, rollouts: int, out_root: Path) -> None:
         raise ValueError(f"{map_name}: no S cells; sink semantics requires them")
     tasks = min(MAX_TASKS, len(starts))
 
-    dashed = map_name.replace("_", "-")
+    dashed = DASHED_OVERRIDES.get(map_name, map_name.replace("_", "-"))
     out_dir = out_root / dashed
     out_dir.mkdir(parents=True, exist_ok=True)
     for k in range(rollouts):
