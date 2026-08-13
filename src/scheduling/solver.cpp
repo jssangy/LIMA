@@ -149,7 +149,7 @@ std::unique_ptr<StackSolver> make_solver(const SolverConfig& config) {
     if (config.kind == "ida") {
         return std::make_unique<IdaStarSolver>(IdaStarOptions{
             config.max_iterations, config.greedy_fastpath, config.bound_step, config.max_capacity,
-            lb_mode, config.dominance});
+            lb_mode, config.dominance, config.max_nodes});
     }
     if (config.kind == "greedy") {
         return std::make_unique<GreedySolver>();
@@ -157,6 +157,7 @@ std::unique_ptr<StackSolver> make_solver(const SolverConfig& config) {
     if (config.kind == "beam") {
         BeamSearchOptions options;
         options.max_expanded_nodes = config.max_iterations;
+        options.max_capacity = config.max_capacity;
         return std::make_unique<BeamSolver>(options);
     }
     throw std::invalid_argument("unknown solver kind: " + config.kind);

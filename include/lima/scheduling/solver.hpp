@@ -60,6 +60,8 @@ struct SolverConfig {
     std::string lb_mode{"legacy"};       // legacy | bf | tt
     // Opt-in TT18-style dominance pruning for IDA* (see IdaStarOptions).
     bool dominance{false};
+    // Opt-in IDA* expanded-node budget; 0 = unlimited (shipped default).
+    std::uint64_t max_nodes{0};
 };
 
 [[nodiscard]] std::unique_ptr<StackSolver> make_solver(const SolverConfig& config);

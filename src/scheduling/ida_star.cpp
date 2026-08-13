@@ -304,6 +304,11 @@ MoveList generate_moves(const State& state, const StackMove last, const bool det
     return result;
 }
 
+// bound2 == kAborted signals that the expanded-node budget was exhausted; it
+// propagates straight up and never mixes with real threshold estimates
+// (which are always non-negative).
+constexpr int kAborted = -1;
+
 struct SearchResult { int bound2; bool found; };
 
 using Visited = std::pmr::unordered_map<Key, int, KeyHash>;
@@ -311,8 +316,9 @@ using Visited = std::pmr::unordered_map<Key, int, KeyHash>;
 SearchResult search(State& state, const int depth, const int bound2,
                     Visited& visited, std::vector<StackMove>& path,
                     const bool deterministic, const IdaLbMode lb_mode, const bool dominance,
-                    std::uint64_t& expanded) {
+                    const std::uint64_t node_budget, std::uint64_t& expanded) {
     ++expanded;
+    if (node_budget != 0 && expanded > node_budget) return {kAborted, false};
     if (const auto found = visited.find(state.hash); found != visited.end() && found->second <= depth) {
         return {std::numeric_limits<int>::max(), false};
     }
@@ -329,12 +335,13 @@ SearchResult search(State& state, const int depth, const int bound2,
         Undo undo;
         apply(state, move.first, move.second, undo);
         path.push_back(move);
-        const SearchResult result =
-            search(state, depth + 1, bound2, visited, path, deterministic, lb_mode, dominance, expanded);
+        const SearchResult result = search(state, depth + 1, bound2, visited, path,
+                                           deterministic, lb_mode, dominance, node_budget, expanded);
         if (result.found) return result;
-        next_bound = std::min(next_bound, result.bound2);
         path.pop_back();
         rollback(state, undo);
+        if (result.bound2 == kAborted) return result;
+        next_bound = std::min(next_bound, result.bound2);
     }
     return {next_bound, false};
 }
@@ -398,14 +405,16 @@ std::optional<std::vector<StackMove>> IdaStarSolver::solve(
     for (std::size_t iteration = 0; iteration < options_.max_iterations; ++iteration) {
         ++out.iterations;
         visited.clear();
-        const SearchResult result = search(state, 0, bound, visited, path, deterministic,
-                                           options_.lb_mode, options_.dominance, out.expanded_nodes);
+        const SearchResult result =
+            search(state, 0, bound, visited, path, deterministic, options_.lb_mode,
+                   options_.dominance, options_.max_expanded_nodes, out.expanded_nodes);
         if (result.found) {
             out.solution_length = path.size();
             out.fastpath_solved = deterministic;
             finish("solved");
             return path;
         }
+        if (result.bound2 == kAborted) break;  // node budget exhausted
         if (result.bound2 == std::numeric_limits<int>::max()) {
             if (deterministic) {
                 deterministic = false;

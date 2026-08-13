@@ -15,7 +15,7 @@ namespace lima {
 namespace {
 
 constexpr int kMaxStacks = 4;
-constexpr int kMaxCapacity = 16;
+constexpr int kMaxCapacity = 64;  // storage limit; acceptance is options.max_capacity (default 16)
 
 struct Key {
     std::uint64_t first{};
@@ -201,15 +201,16 @@ std::uint8_t move_rank(const State& state, const int src, const int dst) {
 }
 
 State make_state(const std::vector<std::vector<int>>& stacks,
-                 const std::vector<int>& capacities) {
+                 const std::vector<int>& capacities, const int max_capacity) {
     if (stacks.empty() || stacks.size() > kMaxStacks || stacks.size() != capacities.size())
         throw std::invalid_argument("stack count must be 1..4 and match capacities");
 
+    const int accept = std::min(max_capacity, kMaxCapacity);
     State state;
     state.count = static_cast<std::uint8_t>(stacks.size());
     std::array<int, kMaxStacks> item_counts{};
     for (int stack = 0; stack < state.count; ++stack) {
-        if (capacities[stack] < 0 || capacities[stack] > kMaxCapacity
+        if (capacities[stack] < 0 || capacities[stack] > accept
             || stacks[stack].size() > static_cast<std::size_t>(capacities[stack]))
             throw std::invalid_argument("invalid stack capacity");
         state.capacity[stack] = static_cast<std::uint8_t>(capacities[stack]);
@@ -257,7 +258,7 @@ BeamResult run_beam(const std::vector<std::vector<int>>& stacks,
         throw std::invalid_argument("beam search limits must be positive");
 
     BeamResult result;
-    State initial = make_state(stacks, capacities);
+    State initial = make_state(stacks, capacities, options.max_capacity);
     if (solved(initial)) {
         result.moves.emplace();
         result.outcome = "solved";

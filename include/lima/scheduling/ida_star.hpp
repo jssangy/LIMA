@@ -47,6 +47,10 @@ struct IdaStarOptions {
     // completeness and optimality (under bf/tt + bound_step 0 + no-fastpath)
     // are preserved.
     bool dominance{false};
+    // Opt-in expanded-node budget across all threshold iterations; 0 keeps
+    // the shipped unlimited behavior.  Exceeding it aborts the solve with
+    // outcome "iteration_limit" (bench-grid safety valve).
+    std::uint64_t max_expanded_nodes{0};
 };
 
 class IdaStarSolver final : public StackSolver {

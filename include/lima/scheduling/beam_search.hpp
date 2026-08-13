@@ -11,6 +11,10 @@ struct BeamSearchOptions {
     std::size_t beam_width{2'048};
     std::size_t max_depth{512};
     std::size_t max_expanded_nodes{1'000'000};
+    // Acceptance bound on per-stack capacity (matches IdaStarOptions): the
+    // default 16 preserves the shipped behavior; storage allows up to 64 for
+    // long-corridor stress studies (bench mode raises this automatically).
+    int max_capacity{16};
 };
 
 // Width-limited best-first search over stack rearrangement, exposed through
