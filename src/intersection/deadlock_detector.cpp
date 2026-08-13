@@ -79,6 +79,20 @@ bool has_intersection_deadlock(const Intersection& intersection, const std::span
         }
     }
 
+    // Match Python Intersection.check_swap_deadlock(): detect the conflict
+    // before it becomes a literal edge swap. A turning AMR occupying the
+    // target-exit tip of a same-arm egress AMR must trigger scheduling while
+    // this intersection is still available for a new schedule.
+    for (const auto& turning : intents) {
+        if (turning.current == turning.exit) continue;
+        for (const auto& egress : intents) {
+            if (turning.agent == egress.agent || egress.current != egress.exit) continue;
+            const auto direction = static_cast<std::size_t>(egress.exit);
+            if (direction >= 4 || intersection.arms[direction].empty()) continue;
+            if (turning.position == intersection.arms[direction].back()) return true;
+        }
+    }
+
     for (std::size_t d = 0; d < 4; ++d) {
         const auto& arm = intersection.arms[d];
         for (std::size_t i = 0; i + 1 < arm.size(); ++i) {
