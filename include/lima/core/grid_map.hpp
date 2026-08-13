@@ -23,6 +23,7 @@ public:
     [[nodiscard]] Coord coord(CellId id) const noexcept;
     [[nodiscard]] const std::vector<CellId>& neighbors(CellId id) const;
     [[nodiscard]] const std::vector<CellId>& goal_cells() const noexcept { return goals_; }
+    [[nodiscard]] const std::vector<CellId>& sink_cells() const noexcept { return sinks_; }
     [[nodiscard]] const std::vector<CellId>& traversable_cells() const noexcept { return free_cells_; }
 
 private:
@@ -31,6 +32,7 @@ private:
     std::vector<std::uint8_t> blocked_;
     std::vector<std::vector<CellId>> neighbors_;
     std::vector<CellId> goals_;
+    std::vector<CellId> sinks_;
     std::vector<CellId> free_cells_;
 };
 
