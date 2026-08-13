@@ -3,12 +3,40 @@
 #include "lima/core/grid_map.hpp"
 
 #include <algorithm>
+#include <stdexcept>
+#include <unordered_set>
+#include <vector>
 
 namespace lima {
 
+namespace {
+
+// Lifelong goal pool (approved design, 2026-08-13 re-freeze): interior
+// traversable non-S cells.  S cells are shared disappear-exits for the
+// one-shot mode and must not serve as persistent lifelong goals; the
+// outermost row/col is excluded to match the scenario-generator start rule.
+// Mirrors make_goal_candidates from the coworker's scenario_loader, with the
+// pool fixed to interior non-sink cells.
+std::vector<CellId> make_goal_candidates(const GridMap& map) {
+    const std::unordered_set<CellId> sinks(map.sink_cells().begin(), map.sink_cells().end());
+    std::vector<CellId> candidates;
+    candidates.reserve(map.traversable_cells().size());
+    for (const CellId id : map.traversable_cells()) {
+        const Coord c = map.coord(id);
+        if (c.x == 0 || c.y == 0 || c.x + 1 == map.width() || c.y + 1 == map.height()) continue;
+        if (sinks.contains(id)) continue;
+        candidates.push_back(id);
+    }
+    if (candidates.empty())
+        throw std::runtime_error("lifelong mode found no interior non-sink goal cells");
+    return candidates;
+}
+
+}  // namespace
+
 GoalAllocator::GoalAllocator(const GridMap& map, const std::span<const Agent> agents,
                              const std::uint64_t seed)
-    : candidates_(map.goal_cells()),
+    : candidates_(make_goal_candidates(map)),
       owner_(static_cast<std::size_t>(map.cell_count()), kNoAgent), rng_(seed) {
     free_and_empty_.reserve(candidates_.size());
     free_but_occupied_.reserve(candidates_.size());
