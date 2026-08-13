@@ -80,10 +80,22 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
       discharge_(config_.discharge) {
     agents_.reserve(tasks.size());
     std::unordered_set<CellId> occupied;
+    // Sink semantics (adapted from the coworker despawn_at_goal ctor): on
+    // maps with S cells, disappearing AMRs must target shared exits only
+    // (an AMR is removed as soon as it arrives, so S cells may be shared).
+    // Stay-at-goal AMRs park forever, so their goals must be unique.
+    // All three benchmark maps carry S-only goal sets, so both rules hold
+    // for every existing scenario.
+    const std::unordered_set<CellId> sinks(map_.sink_cells().begin(), map_.sink_cells().end());
+    std::unordered_set<CellId> assigned_goals;
     for (std::size_t i = 0; i < tasks.size(); ++i) {
         const CellId start = map_.in_bounds(tasks[i].start) ? map_.cell(tasks[i].start) : kInvalidCell;
         const CellId goal = map_.in_bounds(tasks[i].goal) ? map_.cell(tasks[i].goal) : kInvalidCell;
         if (!map_.traversable(start) || !map_.traversable(goal)) throw std::runtime_error("task endpoint is not traversable");
+        if (config_.goal_behavior == GoalBehavior::Disappear && !sinks.empty() && !sinks.contains(goal))
+            throw std::runtime_error("maps with S cells require every task goal to be an S cell");
+        if (config_.goal_behavior == GoalBehavior::Stay && !assigned_goals.insert(goal).second)
+            throw std::runtime_error("persistent AMRs require unique task goal positions");
         if (!occupied.insert(start).second) throw std::runtime_error("duplicate task start position");
         std::vector<CellId> route;
         if (i < preset_routes.size() && !preset_routes[i].empty()) {
