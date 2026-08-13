@@ -64,7 +64,7 @@ void usage() {
     std::cout << "usage: lima [--map FILE] [--scenario FILE] [--agents N] [--planner bfs|astar]"
                  " [--seed N] [--max-steps N] [--fps N] [--validate-conflicts]"
                  " [--mode realtime|solve|replay|debug] [--output FILE] [--replay FILE]\n"
-                 "            [--solver ida|greedy] [--solver-iterations N] [--bound-step N] [--no-fastpath]\n"
+                 "            [--solver ida|greedy|beam] [--solver-iterations N] [--bound-step N] [--no-fastpath]\n"
                  "            [--routing dor|direct] [--capacity-formula code|paper] [--isolation-cap N]\n"
                  "            [--no-discharge] [--metrics DIR] [--trace-jsonl FILE]\n"
                  "debug mode reads commands from stdin and answers in JSON:\n"

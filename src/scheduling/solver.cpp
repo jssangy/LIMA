@@ -1,5 +1,6 @@
 #include "lima/scheduling/solver.hpp"
 
+#include "lima/scheduling/beam_search.hpp"
 #include "lima/scheduling/ida_star.hpp"
 
 #include <algorithm>
@@ -146,6 +147,11 @@ std::unique_ptr<StackSolver> make_solver(const SolverConfig& config) {
     }
     if (config.kind == "greedy") {
         return std::make_unique<GreedySolver>();
+    }
+    if (config.kind == "beam") {
+        BeamSearchOptions options;
+        options.max_expanded_nodes = config.max_iterations;
+        return std::make_unique<BeamSolver>(options);
     }
     throw std::invalid_argument("unknown solver kind: " + config.kind);
 }
