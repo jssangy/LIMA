@@ -53,6 +53,14 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
     endif()
 endif()
 
+# Standalone CBS baseline (disappear-at-target); reuses lima_core IO only.
+add_executable(cbs_baseline app/cbs_baseline.cpp)
+target_link_libraries(cbs_baseline PRIVATE lima_core)
+target_compile_options(cbs_baseline PRIVATE -Wall -Wextra -Wpedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    target_compile_options(cbs_baseline PRIVATE -O3 -DNDEBUG)
+endif()
+
 add_executable(lima app/main.cpp)
 target_link_libraries(lima PRIVATE lima_core)
 add_dependencies(lima lima_version)
