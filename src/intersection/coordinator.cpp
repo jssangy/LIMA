@@ -29,7 +29,7 @@ bool adjacent_or_equal(const CellId a, const CellId b, const Intersection& inter
 
 std::optional<std::vector<CellId>> make_trimmed_egress(
     const Intersection& intersection, const IntersectionIntent& intent,
-    const std::vector<CellId>& full_path) {
+    const std::vector<CellId>& full_path, const bool tip_only, const std::size_t limit) {
     if (full_path.empty()) return std::nullopt;
     std::size_t last_center = full_path.size();
     for (std::size_t i = full_path.size(); i-- > 0;) {
@@ -56,6 +56,20 @@ std::optional<std::vector<CellId>> make_trimmed_egress(
         }
     }
     if (farthest_distance < 0 || farthest + 1 >= full_path.size()) return std::nullopt;
+    if (tip_only) {
+        const auto direction = static_cast<std::size_t>(intent.exit);
+        const std::size_t effective = direction < 4
+            ? std::min(limit, intersection.arms[direction].size()) : 0;
+        if (effective == 0
+            || full_path[farthest] != intersection.arms[direction][effective - 1]) {
+            // An early handoff inside a one-cell-wide arm is unsafe: another
+            // scheduled AMR may still occupy the outward continuation, leaving
+            // no room for PIBT to resolve the resulting head-on pair. Keep the
+            // full coordinated timeline until the AMR actually reaches the
+            // (effective) arm tip.
+            return std::nullopt;
+        }
+    }
     return std::vector<CellId>(full_path.begin(),
         full_path.begin() + static_cast<std::ptrdiff_t>(farthest + 1));
 }
@@ -343,7 +357,10 @@ std::optional<std::vector<ScheduledPath>> IntersectionCoordinator::schedule(
     }
     for (const IntersectionIntent* intent : participants) {
         if (omitted.contains(intent->agent)) continue;
-        if (auto trimmed = make_trimmed_egress(intersection, *intent, paths.at(intent->agent)))
+        const auto exit_index = static_cast<std::size_t>(intent->exit);
+        const std::size_t exit_limit = exit_index < 4 ? limit_of(exit_index) : 0;
+        if (auto trimmed = make_trimmed_egress(intersection, *intent, paths.at(intent->agent),
+                                               strict_release_, exit_limit))
             paths[intent->agent] = std::move(*trimmed);
     }
 

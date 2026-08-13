@@ -8,6 +8,7 @@
 #include "lima/scheduling/solver.hpp"
 #include "lima/simulation/goal_allocator.hpp"
 #include "lima/simulation/metrics.hpp"
+#include "lima/simulation/pibt_resolver.hpp"
 #include "lima/simulation/trace.hpp"
 
 #include <memory>
@@ -58,6 +59,11 @@ struct SimulatorConfig {
     // solvability bound, solve for the innermost bound-many agents per arm and
     // treat deeper cells as walls.  Uses only zone-local occupancy.
     bool subset_scheduling{false};
+    // PIBT corridor movement (opt-in): agents outside managed intersections
+    // move via priority-inheritance backtracking instead of the single-route
+    // wait rule.  Also switches the coordinator to its strict release rules
+    // (inward-motion guard, tip-only trimmed egress).
+    bool pibt_corridor{false};
     GoalBehavior goal_behavior{GoalBehavior::Disappear};
     bool direct_routing{false};   // skip the highway-alignment (DoR-style) global router
     std::string metrics_dir;      // W1 instrumentation output; empty = disabled
@@ -117,6 +123,11 @@ private:
     std::unique_ptr<MetricsCollector> metrics_;
     std::unique_ptr<StepTracer> tracer_;
     std::unique_ptr<GoalAllocator> goal_allocator_;  // lifelong mode only
+    std::unique_ptr<PibtResolver> pibt_;             // pibt_corridor mode only
+    std::vector<std::uint8_t> pibt_eligible_;
+    std::vector<std::uint8_t> pibt_priority_class_;
+    std::vector<CellId> pibt_forced_next_;
+    std::vector<CellId> pibt_next_;
     std::vector<std::size_t> initial_route_lengths_;
     std::vector<std::uint64_t> completion_steps_;
     std::vector<IntersectionId> deadlock_queue_;
@@ -150,6 +161,10 @@ private:
     void count_zone_entries(CellId current, CellId next);
     void rotate_blocked_cycles();
     void assign_lifelong_goals();
+    void move_agent_to(Agent& agent, CellId next);
+    [[nodiscard]] bool adjacent_or_equal(CellId current, CellId next) const;
+    [[nodiscard]] CellId active_discharge_target(const Agent& agent) const;
+    void run_pibt_movement();
     std::vector<CellId> plan_global(CellId start, CellId goal);
 };
 

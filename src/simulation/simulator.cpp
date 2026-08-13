@@ -76,7 +76,8 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
     : map_(std::move(map)), config_(std::move(config)), rng_(seed),
       planner_(make_planner(planner_kind, map_, rng_)),
       topology_(IntersectionTopology::build(map_)),
-      solver_(make_solver(config_.solver)), coordinator_(*solver_), discharge_(config_.discharge) {
+      solver_(make_solver(config_.solver)), coordinator_(*solver_, config_.pibt_corridor),
+      discharge_(config_.discharge) {
     agents_.reserve(tasks.size());
     std::unordered_set<CellId> occupied;
     for (std::size_t i = 0; i < tasks.size(); ++i) {
@@ -152,6 +153,13 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
         // which drives planner tie-breaking for every mode.
         constexpr std::uint64_t task_seed_salt = 0x9e3779b97f4a7c15ULL;
         goal_allocator_ = std::make_unique<GoalAllocator>(map_, agents_, seed ^ task_seed_salt);
+    }
+    if (config_.pibt_corridor) {
+        pibt_ = std::make_unique<PibtResolver>(map_, seed);
+        pibt_eligible_.resize(agents_.size());
+        pibt_priority_class_.resize(agents_.size());
+        pibt_forced_next_.resize(agents_.size(), kInvalidCell);
+        pibt_next_.resize(agents_.size(), kInvalidCell);
     }
 }
 
@@ -517,6 +525,9 @@ bool Simulator::step() {
     for (const Agent& agent : agents_) if (agent.active)
         occupancy_[static_cast<std::size_t>(agent.position)] = agent.id;
 
+    if (config_.pibt_corridor) {
+        run_pibt_movement();
+    } else {
     for (Agent& agent : agents_) {
         if (!agent.active || agent.scheduled()) continue;
         const CellId next = agent.intended_cell();
@@ -537,6 +548,7 @@ bool Simulator::step() {
             ++stats_.waits;
             agent.wait_reason = WaitReason::Dependency;
         }
+    }
     }
 
     std::fill(normal_occupied_.begin(), normal_occupied_.end(), false);
@@ -623,6 +635,223 @@ void Simulator::assign_lifelong_goals() {
         agent.wait_reason = WaitReason::None;
         agent.awaiting_goal = false;
     }
+}
+
+void Simulator::move_agent_to(Agent& agent, const CellId next) {
+    const CellId previous = agent.position;
+    if (next != previous) {
+        // A PIBT sidestep does not replace the global route. Rejoin it when the
+        // selected cell matches any future route cell; otherwise keep waiting
+        // for the same next waypoint on subsequent timesteps.
+        const auto begin = agent.route.begin() + static_cast<std::ptrdiff_t>(agent.route_cursor + 1);
+        const auto found = std::find(begin, agent.route.end(), next);
+        if (found != agent.route.end())
+            agent.route_cursor = static_cast<std::size_t>(std::distance(agent.route.begin(), found));
+        agent.position = next;
+        ++agent.moves;
+        ++stats_.committed_moves;
+    }
+    agent.wait_steps = 0;
+    agent.wait_reason = WaitReason::None;
+}
+
+bool Simulator::adjacent_or_equal(const CellId current, const CellId next) const {
+    if (current == next) return true;
+    const auto neighbors = map_.neighbors(current);
+    return std::find(neighbors.begin(), neighbors.end(), next) != neighbors.end();
+}
+
+CellId Simulator::active_discharge_target(const Agent& agent) const {
+    for (const IntersectionId iid_value : topology_.memberships(agent.position)) {
+        const auto iid = static_cast<std::size_t>(iid_value);
+        if (deadlock_active_[iid] == 0) continue;
+
+        const Intersection& intersection = topology_.intersections()[iid];
+        const Direction direction = intersection.direction_of(agent.position);
+        const auto d = static_cast<std::size_t>(direction);
+        if (d >= 4) continue;
+
+        const auto& arm = intersection.arms[d];
+        const auto current = std::find(arm.begin(), arm.end(), agent.position);
+        if (current == arm.end()) continue;
+        if (current + 1 != arm.end()) {
+            const CellId outward = *(current + 1);
+            return agent.intended_cell() == outward ? kInvalidCell : outward;
+        }
+
+        const Coord center = map_.coord(intersection.center);
+        const Coord tip = map_.coord(agent.position);
+        const Coord delta{
+            tip.x == center.x ? 0 : (tip.x > center.x ? 1 : -1),
+            tip.y == center.y ? 0 : (tip.y > center.y ? 1 : -1),
+        };
+        const Coord outside{tip.x + delta.x, tip.y + delta.y};
+        if (map_.traversable(outside)) {
+            const CellId outward = map_.cell(outside);
+            return agent.intended_cell() == outward ? kInvalidCell : outward;
+        }
+    }
+    return kInvalidCell;
+}
+
+// PIBT-corridor movement phase (opt-in): agents outside managed intersections
+// move via priority-inheritance backtracking; agents inside keep the original
+// single-route semantics except for constrained boundary-exit roots.
+void Simulator::run_pibt_movement() {
+    // Eligibility is captured before any movement. Normal outside agents use
+    // PIBT freely. An unscheduled agent crossing from a managed intersection
+    // to the outside joins only as a high-priority boundary-exit root, so it
+    // can pass inherited priority to an outside blocker.
+    std::fill(pibt_eligible_.begin(), pibt_eligible_.end(), 0);
+    std::fill(pibt_priority_class_.begin(), pibt_priority_class_.end(), 0);
+    std::fill(pibt_forced_next_.begin(), pibt_forced_next_.end(), kInvalidCell);
+    for (const Agent& agent : agents_) {
+        if (!agent.active || agent.scheduled()) continue;
+        const auto index = static_cast<std::size_t>(agent.id);
+        const CellId discharge = active_discharge_target(agent);
+        if (discharge != kInvalidCell) {
+            pibt_eligible_[index] = 1;
+            pibt_priority_class_[index] = 2;
+            pibt_forced_next_[index] = discharge;
+            continue;
+        }
+        // A PIBT detour can leave the AMR next to, but not directly on, its
+        // current route waypoint. Keep that recovery atomic and local instead
+        // of letting the normal phase jump to a non-adjacent future cell.
+        if (!adjacent_or_equal(agent.position, agent.intended_cell())) {
+            pibt_eligible_[index] = 1;
+            continue;
+        }
+        const bool current_outside = topology_.memberships(agent.position).empty();
+        const bool next_outside = topology_.memberships(agent.intended_cell()).empty();
+        if (current_outside) {
+            pibt_eligible_[index] = 1;
+        } else if (next_outside) {
+            pibt_eligible_[index] = 1;
+            pibt_priority_class_[index] = 1;
+        }
+    }
+
+    // Keep the original single-route movement semantics inside managed
+    // intersections, except for the constrained boundary-exit roots selected
+    // above.
+    for (Agent& agent : agents_) {
+        if (!agent.active || agent.scheduled()
+            || pibt_eligible_[static_cast<std::size_t>(agent.id)] != 0) continue;
+        const CellId next = agent.intended_cell();
+        if (!adjacent_or_equal(agent.position, next)) {
+            ++agent.wait_steps;
+            ++stats_.waits;
+            agent.wait_reason = WaitReason::Dependency;
+            continue;
+        }
+        // A route can contain explicit wait frames left by an intersection
+        // schedule. Once the coordinated portion has ended, consuming that
+        // frame must advance only the route cursor; treating the robot as the
+        // occupant of its own destination leaves it waiting forever.
+        if (next == agent.position && agent.route_cursor + 1 < agent.route.size()) {
+            move_agent(agent);
+            continue;
+        }
+        if (agent.schedule_group >= 0
+            && deadlock_active_[static_cast<std::size_t>(agent.schedule_group)] != 0
+            && std::find(topology_.memberships(next).begin(), topology_.memberships(next).end(),
+                         agent.schedule_group) != topology_.memberships(next).end()
+            && std::find(topology_.memberships(agent.position).begin(), topology_.memberships(agent.position).end(),
+                         agent.schedule_group) == topology_.memberships(agent.position).end()) {
+            ++agent.wait_steps;
+            ++stats_.waits;
+            agent.wait_reason = WaitReason::IntersectionReserved;
+            continue;
+        }
+        if (block_intersection(agent.position, next, true)) {
+            ++agent.wait_steps;
+            ++stats_.waits;
+            agent.wait_reason = WaitReason::IntersectionCapacity;
+            continue;
+        }
+        if (occupancy_[static_cast<std::size_t>(next)] == kNoAgent) {
+            occupancy_[static_cast<std::size_t>(agent.position)] = kNoAgent;
+            update_available_on_move(agent.position, next);
+            count_zone_entries(agent.position, next);
+            move_agent(agent);
+            occupancy_[static_cast<std::size_t>(agent.position)] = agent.id;
+        } else {
+            ++agent.wait_steps;
+            ++stats_.waits;
+            agent.wait_reason = WaitReason::Dependency;
+        }
+    }
+
+    pibt_->resolve(agents_, occupancy_, pibt_eligible_, pibt_priority_class_,
+        [&](const AgentId id, const CellId candidate) {
+            const Agent& agent = agents_[static_cast<std::size_t>(id)];
+            const CellId forced = pibt_forced_next_[static_cast<std::size_t>(id)];
+            if (forced != kInvalidCell) return candidate == forced;
+            if (candidate == agent.position) return true;
+            if (agent.schedule_group >= 0
+                && deadlock_active_[static_cast<std::size_t>(agent.schedule_group)] != 0) {
+                const auto& memberships = topology_.memberships(candidate);
+                if (std::find(memberships.begin(), memberships.end(), agent.schedule_group) != memberships.end())
+                    return false;
+            }
+            if (pibt_priority_class_[static_cast<std::size_t>(id)] != 0)
+                return candidate == agent.intended_cell();
+            const bool candidate_outside = topology_.memberships(candidate).empty();
+            const bool rejoins_current_waypoint = agent.route_cursor < agent.route.size()
+                && candidate == agent.route[agent.route_cursor];
+            // A detour may not enter a managed intersection. Crossing the
+            // boundary is allowed only through the agent's global route and
+            // remains subject to the existing intersection admission gate.
+            if (!candidate_outside && candidate != agent.intended_cell()
+                && !rejoins_current_waypoint) return false;
+            return !block_intersection(agent.position, candidate, true);
+        }, pibt_next_);
+
+    for (Agent& agent : agents_) {
+        const auto index = static_cast<std::size_t>(agent.id);
+        if (pibt_eligible_[index] == 0) continue;
+        const CellId next = pibt_next_[index];
+        if (next == kInvalidCell || next == agent.position) {
+            if (next == agent.position && agent.intended_cell() == agent.position
+                && agent.route_cursor + 1 < agent.route.size()) {
+                move_agent(agent);
+                continue;
+            }
+            if ((agent.reached || agent.awaiting_goal) && agent.position == agent.goal) {
+                agent.wait_steps = 0;
+                agent.wait_reason = WaitReason::None;
+                continue;
+            }
+            ++agent.wait_steps;
+            ++stats_.waits;
+            agent.wait_reason = WaitReason::Dependency;
+            continue;
+        }
+        const CellId forced = pibt_forced_next_[index];
+        if (forced != kInvalidCell && next == forced) {
+            // Discharge temporarily moves the AMR one cell away from its
+            // immutable global route. Insert the cell being left as an
+            // explicit return waypoint. Without this handoff, route_cursor
+            // still points at that cell and the following intended cell can
+            // be two cells away, causing either a teleport or a permanent
+            // PIBT wait at an intersection boundary.
+            const auto insertion = agent.route.begin()
+                + static_cast<std::ptrdiff_t>(agent.route_cursor + 1);
+            if (insertion == agent.route.end() || *insertion != agent.position)
+                agent.route.insert(insertion, agent.position);
+        }
+        update_available_on_move(agent.position, next);
+        count_zone_entries(agent.position, next);
+        move_agent_to(agent, next);
+    }
+
+    // Rebuild after the atomic PIBT commit. Clearing and setting in one agent
+    // loop would corrupt rotations because another agent may enter a cell that
+    // is cleared later in that same loop.
+    std::fill(occupancy_.begin(), occupancy_.end(), kNoAgent);
+    for (const Agent& agent : agents_) if (agent.active)
+        occupancy_[static_cast<std::size_t>(agent.position)] = agent.id;
 }
 
 void Simulator::rotate_blocked_cycles() {

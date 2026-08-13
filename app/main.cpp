@@ -66,6 +66,7 @@ void usage() {
                  " [--mode realtime|solve|replay|debug] [--output FILE] [--replay FILE]\n"
                  "            [--solver ida|greedy|beam] [--solver-iterations N] [--bound-step N] [--no-fastpath]\n"
                  "            [--routing dor|direct] [--capacity-formula code|paper] [--isolation-cap N]\n"
+                 "            [--pibt-corridor]\n"
                  "            [--no-discharge] [--metrics DIR] [--trace-jsonl FILE]\n"
                  "debug mode reads commands from stdin and answers in JSON:\n"
                  "            step [n] | state | agent ID | intersection ID | summary | invariants | quit\n";
@@ -112,6 +113,7 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--gate-resync") options.sim.gate_resync = true;
         else if (arg == "--no-gate-resync") options.sim.gate_resync = false;
         else if (arg == "--subset-scheduling") options.sim.subset_scheduling = true;
+        else if (arg == "--pibt-corridor") options.sim.pibt_corridor = true;
         else if (arg == "--goal-behavior") {
             const auto name = value();
             if (name == "disappear") options.sim.goal_behavior = lima::GoalBehavior::Disappear;
@@ -194,6 +196,7 @@ bool has_non_default_config(const Options& options) {
         || options.sim.rotation_enabled
         || !options.sim.gate_resync
         || options.sim.subset_scheduling
+        || options.sim.pibt_corridor
         || options.sim.goal_behavior != lima::GoalBehavior::Disappear
         || !options.sim.discharge_enabled
         || options.sim.direct_routing
@@ -209,6 +212,7 @@ void print_provenance(const Options& options) {
               << " routing=" << (options.sim.direct_routing ? "direct" : "dor")
               << " capacity=" << (options.sim.isolation.formula == lima::CapacityFormula::SumMinusMax ? "code" : "paper");
     if (options.sim.isolation.cap >= 0) std::cout << " cap=" << options.sim.isolation.cap;
+    if (options.sim.pibt_corridor) std::cout << " pibt=corridor";
     if (!options.sim.discharge_enabled) std::cout << " discharge=off";
     std::cout << " commit=" << LIMA_COMMIT;
 }

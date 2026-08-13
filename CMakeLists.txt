@@ -32,6 +32,7 @@ add_library(lima_core
     src/scheduling/solver.cpp
     src/simulation/goal_allocator.cpp
     src/simulation/metrics.cpp
+    src/simulation/pibt_resolver.cpp
     src/simulation/simulator.cpp
     src/simulation/trace.cpp
 )
