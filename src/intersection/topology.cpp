@@ -26,12 +26,13 @@ std::vector<CellId> trace_arm(const GridMap& map, const Coord center, const Dire
     std::vector<CellId> cells;
     Coord c{center.x + delta.x, center.y + delta.y};
     while (map.traversable(c)) {
-        if (std::find(map.goal_cells().begin(), map.goal_cells().end(), map.cell(c)) != map.goal_cells().end()) break;
+        const CellId cell = map.cell(c);
+        if (std::find(map.goal_cells().begin(), map.goal_cells().end(), cell) != map.goal_cells().end()) break;
         const bool corridor = delta.y != 0
             ? wall_or_outside(map, {c.x - 1, c.y}) && wall_or_outside(map, {c.x + 1, c.y})
             : wall_or_outside(map, {c.x, c.y - 1}) && wall_or_outside(map, {c.x, c.y + 1});
         if (!corridor) break;
-        cells.push_back(map.cell(c));
+        cells.push_back(cell);
         c = {c.x + delta.x, c.y + delta.y};
     }
     return cells;
