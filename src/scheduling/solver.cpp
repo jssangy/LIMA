@@ -141,9 +141,15 @@ public:
 }  // namespace
 
 std::unique_ptr<StackSolver> make_solver(const SolverConfig& config) {
+    IdaLbMode lb_mode = IdaLbMode::kLegacy;
+    if (config.lb_mode == "bf") lb_mode = IdaLbMode::kBf;
+    else if (config.lb_mode == "tt") lb_mode = IdaLbMode::kTt;
+    else if (config.lb_mode != "legacy")
+        throw std::invalid_argument("unknown lb_mode: " + config.lb_mode);
     if (config.kind == "ida") {
         return std::make_unique<IdaStarSolver>(IdaStarOptions{
-            config.max_iterations, config.greedy_fastpath, config.bound_step, config.max_capacity});
+            config.max_iterations, config.greedy_fastpath, config.bound_step, config.max_capacity,
+            lb_mode});
     }
     if (config.kind == "greedy") {
         return std::make_unique<GreedySolver>();

@@ -112,6 +112,110 @@ int heuristic2(const State& state) {
     return value;
 }
 
+// Admissible lower bound for the RELAXED goal implemented by solved(), in the
+// x2 integer scale (one relocation == 2).  This is NOT classic CPMP: the goal
+// accepts, for every non-overflow stack s, a bottom prefix of s-items followed
+// only by parked overflow-type items, and requires every overflow stack to be
+// full of its own type.  All admissibility arguments below are made against
+// that predicate, not against the classic all-sorted condition.
+//
+// Component 1 -- misplaced items (Bortfeldt-Forster "badly placed" count).
+// For each stack s compute the longest bottom prefix that can appear as the
+// bottom of SOME goal configuration of s:
+//   * overflow s:      a run of s-items only (the goal stack is full of s);
+//   * non-overflow s:  a run of s-items, extendable by parked overflow-type
+//     items only once the run holds ALL count(s) items of type s (the goal
+//     puts every s-item below every parked item).
+// The first item above that prefix can never sit in a final position without
+// something beneath it moving first, and an item can only move if everything
+// above it moves too; hence every item above the prefix relocates at least
+// once in EVERY solution.  Distinct items, one move each: admissible.
+//
+// Component 2 -- demand/supply re-entries (BF12 demand-supply adapted).
+// Let k_t be the leading run of t-items in stack t (items that may stay put;
+// any item of t that never moves must belong to that run because everything
+// below a never-moving item also never moves).  The goal places
+//   need_t = (overflow t ? capacity_t : count_t) - k_t
+// additional t-items into stack t, and each such placement is a move INTO t
+// by a t-item.  Only t-items currently OUTSIDE stack t that already must move
+// (out_bad_t, counted in component 1) can perform that entry as their single
+// counted move.  Every entry beyond out_bad_t is a move not yet counted:
+// either a badly placed t-item inside t (its component-1 move LEAVES t, so a
+// re-entry is a second move), or a currently well-parked item (all its moves
+// are uncounted).  Hence max(0, need_t - out_bad_t) extra moves per type, on
+// items disjoint across types: admissible.
+//
+// Component 3 (kTt only) -- mutual cross pairs (TT18-flavoured refinement).
+// For two non-overflow types u != t, let A = t-items in stack u and
+// B = u-items in stack t (all badly placed by component 1).  Consider the
+// first final landing among A and B, say by a in A onto stack t.  Everything
+// below a at that moment can never move again, so no B-item is still in t;
+// each B-item left t earlier via a landing that was not final (a's was the
+// first), so each B-item moves at least twice.  Symmetrically if a B-item
+// lands first.  Either way min(|A|, |B|) items move at least twice, and those
+// items (foreign items inside u or t) are disjoint from every component-2
+// charge (which touches only non-out_bad enterers of a type) and across
+// pairs: admissible.
+int lower_bound2(const State& state, const bool with_pairs) {
+    std::array<int, kMaxStacks> count{};   // items per target type
+    for (int s = 0; s < state.count; ++s)
+        for (int p = 0; p < state.size[s]; ++p) ++count[state.cells[s][p]];
+
+    std::array<int, kMaxStacks> home_run{};  // leading own-type run length
+    std::array<int, kMaxStacks> prefix{};    // potentially-final bottom prefix
+    for (int s = 0; s < state.count; ++s) {
+        int p = 0;
+        while (p < state.size[s] && state.cells[s][p] == s) ++p;
+        home_run[s] = p;
+        const bool overflow = (state.overflow_mask & (1U << s)) != 0;
+        if (!overflow && p == count[s]) {
+            while (p < state.size[s]
+                   && (state.overflow_mask & (1U << state.cells[s][p])) != 0) ++p;
+        }
+        prefix[s] = p;
+    }
+
+    int bad = 0;
+    std::array<int, kMaxStacks> out_bad{};   // badly placed t-items outside stack t
+    for (int s = 0; s < state.count; ++s) {
+        bad += state.size[s] - prefix[s];
+        for (int p = prefix[s]; p < state.size[s]; ++p) {
+            const int type = state.cells[s][p];
+            if (type != s) ++out_bad[type];
+        }
+    }
+
+    int extra = 0;
+    for (int t = 0; t < state.count; ++t) {
+        const bool overflow = (state.overflow_mask & (1U << t)) != 0;
+        const int need = (overflow ? state.capacity[t] : count[t]) - home_run[t];
+        extra += std::max(0, need - out_bad[t]);
+    }
+
+    int pair_extra = 0;
+    if (with_pairs) {
+        std::array<std::array<int, kMaxStacks>, kMaxStacks> cross{};  // [stack][type]
+        for (int s = 0; s < state.count; ++s)
+            for (int p = 0; p < state.size[s]; ++p) {
+                const int type = state.cells[s][p];
+                if (type != s) ++cross[s][type];
+            }
+        for (int u = 0; u < state.count; ++u) {
+            if ((state.overflow_mask & (1U << u)) != 0) continue;
+            for (int t = u + 1; t < state.count; ++t) {
+                if ((state.overflow_mask & (1U << t)) != 0) continue;
+                pair_extra += std::min(cross[u][t], cross[t][u]);
+            }
+        }
+    }
+    return (bad + extra + pair_extra) * 2;
+}
+
+int estimate_h2(const State& state, const IdaLbMode mode) {
+    if (mode == IdaLbMode::kLegacy) return heuristic2(state);
+    return lower_bound2(state, mode == IdaLbMode::kTt);
+}
+
 struct Undo { std::uint8_t item{}, src{}, dst{}, src_position{}, dst_position{}; };
 
 void apply(State& state, const int src, const int dst, Undo& undo) {
@@ -181,13 +285,14 @@ using Visited = std::pmr::unordered_map<Key, int, KeyHash>;
 
 SearchResult search(State& state, const int depth, const int bound2,
                     Visited& visited, std::vector<StackMove>& path,
-                    const bool deterministic, std::uint64_t& expanded) {
+                    const bool deterministic, const IdaLbMode lb_mode,
+                    std::uint64_t& expanded) {
     ++expanded;
     if (const auto found = visited.find(state.hash); found != visited.end() && found->second <= depth) {
         return {std::numeric_limits<int>::max(), false};
     }
     visited[state.hash] = depth;
-    const int estimate2 = depth * 2 + heuristic2(state);
+    const int estimate2 = depth * 2 + estimate_h2(state, lb_mode);
     if (estimate2 > bound2) return {estimate2, false};
     if (solved(state)) return {estimate2, true};
 
@@ -199,7 +304,8 @@ SearchResult search(State& state, const int depth, const int bound2,
         Undo undo;
         apply(state, move.first, move.second, undo);
         path.push_back(move);
-        const SearchResult result = search(state, depth + 1, bound2, visited, path, deterministic, expanded);
+        const SearchResult result =
+            search(state, depth + 1, bound2, visited, path, deterministic, lb_mode, expanded);
         if (result.found) return result;
         next_bound = std::min(next_bound, result.bound2);
         path.pop_back();
@@ -256,7 +362,7 @@ std::optional<std::vector<StackMove>> IdaStarSolver::solve(
         return std::nullopt;
     }
     State state = *state_opt;
-    const int initial_bound = heuristic2(state);
+    const int initial_bound = estimate_h2(state, options_.lb_mode);
     int bound = initial_bound;
     bool deterministic = options_.deterministic_move;
     std::vector<StackMove> path;
@@ -267,7 +373,8 @@ std::optional<std::vector<StackMove>> IdaStarSolver::solve(
     for (std::size_t iteration = 0; iteration < options_.max_iterations; ++iteration) {
         ++out.iterations;
         visited.clear();
-        const SearchResult result = search(state, 0, bound, visited, path, deterministic, out.expanded_nodes);
+        const SearchResult result =
+            search(state, 0, bound, visited, path, deterministic, options_.lb_mode, out.expanded_nodes);
         if (result.found) {
             out.solution_length = path.size();
             out.fastpath_solved = deterministic;

@@ -65,6 +65,7 @@ void usage() {
                  " [--seed N] [--max-steps N] [--fps N] [--validate-conflicts]"
                  " [--mode realtime|solve|replay|debug] [--output FILE] [--replay FILE]\n"
                  "            [--solver ida|greedy|beam] [--solver-iterations N] [--bound-step N] [--no-fastpath]\n"
+                 "            [--lb-mode legacy|bf|tt]\n"
                  "            [--routing dor|direct] [--capacity-formula code|paper] [--isolation-cap N]\n"
                  "            [--no-pibt-corridor]\n"
                  "            [--no-discharge] [--metrics DIR] [--trace-jsonl FILE]\n"
@@ -95,6 +96,7 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--bound-step") options.sim.solver.bound_step = std::stoi(std::string(value()));
         else if (arg == "--no-fastpath") options.sim.solver.greedy_fastpath = false;
         else if (arg == "--solver-max-capacity") options.sim.solver.max_capacity = std::stoi(std::string(value()));
+        else if (arg == "--lb-mode") options.sim.solver.lb_mode = std::string(value());
         else if (arg == "--isolation-cap") options.sim.isolation.cap = std::stoi(std::string(value()));
         else if (arg == "--isolation-margin") options.sim.isolation.margin = std::stoi(std::string(value()));
         else if (arg == "--stall-threshold") options.sim.stall_threshold = static_cast<std::uint32_t>(std::stoul(std::string(value())));
@@ -184,6 +186,7 @@ bool has_non_default_config(const Options& options) {
         || options.sim.solver.bound_step != defaults.bound_step
         || options.sim.solver.greedy_fastpath != defaults.greedy_fastpath
         || options.sim.solver.max_capacity != defaults.max_capacity
+        || options.sim.solver.lb_mode != defaults.lb_mode
         || options.sim.isolation.formula != lima::CapacityFormula::SumMinusMax
         || options.sim.isolation.cap >= 0
         || options.sim.isolation.margin != 0
@@ -212,6 +215,7 @@ void print_provenance(const Options& options) {
     std::cout << " solver=" << options.sim.solver.kind
               << " routing=" << (options.sim.direct_routing ? "direct" : "dor")
               << " capacity=" << (options.sim.isolation.formula == lima::CapacityFormula::SumMinusMax ? "code" : "paper");
+    if (options.sim.solver.lb_mode != "legacy") std::cout << " lb=" << options.sim.solver.lb_mode;
     if (options.sim.isolation.cap >= 0) std::cout << " cap=" << options.sim.isolation.cap;
     if (!options.sim.pibt_corridor) std::cout << " pibt=off";
     if (!options.sim.discharge_enabled) std::cout << " discharge=off";

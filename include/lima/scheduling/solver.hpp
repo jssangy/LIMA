@@ -47,10 +47,17 @@ struct SolverConfig {
     std::size_t max_iterations{1'000'000};
     // Scaled (x2) threshold increment between IDA* iterations.  The shipped
     // default 6 trades optimality for speed; 0 restores the textbook next-bound
-    // schedule (optimal solutions, more re-expansions).
+    // schedule (optimal solutions when the lower bound is admissible, i.e.
+    // lb_mode bf/tt; the legacy heuristic overestimates, so legacy + 0 is
+    // still not optimal).
     int bound_step{6};
     bool greedy_fastpath{true};          // try the single-move fast path first (IDA*)
     int max_capacity{16};                // baseline stack-capacity acceptance bound (storage limit 64)
+    // IDA* lower-bound family (opt-in): legacy keeps the shipped inflated
+    // heuristic; bf/tt select the admissible bounds (see IdaLbMode).  With an
+    // admissible bound, bound_step == 0, and greedy_fastpath == false the
+    // solver is optimal.
+    std::string lb_mode{"legacy"};       // legacy | bf | tt
 };
 
 [[nodiscard]] std::unique_ptr<StackSolver> make_solver(const SolverConfig& config);
