@@ -20,9 +20,12 @@ import re
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+import psutil
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -157,6 +160,44 @@ def parse_result(path: Path) -> dict[str, str]:
     return dict(re.findall(r"^(\w+)=([^\n]+)$", path.read_text(encoding="utf-8", errors="replace"), re.MULTILINE))
 
 
+def run_measured(command: list[str], timeout: float):
+    proc = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, start_new_session=True)
+    stopped = threading.Event()
+    peak_rss = 0
+
+    def monitor() -> None:
+        nonlocal peak_rss
+        process = psutil.Process(proc.pid)
+        while not stopped.is_set():
+            try:
+                family = [process, *process.children(recursive=True)]
+                peak_rss = max(peak_rss, sum(item.memory_info().rss for item in family))
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+            stopped.wait(0.1)
+
+    sampler = threading.Thread(target=monitor, daemon=True)
+    sampler.start()
+    timed_out = False
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        returncode = proc.returncode
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        os.killpg(proc.pid, signal.SIGTERM)
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            stdout, stderr = proc.communicate()
+        returncode = 124
+    finally:
+        stopped.set()
+        sampler.join()
+    return returncode, stdout, stderr, timed_out, {"max_rss_kb": str(peak_rss // 1024)}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--maps", default=",".join(INSTANCES))
@@ -188,7 +229,6 @@ def main() -> int:
     instance_root = output / "instances"
     records = output / "records"
     raw = output / "raw"
-    resources = output / "resources"
     jobs = []
     for map_name in maps:
         spec = INSTANCES[map_name]
@@ -216,11 +256,8 @@ def main() -> int:
         if record.exists() and not args.rerun:
             return f"{tag}_{algorithm}", "skipped"
         raw.mkdir(parents=True, exist_ok=True)
-        resources.mkdir(parents=True, exist_ok=True)
         result_file = raw / f"{tag}_{algorithm}.txt"
-        resource_file = resources / f"{tag}_{algorithm}.txt"
         result_file.unlink(missing_ok=True)
-        resource_file.unlink(missing_ok=True)
         if algorithm == "lacam":
             solver_command = [str(binaries[algorithm]), "-i", str(scen_file), "-m", str(map_file),
                               "-N", str(agents), "-s", str(scenario), "-t", str(args.time_limit),
@@ -228,26 +265,11 @@ def main() -> int:
         else:
             solver_command = [str(binaries[algorithm]), "-i", str(pibt_file), "-s", "PIBT",
                               "-T", str(args.time_limit * 1000), "-o", str(result_file)]
-        command = ["/usr/bin/time", "-f", "max_rss_kb=%M\nuser_seconds=%U\nsystem_seconds=%S",
-                   "-o", str(resource_file), *solver_command]
+        command = solver_command
         started = time.time()
-        timed_out = False
-        proc = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, start_new_session=True)
-        try:
-            stdout, stderr = proc.communicate(timeout=args.time_limit + 20)
-            returncode = proc.returncode
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            os.killpg(proc.pid, signal.SIGTERM)
-            try:
-                stdout, stderr = proc.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
-                stdout, stderr = proc.communicate()
-            returncode = 124
+        returncode, stdout, stderr, timed_out, resource = run_measured(
+            command, args.time_limit + 20)
         result = parse_result(result_file)
-        resource = parse_result(resource_file)
         payload = {
             "tag": tag, "map": tag.split("_d", 1)[0], "density_percent": density,
             "agents": agents, "scenario": scenario, "algorithm": algorithm,
