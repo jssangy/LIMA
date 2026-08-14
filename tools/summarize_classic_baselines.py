@@ -31,6 +31,7 @@ def main() -> int:
     cells = []
     for record in records:
         result = record.get("result", {})
+        resource = record.get("resource", {})
         row = {
             "tag": record["tag"], "map": record["map"],
             "density_percent": record["density_percent"], "agents": record["agents"],
@@ -40,6 +41,7 @@ def main() -> int:
             "soc": num(result.get("soc"), int),
             "comp_time_ms": num(result.get("comp_time"), int),
             "runner_wall_seconds": record["runner_wall_seconds"],
+            "max_rss_mb": num(resource.get("max_rss_kb"), float) / 1024.0,
             "timed_out": int(record.get("timed_out", False)),
         }
         cells.append(row)
@@ -57,6 +59,8 @@ def main() -> int:
             "success_rate": len(solved) / len(rows),
             "makespan_median": statistics.median(row["makespan"] for row in solved) if solved else math.nan,
             "comp_time_ms_median": statistics.median(row["comp_time_ms"] for row in solved) if solved else math.nan,
+            "max_rss_mb_median": statistics.median(row["max_rss_mb"] for row in rows),
+            "max_rss_mb_max": max(row["max_rss_mb"] for row in rows),
         })
     with (root / "summary_groups.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(summary[0]))
@@ -67,8 +71,8 @@ def main() -> int:
         f"- Scope: {manifest['semantic_scope']}",
         "- This is not the submitted LIMA task: repeated workstation goals and disappear-at-target are intentionally removed.",
         f"- Equal time limit: {manifest['time_limit_seconds']} s; cells: {len(records)}/{manifest['job_count']}",
-        "", "| map | density | agents | LaCAM solved | PIBT solved | LaCAM makespan | PIBT makespan |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "", "| map | density | agents | LaCAM solved | PIBT solved | LaCAM makespan | PIBT makespan | LaCAM peak MiB | PIBT peak MiB |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     indexed = {(row["map"], row["density_percent"], row["algorithm"]): row for row in summary}
     keys = sorted({(row["map"], row["density_percent"], row["agents"]) for row in summary})
@@ -79,7 +83,8 @@ def main() -> int:
         pims = "-" if math.isnan(pi["makespan_median"]) else f"{pi['makespan_median']:.0f}"
         lines.append(
             f"| {map_name} | {density}% | {agents} | {la['solved']}/{la['runs']} | "
-            f"{pi['solved']}/{pi['runs']} | {lams} | {pims} |"
+            f"{pi['solved']}/{pi['runs']} | {lams} | {pims} | "
+            f"{la['max_rss_mb_median']:.0f} | {pi['max_rss_mb_median']:.0f} |"
         )
     la_total = sum(row["solved"] for row in summary if row["algorithm"] == "lacam")
     pi_total = sum(row["solved"] for row in summary if row["algorithm"] == "pibt")

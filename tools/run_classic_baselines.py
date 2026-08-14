@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import tempfile
 import time
@@ -187,6 +188,7 @@ def main() -> int:
     instance_root = output / "instances"
     records = output / "records"
     raw = output / "raw"
+    resources = output / "resources"
     jobs = []
     for map_name in maps:
         spec = INSTANCES[map_name]
@@ -214,31 +216,44 @@ def main() -> int:
         if record.exists() and not args.rerun:
             return f"{tag}_{algorithm}", "skipped"
         raw.mkdir(parents=True, exist_ok=True)
+        resources.mkdir(parents=True, exist_ok=True)
         result_file = raw / f"{tag}_{algorithm}.txt"
+        resource_file = resources / f"{tag}_{algorithm}.txt"
+        result_file.unlink(missing_ok=True)
+        resource_file.unlink(missing_ok=True)
         if algorithm == "lacam":
-            command = [str(binaries[algorithm]), "-i", str(scen_file), "-m", str(map_file),
-                       "-N", str(agents), "-s", str(scenario), "-t", str(args.time_limit),
-                       "-o", str(result_file)]
+            solver_command = [str(binaries[algorithm]), "-i", str(scen_file), "-m", str(map_file),
+                              "-N", str(agents), "-s", str(scenario), "-t", str(args.time_limit),
+                              "-o", str(result_file)]
         else:
-            command = [str(binaries[algorithm]), "-i", str(pibt_file), "-s", "PIBT",
-                       "-T", str(args.time_limit * 1000), "-o", str(result_file)]
+            solver_command = [str(binaries[algorithm]), "-i", str(pibt_file), "-s", "PIBT",
+                              "-T", str(args.time_limit * 1000), "-o", str(result_file)]
+        command = ["/usr/bin/time", "-f", "max_rss_kb=%M\nuser_seconds=%U\nsystem_seconds=%S",
+                   "-o", str(resource_file), *solver_command]
         started = time.time()
         timed_out = False
+        proc = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, start_new_session=True)
         try:
-            proc = subprocess.run(command, cwd=ROOT, capture_output=True, text=True,
-                                  timeout=args.time_limit + 20)
-            returncode, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
-        except subprocess.TimeoutExpired as error:
+            stdout, stderr = proc.communicate(timeout=args.time_limit + 20)
+            returncode = proc.returncode
+        except subprocess.TimeoutExpired:
             timed_out = True
+            os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                stdout, stderr = proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                stdout, stderr = proc.communicate()
             returncode = 124
-            stdout = error.stdout.decode() if isinstance(error.stdout, bytes) else (error.stdout or "")
-            stderr = error.stderr.decode() if isinstance(error.stderr, bytes) else (error.stderr or "")
         result = parse_result(result_file)
+        resource = parse_result(resource_file)
         payload = {
             "tag": tag, "map": tag.split("_d", 1)[0], "density_percent": density,
             "agents": agents, "scenario": scenario, "algorithm": algorithm,
             "returncode": returncode, "timed_out": timed_out,
             "runner_wall_seconds": time.time() - started, "result": result,
+            "resource": resource,
             "stdout_tail": stdout[-1000:], "stderr_tail": stderr[-1000:], "command": command,
         }
         atomic_json(record, payload)
