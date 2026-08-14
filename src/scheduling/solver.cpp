@@ -1,5 +1,6 @@
 #include "lima/scheduling/solver.hpp"
 
+#include "lima/scheduling/best_first.hpp"
 #include "lima/scheduling/beam_search.hpp"
 #include "lima/scheduling/ida_star.hpp"
 
@@ -10,6 +11,13 @@
 
 namespace lima {
 namespace {
+
+BeamScoreMode parse_beam_score(const std::string& name) {
+    if (name == "disorder") return BeamScoreMode::kDisorder;
+    if (name == "bf") return BeamScoreMode::kBf;
+    if (name == "tt") return BeamScoreMode::kTt;
+    throw std::invalid_argument("unknown beam_score: " + name);
+}
 
 // Deliberately simple relocation heuristic used as the suboptimal comparison
 // point (experiment E10) and as a fallback-policy candidate (E2).  Complete-
@@ -191,10 +199,23 @@ std::unique_ptr<StackSolver> make_solver(const SolverConfig& config) {
     if (config.kind == "greedy") {
         return std::make_unique<GreedySolver>();
     }
+    if (config.kind == "astar" || config.kind == "wastar"
+        || config.kind == "gbfs" || config.kind == "ucs") {
+        BestFirstMode mode = BestFirstMode::kAStar;
+        if (config.kind == "wastar") mode = BestFirstMode::kWeightedAStar;
+        else if (config.kind == "gbfs") mode = BestFirstMode::kGreedyBestFirst;
+        else if (config.kind == "ucs") mode = BestFirstMode::kUniformCost;
+        const std::size_t budget = config.max_nodes == 0
+            ? config.max_iterations : static_cast<std::size_t>(config.max_nodes);
+        return std::make_unique<BestFirstSolver>(BestFirstOptions{
+            mode, lb_mode, config.best_first_weight, budget, config.max_capacity});
+    }
     if (config.kind == "beam") {
         BeamSearchOptions options;
+        options.beam_width = config.beam_width;
         options.max_expanded_nodes = config.max_iterations;
         options.max_capacity = config.max_capacity;
+        options.score_mode = parse_beam_score(config.beam_score);
         return std::make_unique<BeamSolver>(options);
     }
     if (config.kind == "hybrid") {
@@ -204,8 +225,10 @@ std::unique_ptr<StackSolver> make_solver(const SolverConfig& config) {
             config.max_iterations, config.greedy_fastpath, config.bound_step, config.max_capacity,
             lb_mode, config.dominance, config.max_nodes};
         BeamSearchOptions beam_options;
+        beam_options.beam_width = config.beam_width;
         beam_options.max_expanded_nodes = config.max_iterations;
         beam_options.max_capacity = config.max_capacity;
+        beam_options.score_mode = parse_beam_score(config.beam_score);
         return std::make_unique<HybridSolver>(ida_options, beam_options);
     }
     throw std::invalid_argument("unknown solver kind: " + config.kind);

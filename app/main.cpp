@@ -65,8 +65,9 @@ void usage() {
     std::cout << "usage: lima [--map FILE] [--scenario FILE] [--agents N] [--planner bfs|astar]"
                  " [--seed N] [--max-steps N] [--fps N] [--validate-conflicts]"
                  " [--mode realtime|solve|replay|debug] [--output FILE|--no-trace] [--replay FILE]\n"
-                 "            [--solver ida|greedy|beam|hybrid] [--solver-iterations N] [--bound-step N] [--no-fastpath]\n"
-                 "            [--lb-mode legacy|bf|tt] [--dominance] [--solver-nodes N]\n"
+                 "            [--solver ida|astar|wastar|gbfs|ucs|greedy|beam|hybrid] [--solver-iterations N]\n"
+                 "            [--bound-step N] [--no-fastpath] [--lb-mode legacy|bf|tt] [--dominance]\n"
+                 "            [--solver-nodes N] [--beam-width N] [--beam-score disorder|bf|tt] [--search-weight F]\n"
                  "            [--routing dor|direct] [--capacity-formula code|paper] [--isolation-cap N]\n"
                  "            [--discharge-unweighted|--discharge-random] [--discharge-partial F]\n"
                  "            [--no-pibt-corridor] [--pibt-sink-yield] [--pibt-arm-retreat[-last]]\n"
@@ -103,6 +104,9 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--lb-mode") options.sim.solver.lb_mode = std::string(value());
         else if (arg == "--dominance") options.sim.solver.dominance = true;
         else if (arg == "--solver-nodes") options.sim.solver.max_nodes = std::stoull(std::string(value()));
+        else if (arg == "--beam-width") options.sim.solver.beam_width = std::stoull(std::string(value()));
+        else if (arg == "--beam-score") options.sim.solver.beam_score = std::string(value());
+        else if (arg == "--search-weight") options.sim.solver.best_first_weight = std::stod(std::string(value()));
         else if (arg == "--isolation-cap") options.sim.isolation.cap = std::stoi(std::string(value()));
         else if (arg == "--isolation-margin") options.sim.isolation.margin = std::stoi(std::string(value()));
         else if (arg == "--stall-threshold") options.sim.stall_threshold = static_cast<std::uint32_t>(std::stoul(std::string(value())));
@@ -210,6 +214,9 @@ bool has_non_default_config(const Options& options) {
         || options.sim.solver.lb_mode != defaults.lb_mode
         || options.sim.solver.dominance != defaults.dominance
         || options.sim.solver.max_nodes != defaults.max_nodes
+        || options.sim.solver.beam_width != defaults.beam_width
+        || options.sim.solver.beam_score != defaults.beam_score
+        || options.sim.solver.best_first_weight != defaults.best_first_weight
         || options.sim.isolation.formula != lima::CapacityFormula::SumMinusMax
         || options.sim.isolation.cap >= 0
         || options.sim.isolation.margin != 0
@@ -248,6 +255,12 @@ void print_provenance(const Options& options) {
               << " capacity=" << (options.sim.isolation.formula == lima::CapacityFormula::SumMinusMax ? "code" : "paper");
     if (options.sim.solver.lb_mode != "legacy") std::cout << " lb=" << options.sim.solver.lb_mode;
     if (options.sim.solver.dominance) std::cout << " dom=on";
+    if (options.sim.solver.beam_width != lima::SolverConfig{}.beam_width)
+        std::cout << " beam_width=" << options.sim.solver.beam_width;
+    if (options.sim.solver.beam_score != lima::SolverConfig{}.beam_score)
+        std::cout << " beam_score=" << options.sim.solver.beam_score;
+    if (options.sim.solver.best_first_weight != lima::SolverConfig{}.best_first_weight)
+        std::cout << " search_weight=" << options.sim.solver.best_first_weight;
     if (options.sim.isolation.cap >= 0) std::cout << " cap=" << options.sim.isolation.cap;
     if (options.sim.isolation.margin != 0) std::cout << " margin=" << options.sim.isolation.margin;
     if (options.sim.isolation.hysteresis != 0) std::cout << " hysteresis=" << options.sim.isolation.hysteresis;

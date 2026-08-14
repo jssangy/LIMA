@@ -7,6 +7,8 @@
 
 namespace lima {
 
+enum class BeamScoreMode { kDisorder, kBf, kTt };
+
 struct BeamSearchOptions {
     std::size_t beam_width{2'048};
     std::size_t max_depth{512};
@@ -15,6 +17,7 @@ struct BeamSearchOptions {
     // default 16 preserves the shipped behavior; storage allows up to 64 for
     // long-corridor stress studies (bench mode raises this automatically).
     int max_capacity{16};
+    BeamScoreMode score_mode{BeamScoreMode::kDisorder};
 };
 
 // Width-limited best-first search over stack rearrangement, exposed through

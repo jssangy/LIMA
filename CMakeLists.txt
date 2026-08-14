@@ -27,6 +27,7 @@ add_library(lima_core
     src/intersection/deadlock_detector.cpp
     src/intersection/coordinator.cpp
     src/intersection/gating.cpp
+    src/scheduling/best_first.cpp
     src/scheduling/beam_search.cpp
     src/scheduling/ida_star.cpp
     src/scheduling/solver.cpp

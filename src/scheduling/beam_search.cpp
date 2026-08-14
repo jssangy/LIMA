@@ -173,6 +173,70 @@ int disorder_score(const State& state) {
     return score;
 }
 
+// Admissible BF/TT lower bounds adapted to the relaxed overflow-parking goal,
+// identical to the IDA*/A* versions.  A beam layer has a common g value, so
+// ranking by h is equivalent to ranking by f=g+h inside that layer.
+int lower_bound2(const State& state, const bool with_pairs) {
+    std::array<int, kMaxStacks> count{};
+    for (int s = 0; s < state.count; ++s)
+        for (int p = 0; p < state.size[s]; ++p) ++count[state.cells[s][p]];
+
+    std::array<int, kMaxStacks> home_run{};
+    std::array<int, kMaxStacks> prefix{};
+    for (int s = 0; s < state.count; ++s) {
+        int p = 0;
+        while (p < state.size[s] && state.cells[s][p] == s) ++p;
+        home_run[s] = p;
+        const bool overflow = (state.overflow_mask & (1U << s)) != 0;
+        if (!overflow && p == count[s]) {
+            while (p < state.size[s]
+                   && (state.overflow_mask & (1U << state.cells[s][p])) != 0) ++p;
+        }
+        prefix[s] = p;
+    }
+
+    int bad = 0;
+    std::array<int, kMaxStacks> out_bad{};
+    for (int s = 0; s < state.count; ++s) {
+        bad += state.size[s] - prefix[s];
+        for (int p = prefix[s]; p < state.size[s]; ++p) {
+            const int type = state.cells[s][p];
+            if (type != s) ++out_bad[type];
+        }
+    }
+
+    int extra = 0;
+    for (int t = 0; t < state.count; ++t) {
+        const bool overflow = (state.overflow_mask & (1U << t)) != 0;
+        const int need = (overflow ? state.capacity[t] : count[t]) - home_run[t];
+        extra += std::max(0, need - out_bad[t]);
+    }
+
+    int pair_extra = 0;
+    if (with_pairs) {
+        std::array<std::array<int, kMaxStacks>, kMaxStacks> cross{};
+        for (int s = 0; s < state.count; ++s)
+            for (int p = 0; p < state.size[s]; ++p) {
+                const int type = state.cells[s][p];
+                if (type != s) ++cross[s][type];
+            }
+        for (int u = 0; u < state.count; ++u) {
+            if ((state.overflow_mask & (1U << u)) != 0) continue;
+            for (int t = u + 1; t < state.count; ++t) {
+                if ((state.overflow_mask & (1U << t)) != 0) continue;
+                pair_extra += std::min(cross[u][t], cross[t][u]);
+            }
+        }
+    }
+    return (bad + extra + pair_extra) * 2;
+}
+
+int evaluate(const State& state, const BeamScoreMode mode) {
+    if (mode == BeamScoreMode::kBf) return lower_bound2(state, false);
+    if (mode == BeamScoreMode::kTt) return lower_bound2(state, true);
+    return disorder_score(state);
+}
+
 void replace_hash(State& state, const int stack, const int position,
                   const int old_value, const int new_value) {
     state.hash.first ^= kZobrist.first[stack][position][old_value]
@@ -328,7 +392,7 @@ BeamResult run_beam(const std::vector<std::vector<int>>& stacks,
 
                     Candidate candidate{
                         std::move(next), node.path, {src, dst}, 0, rank};
-                    candidate.score = disorder_score(candidate.state);
+                    candidate.score = evaluate(candidate.state, options.score_mode);
                     const auto [found, inserted] = candidate_index.emplace(
                         candidate.state.hash, candidates.size());
                     if (inserted) candidates.push_back(std::move(candidate));

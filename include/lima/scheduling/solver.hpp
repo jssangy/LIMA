@@ -44,7 +44,7 @@ public:
 };
 
 struct SolverConfig {
-    std::string kind{"ida"};             // ida | greedy | beam | hybrid
+    std::string kind{"ida"};             // ida | astar | wastar | gbfs | ucs | greedy | beam | hybrid
     std::size_t max_iterations{1'000'000};
     // Scaled (x2) threshold increment between IDA* iterations.  The shipped
     // default 6 trades optimality for speed; 0 restores the textbook next-bound
@@ -65,6 +65,11 @@ struct SolverConfig {
     // Hybrid mode requires a positive value and falls back to beam when the
     // IDA* budget is exhausted.
     std::uint64_t max_nodes{0};
+    // Beam width is explicit so Gate A can measure the speed/coverage curve.
+    std::size_t beam_width{2'048};
+    std::string beam_score{"disorder"};  // disorder | bf | tt
+    // Weighted-A* heuristic multiplier; ignored by other solver families.
+    double best_first_weight{2.0};
 };
 
 [[nodiscard]] std::unique_ptr<StackSolver> make_solver(const SolverConfig& config);

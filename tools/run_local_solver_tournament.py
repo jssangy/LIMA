@@ -32,11 +32,111 @@ SHAPES = {
 }
 SOLVERS = {
     "ida_legacy": ("--solver-nodes", "2000000"),
+    "ida_bf": ("--lb-mode", "bf", "--solver-nodes", "2000000"),
+    "ida_bfdom": (
+        "--lb-mode", "bf", "--dominance", "--solver-nodes", "2000000"
+    ),
     "ida_tt": ("--lb-mode", "tt", "--solver-nodes", "2000000"),
     "ida_ttdom": (
         "--lb-mode", "tt", "--dominance", "--solver-nodes", "2000000"
     ),
-    "beam": ("--solver", "beam", "--solver-iterations", "2000000"),
+    "ida_tt_opt": (
+        "--lb-mode", "tt", "--bound-step", "0", "--no-fastpath",
+        "--solver-nodes", "2000000",
+    ),
+    "ida_tt_optdom": (
+        "--lb-mode", "tt", "--dominance", "--bound-step", "0", "--no-fastpath",
+        "--solver-nodes", "2000000",
+    ),
+    "ida_tt_step2": (
+        "--lb-mode", "tt", "--dominance", "--bound-step", "2",
+        "--solver-nodes", "2000000",
+    ),
+    "ida_tt_step10": (
+        "--lb-mode", "tt", "--dominance", "--bound-step", "10",
+        "--solver-nodes", "2000000",
+    ),
+    "ida_tt_nofast": (
+        "--lb-mode", "tt", "--dominance", "--no-fastpath",
+        "--solver-nodes", "2000000",
+    ),
+    "astar_bf": (
+        "--solver", "astar", "--lb-mode", "bf", "--solver-nodes", "500000",
+    ),
+    "astar_tt": (
+        "--solver", "astar", "--lb-mode", "tt", "--solver-nodes", "500000",
+    ),
+    "wastar1_5": (
+        "--solver", "wastar", "--lb-mode", "tt", "--search-weight", "1.5",
+        "--solver-nodes", "500000",
+    ),
+    "wastar2": (
+        "--solver", "wastar", "--lb-mode", "tt", "--search-weight", "2",
+        "--solver-nodes", "500000",
+    ),
+    "wastar4": (
+        "--solver", "wastar", "--lb-mode", "tt", "--search-weight", "4",
+        "--solver-nodes", "500000",
+    ),
+    "gbfs_bf": (
+        "--solver", "gbfs", "--lb-mode", "bf", "--solver-nodes", "500000",
+    ),
+    "gbfs_tt": (
+        "--solver", "gbfs", "--lb-mode", "tt", "--solver-nodes", "500000",
+    ),
+    "ucs": ("--solver", "ucs", "--solver-nodes", "500000"),
+    "beam1": (
+        "--solver", "beam", "--beam-width", "1", "--solver-iterations", "2000000",
+    ),
+    "beam4": (
+        "--solver", "beam", "--beam-width", "4", "--solver-iterations", "2000000",
+    ),
+    "beam16": (
+        "--solver", "beam", "--beam-width", "16", "--solver-iterations", "2000000",
+    ),
+    "beam64": (
+        "--solver", "beam", "--beam-width", "64", "--solver-iterations", "2000000",
+    ),
+    "beam256": (
+        "--solver", "beam", "--beam-width", "256", "--solver-iterations", "2000000",
+    ),
+    "beam1024": (
+        "--solver", "beam", "--beam-width", "1024", "--solver-iterations", "2000000",
+    ),
+    "beam2048": (
+        "--solver", "beam", "--beam-width", "2048", "--solver-iterations", "2000000",
+    ),
+    "beam8192": (
+        "--solver", "beam", "--beam-width", "8192", "--solver-iterations", "2000000",
+    ),
+    "beam64_bf": (
+        "--solver", "beam", "--beam-width", "64", "--beam-score", "bf",
+        "--solver-iterations", "2000000",
+    ),
+    "beam64_tt": (
+        "--solver", "beam", "--beam-width", "64", "--beam-score", "tt",
+        "--solver-iterations", "2000000",
+    ),
+    "beam256_bf": (
+        "--solver", "beam", "--beam-width", "256", "--beam-score", "bf",
+        "--solver-iterations", "2000000",
+    ),
+    "beam256_tt": (
+        "--solver", "beam", "--beam-width", "256", "--beam-score", "tt",
+        "--solver-iterations", "2000000",
+    ),
+    "beam2048_bf": (
+        "--solver", "beam", "--beam-width", "2048", "--beam-score", "bf",
+        "--solver-iterations", "2000000",
+    ),
+    "beam2048_tt": (
+        "--solver", "beam", "--beam-width", "2048", "--beam-score", "tt",
+        "--solver-iterations", "2000000",
+    ),
+    "beam8192_tt": (
+        "--solver", "beam", "--beam-width", "8192", "--beam-score", "tt",
+        "--solver-iterations", "2000000",
+    ),
     "greedy": ("--solver", "greedy"),
     "hybrid100": (
         "--solver", "hybrid", "--lb-mode", "tt", "--dominance",
@@ -54,6 +154,73 @@ SOLVERS = {
         "--solver", "hybrid", "--lb-mode", "tt", "--dominance",
         "--solver-nodes", "100000", "--solver-iterations", "2000000",
     ),
+}
+
+# Literature families found in the 2026-08-15 web audit.  `run` means the
+# implementation solves LIMA's exact labeled-stack/overflow-parking goal;
+# `catalog_only` prevents a misleading apples-to-oranges label when the paper
+# solves classical priority-sorted CPMP or needs unavailable training/solvers.
+ALGORITHM_CATALOG = {
+    "A*/IDA*": {
+        "status": "run",
+        "source": "https://orbit.dtu.dk/en/publications/solving-the-pre-marshalling-problem-to-optimality-with-a-and-ida-2/",
+    },
+    "iterative_deepening_branch_and_bound": {
+        "status": "run_via_ida_components",
+        "source": "https://www.sciencedirect.com/science/article/pii/S0377221717305106",
+    },
+    "Bortfeldt_Forster_tree_search": {
+        "status": "run_via_bf_lower_bound",
+        "source": "https://www.sciencedirect.com/science/article/pii/S0377221711009040",
+    },
+    "target_guided_TGH_and_beam": {
+        "status": "catalog_only_classical_cpmp_goal",
+        "source": "https://www.sciencedirect.com/science/article/pii/S0305048314001571",
+    },
+    "iterative_beam_crane_time": {
+        "status": "catalog_only_different_objective",
+        "source": "https://www.sciencedirect.com/science/article/pii/S0377221722000753",
+    },
+    "feasibility_based_FBH": {
+        "status": "catalog_only_classical_cpmp_goal",
+        "source": "https://www.sciencedirect.com/science/article/pii/S0377221716304155",
+    },
+    "multi_heuristic": {
+        "status": "catalog_only_classical_cpmp_goal",
+        "source": "https://arxiv.org/abs/1411.0967",
+    },
+    "BRKGA": {
+        "status": "catalog_only_stochastic_metaheuristic",
+        "source": "https://www.sciencedirect.com/science/article/pii/S0305054816301186",
+    },
+    "branch_and_price": {
+        "status": "catalog_only_classical_cpmp_goal",
+        "source": "https://arxiv.org/abs/1406.7107",
+    },
+    "DLTS": {
+        "status": "catalog_only_training_and_model_required",
+        "source": "https://arxiv.org/abs/1709.09972",
+    },
+    "unit_load_A*": {
+        "status": "run_via_astar_family",
+        "source": "https://arxiv.org/abs/2207.09118",
+    },
+    "integer_programming": {
+        "status": "catalog_only_external_solver_and_model_overhead",
+        "source": "https://www.sciencedirect.com/science/article/abs/pii/S0377221718308300",
+    },
+    "constraint_programming": {
+        "status": "catalog_only_external_solver_and_model_overhead",
+        "source": "https://www.sciencedirect.com/science/article/pii/S0377221722006099",
+    },
+    "policy_MCTS": {
+        "status": "catalog_only_stochastic_and_classical_cpmp_goal",
+        "source": "https://doi.org/10.1080/00207543.2023.2279130",
+    },
+    "robot_stack_rearrangement_A*_weighted_A*": {
+        "status": "run_via_astar_and_wastar_families",
+        "source": "https://people.cs.rutgers.edu/~kb572/pubs/stack_rearrangement.pdf",
+    },
 }
 
 
@@ -123,6 +290,9 @@ def main() -> int:
     parser.add_argument("--solvers", default=",".join(SOLVERS))
     parser.add_argument("--shapes", default=",".join(SHAPES))
     parser.add_argument("--instances", type=int, default=500)
+    parser.add_argument("--min-population", type=int, default=1)
+    parser.add_argument("--max-population", type=int,
+                        help="inclusive density endpoint; defaults to each shape's bound")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--timeout", type=float, default=900.0,
                         help="per-cell safety watchdog; not an evaluation score")
@@ -138,6 +308,10 @@ def main() -> int:
         parser.error(f"shapes must be a subset of {sorted(SHAPES)}")
     if args.instances < 1:
         parser.error("instances must be positive")
+    if args.min_population < 1:
+        parser.error("min-population must be positive")
+    if args.max_population is not None and args.max_population < args.min_population:
+        parser.error("max-population must be at least min-population")
 
     binary = (ROOT / args.binary).resolve()
     if not binary.is_file():
@@ -154,7 +328,8 @@ def main() -> int:
     for shape in shapes:
         capacities = SHAPES[shape]
         bound = sum(capacities) - max(capacities)
-        for population in range(1, bound + 1):
+        last_population = min(bound, args.max_population or bound)
+        for population in range(args.min_population, last_population + 1):
             for solver in solvers:
                 jobs.append((shape, capacities, bound, population, solver))
 
@@ -168,8 +343,13 @@ def main() -> int:
         "git_status": git_text("status", "--short"),
         "solvers": solvers,
         "solver_flags": {name: list(SOLVERS[name]) for name in solvers},
+        "literature_algorithm_catalog": ALGORITHM_CATALOG,
         "shapes": {name: list(SHAPES[name]) for name in shapes},
-        "population_rule": "every N from 1 through sum(arms)-max(arms)",
+        "population_rule": "every N in configured range, clipped to sum(arms)-max(arms)",
+        "population_selection": {
+            "minimum": args.min_population,
+            "maximum": args.max_population,
+        },
         "instances_per_cell": args.instances,
         "seed": args.seed,
         "watchdog_seconds": args.timeout,
