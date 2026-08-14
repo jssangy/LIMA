@@ -61,7 +61,13 @@ VARIANTS = {
     "base": (),
     "tt": ("--lb-mode", "tt"),
     "ttdom": ("--lb-mode", "tt", "--dominance"),
+    "beam": ("--solver", "beam"),
+    "nodes100k": ("--solver-nodes", "100000"),
+    "nodes500k": ("--solver-nodes", "500000"),
+    "nodes1m": ("--solver-nodes", "1000000"),
     "nodes2m": ("--solver-nodes", "2000000"),
+    "tt_nodes500k": ("--lb-mode", "tt", "--solver-nodes", "500000"),
+    "tt_nodes1m": ("--lb-mode", "tt", "--solver-nodes", "1000000"),
     "tt_nodes2m": ("--lb-mode", "tt", "--solver-nodes", "2000000"),
     "replan8": ("--pibt-replan", "8"),
     "replan8_tt_nodes2m": (
