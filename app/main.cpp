@@ -253,14 +253,18 @@ void print_provenance(const Options& options) {
     if (options.sim.shuffle_order >= 0) std::cout << " shuffle=" << options.sim.shuffle_order;
     if (options.sim.failure_probability != 0.0)
         std::cout << " failure_prob=" << options.sim.failure_probability;
+    if (options.sim.goal_behavior == lima::GoalBehavior::Stay)
+        std::cout << " goal_behavior=stay";
+    else if (options.sim.goal_behavior == lima::GoalBehavior::Lifelong)
+        std::cout << " goal_behavior=lifelong";
     if (!options.sim.discharge_enabled) std::cout << " discharge=off";
     if (options.no_trace) std::cout << " trace=off";
     std::cout << " commit=" << LIMA_COMMIT;
 }
 
-constexpr std::array<std::string_view, 8> kWaitReasonNames{
+constexpr std::array<std::string_view, 9> kWaitReasonNames{
     "none", "scheduled_hold", "intersection_reserved", "intersection_capacity",
-    "vertex_conflict", "edge_swap", "dependency", "schedule_group"};
+    "vertex_conflict", "edge_swap", "dependency", "schedule_group", "execution_failure"};
 
 // Interactive JSON REPL so an AI agent can advance the simulation one step at
 // a time and verify state and invariants programmatically.
@@ -279,6 +283,8 @@ int run_debug(lima::Simulator& simulator, const Options& options, lima::Solution
              << ",\"goal\":" << coord_json(agent.goal)
              << ",\"active\":" << (agent.active ? "true" : "false")
              << ",\"scheduled\":" << (agent.scheduled() ? "true" : "false")
+             << ",\"awaiting_goal\":" << (agent.awaiting_goal ? "true" : "false")
+             << ",\"tasks_completed\":" << agent.tasks_completed
              << ",\"wait_steps\":" << agent.wait_steps
              << ",\"wait_reason\":\"" << kWaitReasonNames[static_cast<std::size_t>(agent.wait_reason)] << '"'
              << ",\"moves\":" << agent.moves

@@ -124,8 +124,16 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
         agents_.push_back(std::move(agent));
     }
     for (Agent& agent : agents_) {
-        if (agent.position == agent.goal) {
+        if (agent.position != agent.goal) continue;
+        if (config_.goal_behavior == GoalBehavior::Disappear) {
             agent.active = false;
+            ++stats_.completed;
+        } else if (config_.goal_behavior == GoalBehavior::Stay) {
+            agent.reached = true;
+            ++stats_.completed;
+        } else {
+            agent.awaiting_goal = true;
+            ++agent.tasks_completed;
             ++stats_.completed;
         }
     }
@@ -182,6 +190,13 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
         rescue_member_.resize(agents_.size(), kNoGroup);
         scheduled_reserved_.resize(static_cast<std::size_t>(map_.cell_count()));
         movement_origin_.resize(agents_.size(), kInvalidCell);
+    }
+    if (goal_allocator_ && std::any_of(agents_.begin(), agents_.end(), [](const Agent& agent) {
+            return agent.awaiting_goal;
+        })) {
+        for (const Agent& agent : agents_) if (agent.active)
+            occupancy_[static_cast<std::size_t>(agent.position)] = agent.id;
+        assign_lifelong_goals();
     }
 }
 
@@ -683,20 +698,34 @@ bool Simulator::step() {
 
 void Simulator::assign_lifelong_goals() {
     for (Agent& agent : agents_) {
-        // Reassignment is deferred while the agent still executes a scheduled
-        // intersection path: replacing its route mid-schedule would corrupt
-        // the coordinator's committed plan.  Deferred agents retry next step.
-        if (!agent.active || !agent.awaiting_goal || agent.scheduled()) continue;
-        std::vector<CellId> route;
+        if (!agent.active || !agent.awaiting_goal) continue;
+
+        // A task arrival is serviced in this same timestep, including when
+        // the agent reached its goal in the middle of a committed
+        // intersection schedule.  In that case the already-broadcast prefix
+        // remains immutable and the fresh route starts at the prefix's final
+        // cell.  This preserves cohort safety without introducing a parked
+        // or goal-less timestep between lifelong tasks.
+        const std::size_t anchor_index = std::min(
+            agent.route_cursor + agent.scheduling_remaining,
+            agent.route.empty() ? std::size_t{0} : agent.route.size() - 1);
+        const CellId anchor = agent.route.empty() ? agent.position : agent.route[anchor_index];
+        std::vector<CellId> suffix;
         const auto next_goal = goal_allocator_->reassign(
             agent.id, agent.goal, agent.position, occupancy_, [&](const CellId candidate) {
-                route = plan_global(agent.position, candidate);
-                return !route.empty() && route.front() == agent.position && route.back() == candidate;
+                suffix = plan_global(anchor, candidate);
+                return !suffix.empty() && suffix.front() == anchor && suffix.back() == candidate;
             });
-        if (!next_goal) continue;
+        if (!next_goal)
+            throw std::runtime_error("lifelong goal pool has no reachable free task");
         agent.goal = *next_goal;
-        agent.route = std::move(route);
-        agent.route_cursor = 0;
+        if (agent.scheduled()) {
+            agent.route.resize(anchor_index + 1);
+            agent.route.insert(agent.route.end(), suffix.begin() + 1, suffix.end());
+        } else {
+            agent.route = std::move(suffix);
+            agent.route_cursor = 0;
+        }
         agent.wait_steps = 0;
         agent.wait_reason = WaitReason::None;
         agent.awaiting_goal = false;
@@ -1224,6 +1253,10 @@ std::string Simulator::check_invariants() const {
         }
         if (!seen.insert(agent.position).second) {
             problem << "vertex conflict at cell " << agent.position << " involving agent " << agent.id;
+            return problem.str();
+        }
+        if (config_.goal_behavior == GoalBehavior::Lifelong && agent.awaiting_goal) {
+            problem << "lifelong agent " << agent.id << " has no next goal after task completion";
             return problem.str();
         }
         if (agent.route_cursor >= agent.route.size() || agent.route[agent.route_cursor] != agent.position) {
