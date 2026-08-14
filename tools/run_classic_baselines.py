@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import hashlib
 import json
 import os
 import re
@@ -76,6 +77,14 @@ def atomic_json(path: Path, payload: dict) -> None:
         stream.write("\n")
         temporary = Path(stream.name)
     os.replace(temporary, path)
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def parse_movingai(path: Path, count: int):
@@ -193,6 +202,9 @@ def main() -> int:
         "not_the_lima_main_task": True,
         "maps": maps, "densities": densities, "scenarios": scenarios,
         "algorithms": algorithms, "time_limit_seconds": args.time_limit,
+        "binaries": {name: {"path": str(binaries[name].resolve()),
+                            "sha256": sha256(binaries[name].resolve())}
+                     for name in algorithms},
         "job_count": len(jobs),
     })
 
