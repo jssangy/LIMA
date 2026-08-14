@@ -67,7 +67,7 @@ void usage() {
                  "            [--solver ida|greedy|beam] [--solver-iterations N] [--bound-step N] [--no-fastpath]\n"
                  "            [--lb-mode legacy|bf|tt] [--dominance] [--solver-nodes N]\n"
                  "            [--routing dor|direct] [--capacity-formula code|paper] [--isolation-cap N]\n"
-                 "            [--no-pibt-corridor] [--pibt-sink-yield] [--pibt-arm-retreat]\n"
+                 "            [--no-pibt-corridor] [--pibt-sink-yield] [--pibt-arm-retreat[-last]]\n"
                  "            [--pibt-age-rate] [--pibt-replan N] [--shuffle-order SEED]\n"
                  "            [--no-discharge] [--metrics DIR] [--trace-jsonl FILE]\n"
                  "debug mode reads commands from stdin and answers in JSON:\n"
@@ -122,6 +122,7 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--no-pibt-corridor") options.sim.pibt_corridor = false;
         else if (arg == "--pibt-sink-yield") options.sim.pibt_sink_yield = true;
         else if (arg == "--pibt-arm-retreat") options.sim.pibt_arm_retreat = true;
+        else if (arg == "--pibt-arm-retreat-last") options.sim.pibt_arm_retreat_last = true;
         else if (arg == "--pibt-age-rate") options.sim.pibt_age_rate = true;
         else if (arg == "--pibt-replan") options.sim.pibt_replan = static_cast<std::uint32_t>(std::stoul(std::string(value())));
         else if (arg == "--shuffle-order") options.sim.shuffle_order = std::stoll(std::string(value()));
@@ -213,6 +214,7 @@ bool has_non_default_config(const Options& options) {
         || !options.sim.pibt_corridor
         || options.sim.pibt_sink_yield
         || options.sim.pibt_arm_retreat
+        || options.sim.pibt_arm_retreat_last
         || options.sim.pibt_age_rate
         || options.sim.pibt_replan != 0
         || options.sim.shuffle_order >= 0
@@ -236,6 +238,7 @@ void print_provenance(const Options& options) {
     if (!options.sim.pibt_corridor) std::cout << " pibt=off";
     if (options.sim.pibt_sink_yield) std::cout << " sink_yield=on";
     if (options.sim.pibt_arm_retreat) std::cout << " arm_retreat=on";
+    if (options.sim.pibt_arm_retreat_last) std::cout << " arm_retreat=last";
     if (options.sim.pibt_age_rate) std::cout << " age_rate=on";
     if (options.sim.pibt_replan != 0) std::cout << " replan=" << options.sim.pibt_replan;
     if (options.sim.shuffle_order >= 0) std::cout << " shuffle=" << options.sim.shuffle_order;

@@ -169,7 +169,8 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
         goal_allocator_ = std::make_unique<GoalAllocator>(map_, agents_, seed ^ task_seed_salt);
     }
     if (config_.pibt_corridor) {
-        pibt_ = std::make_unique<PibtResolver>(map_, seed, config_.pibt_age_rate);
+        pibt_ = std::make_unique<PibtResolver>(map_, seed, config_.pibt_age_rate,
+                                               config_.pibt_arm_retreat_last);
         pibt_eligible_.resize(agents_.size());
         pibt_priority_class_.resize(agents_.size());
         pibt_forced_next_.resize(agents_.size(), kInvalidCell);
@@ -1003,7 +1004,7 @@ void Simulator::run_pibt_movement() {
     }
 
     pibt_->resolve(agents_, occupancy_, pibt_eligible_, pibt_priority_class_,
-        [&](const AgentId id, const CellId candidate) {
+        [&](const AgentId id, const CellId candidate, const bool relaxed) {
             const Agent& agent = agents_[static_cast<std::size_t>(id)];
             const CellId forced = pibt_forced_next_[static_cast<std::size_t>(id)];
             if (forced != kInvalidCell) return candidate == forced;
@@ -1024,7 +1025,9 @@ void Simulator::run_pibt_movement() {
             // remains subject to the existing intersection admission gate.
             if (!candidate_outside && candidate != agent.intended_cell()
                 && !rejoins_current_waypoint) {
-                if (!config_.pibt_arm_retreat) return false;
+                const bool retreat_allowed = config_.pibt_arm_retreat
+                    || (config_.pibt_arm_retreat_last && relaxed);
+                if (!retreat_allowed) return false;
                 // Arm-retreat (opt-in straggler fix): permit the detour into
                 // an arm cell (never a center) of intersections without an
                 // active schedule; the admission gate below still applies.

@@ -17,6 +17,20 @@ run_cell() {
   case "$v" in
     base) flags="" ;;
     retreat) flags="--pibt-arm-retreat" ;;
+    retreatlast) flags="--pibt-arm-retreat-last" ;;
+    retreatlast_replan8) flags="--pibt-arm-retreat-last --pibt-replan 8" ;;
+    retreatlast_nodisc) flags="--pibt-arm-retreat-last --no-discharge" ;;
+    retreatlast_drandom) flags="--pibt-arm-retreat-last --discharge-random" ;;
+    retreatlast_dpartial07) flags="--pibt-arm-retreat-last --discharge-partial 0.7" ;;
+    retreatlast_dallarms) flags="--pibt-arm-retreat-last --discharge-all-arms" ;;
+    retreatlast_dstalled) flags="--pibt-arm-retreat-last --discharge-stalled-neighbor" ;;
+    retreatlast_ddet) flags="--pibt-arm-retreat-last --discharge-deterministic" ;;
+    shufflelast*) flags="--pibt-arm-retreat-last --shuffle-order ${v#shufflelast}" ;;
+    # W7: winning straggler fix (replan) under a per-cycle random processing order.
+    shuffle*) flags="--pibt-replan 8 --shuffle-order ${v#shuffle}" ;;
+    # W7 control: same seeds without the fix, to separate order sensitivity
+    # from the straggler defect itself.
+    bareshuffle*) flags="--shuffle-order ${v#bareshuffle}" ;;
     agerate) flags="--pibt-age-rate" ;;
     replan8) flags="--pibt-replan 8" ;;
     retreat_replan8) flags="--pibt-arm-retreat --pibt-replan 8" ;;
@@ -29,7 +43,14 @@ run_cell() {
     retreat_hyst1) flags="--pibt-arm-retreat --admit-hysteresis 1" ;;
     retreat_subset) flags="--pibt-arm-retreat --subset-scheduling" ;;
     retreat_capfix) flags="--pibt-arm-retreat --capacity-formula paper" ;;
-    shuffle*) flags="--pibt-arm-retreat --shuffle-order ${v#shuffle}" ;;
+    # Discharge re-verification (Gate D) on top of the winning straggler fix.
+    replan8_nodisc) flags="--pibt-replan 8 --no-discharge" ;;
+    replan8_drandom) flags="--pibt-replan 8 --discharge-random" ;;
+    replan8_dpartial07) flags="--pibt-replan 8 --discharge-partial 0.7" ;;
+    replan8_dpartial05) flags="--pibt-replan 8 --discharge-partial 0.5" ;;
+    replan8_dallarms) flags="--pibt-replan 8 --discharge-all-arms" ;;
+    replan8_dstalled) flags="--pibt-replan 8 --discharge-stalled-neighbor" ;;
+    replan8_ddetonly) flags="--pibt-replan 8 --discharge-random --discharge-deterministic" ;;
     *) echo "unknown variant $v" >&2; return 1 ;;
   esac
   tag="${map}_a${agents}_x${sidx}_${v}"

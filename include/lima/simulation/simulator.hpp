@@ -85,6 +85,12 @@ struct SimulatorConfig {
     // the same admission gate as route crossings.  Restores original-PIBT
     // pushability at aisle mouths whose only sidestep is an arm cell.
     bool pibt_arm_retreat{false};
+    // Last-resort form of the same rule: the arm cell is offered only to an
+    // agent that found no strict candidate at all, i.e. one that would
+    // otherwise be frozen in place.  Strict traffic is never displaced, so the
+    // perturbation stays confined to the deadlocked pair instead of changing
+    // routing everywhere (the eager form's failure mode on cross_3030).
+    bool pibt_arm_retreat_last{false};
     // Age-rate asymmetry: agents accrue priority age at distinct per-agent
     // rates so frozen equal-age relative orders eventually rotate.
     bool pibt_age_rate{false};

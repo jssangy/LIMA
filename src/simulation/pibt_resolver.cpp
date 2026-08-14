@@ -8,8 +8,10 @@
 
 namespace lima {
 
-PibtResolver::PibtResolver(const GridMap& map, const std::uint64_t seed, const bool age_rate)
+PibtResolver::PibtResolver(const GridMap& map, const std::uint64_t seed, const bool age_rate,
+                           const bool relaxed_pass)
     : map_(map), rng_(seed ^ 0x9e3779b97f4a7c15ULL), age_rate_(age_rate),
+      relaxed_pass_(relaxed_pass),
       reserved_by_(static_cast<std::size_t>(map.cell_count()), kNoAgent) {}
 
 void PibtResolver::resize(const std::size_t agent_count) {
@@ -37,6 +39,23 @@ int PibtResolver::candidate_distance(const Agent& agent, const CellId candidate)
 }
 
 bool PibtResolver::assign(const AgentId id) {
+    if (try_candidates(id, false)) return true;
+    // Last-resort pass: an agent that found no strict candidate would be
+    // frozen in place, so it may now consider cells its caller permits only
+    // under relaxation.  Cells already attempted in the strict pass stay
+    // reserved by this agent and are therefore not retried.
+    if (relaxed_pass_ && try_candidates(id, true)) return true;
+
+    // Failed inheritance: the blocker remains in place. As in the original
+    // PIBT procedure this overwrites the parent's provisional reservation of
+    // the same current cell, forcing the parent to backtrack to another node.
+    const auto agent_index = static_cast<std::size_t>(id);
+    next_positions_[agent_index] = agents_[agent_index].position;
+    reserved_by_[static_cast<std::size_t>(agents_[agent_index].position)] = id;
+    return false;
+}
+
+bool PibtResolver::try_candidates(const AgentId id, const bool relaxed) {
     const auto agent_index = static_cast<std::size_t>(id);
     const Agent& agent = agents_[agent_index];
 
@@ -53,7 +72,7 @@ bool PibtResolver::assign(const AgentId id) {
 
     for (std::size_t i = 0; i < candidate_count; ++i) {
         const CellId candidate = candidates[i];
-        if (!(*candidate_allowed_)(id, candidate)) continue;
+        if (!(*candidate_allowed_)(id, candidate, relaxed)) continue;
         if (reserved_by_[static_cast<std::size_t>(candidate)] != kNoAgent) continue;
         const AgentId occupant = occupancy_[static_cast<std::size_t>(candidate)];
         if (occupant != kNoAgent
@@ -74,12 +93,6 @@ bool PibtResolver::assign(const AgentId id) {
         }
         return true;
     }
-
-    // Failed inheritance: the blocker remains in place. As in the original
-    // PIBT procedure this overwrites the parent's provisional reservation of
-    // the same current cell, forcing the parent to backtrack to another node.
-    next_positions_[agent_index] = agent.position;
-    reserved_by_[static_cast<std::size_t>(agent.position)] = id;
     return false;
 }
 

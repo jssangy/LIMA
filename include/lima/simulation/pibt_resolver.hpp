@@ -15,12 +15,21 @@ namespace lima {
 // are not eligible are treated as fixed obstacles for this timestep.
 class PibtResolver {
 public:
-    using CandidateAllowed = std::function<bool(AgentId, CellId)>;
+    // `relaxed` is false on the normal candidate pass and true on the optional
+    // second pass, which an agent takes only when every strict candidate
+    // failed, i.e. when it would otherwise be forced to stay in place.
+    // Callers without a relaxed rule ignore the argument, which keeps the
+    // second pass a no-op and the resulting assignment unchanged.
+    using CandidateAllowed = std::function<bool(AgentId, CellId, bool)>;
 
     // age_rate: when true, waiting agents accrue priority age at distinct
     // per-agent rates (1 + rank mod 8) instead of a uniform +1, so a frozen
     // equal-age relative order eventually rotates (straggler-fix variant).
-    PibtResolver(const GridMap& map, std::uint64_t seed, bool age_rate = false);
+    // relaxed_pass: enable the second (last-resort) candidate pass.  Left off,
+    // assign() behaves exactly as the single-pass original, including its
+    // consumption of the shared RNG stream.
+    PibtResolver(const GridMap& map, std::uint64_t seed, bool age_rate = false,
+                 bool relaxed_pass = false);
 
     void resolve(std::span<const Agent> agents,
                  std::span<const AgentId> occupancy,
@@ -33,6 +42,7 @@ private:
     const GridMap& map_;
     std::mt19937_64 rng_;
     bool age_rate_{false};
+    bool relaxed_pass_{false};
     std::vector<std::uint64_t> priority_age_;
     std::vector<std::uint32_t> initial_distance_;
     std::vector<std::uint32_t> priority_rank_;
@@ -48,6 +58,7 @@ private:
 
     void resize(std::size_t agent_count);
     [[nodiscard]] bool assign(AgentId agent);
+    [[nodiscard]] bool try_candidates(AgentId agent, bool relaxed);
     [[nodiscard]] int candidate_distance(const Agent& agent, CellId candidate) const noexcept;
 };
 
