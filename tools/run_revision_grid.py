@@ -61,6 +61,7 @@ VARIANTS = {
     "base": (),
     "tt": ("--lb-mode", "tt"),
     "ttdom": ("--lb-mode", "tt", "--dominance"),
+    "greedy": ("--solver", "greedy"),
     "beam": ("--solver", "beam"),
     "beam_nodisc": ("--solver", "beam", "--no-discharge"),
     "beam_drandom": ("--solver", "beam", "--discharge-random"),
