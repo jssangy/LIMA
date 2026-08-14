@@ -63,8 +63,48 @@ VARIANTS = {
     "ttdom": ("--lb-mode", "tt", "--dominance"),
     "greedy": ("--solver", "greedy"),
     "beam": ("--solver", "beam"),
+    "beam_paper": ("--solver", "beam", "--capacity-formula", "paper"),
+    "beam_cap4": ("--solver", "beam", "--isolation-cap", "4"),
+    "beam_cap8": ("--solver", "beam", "--isolation-cap", "8"),
+    "beam_cap12": ("--solver", "beam", "--isolation-cap", "12"),
+    "beam_margin1": ("--solver", "beam", "--isolation-margin", "1"),
+    "beam_margin2": ("--solver", "beam", "--isolation-margin", "2"),
+    "beam_hyst1": ("--solver", "beam", "--admit-hysteresis", "1"),
+    "beam_hyst2": ("--solver", "beam", "--admit-hysteresis", "2"),
+    "beam_subset": ("--solver", "beam", "--subset-scheduling"),
+    "beam_noresync": ("--solver", "beam", "--no-gate-resync"),
     "beam_nodisc": ("--solver", "beam", "--no-discharge"),
     "beam_drandom": ("--solver", "beam", "--discharge-random"),
+    "beam_dunweighted": ("--solver", "beam", "--discharge-unweighted"),
+    "beam_dallarms": ("--solver", "beam", "--discharge-all-arms"),
+    "beam_dstalled": ("--solver", "beam", "--discharge-stalled-neighbor"),
+    "beam_dpartial50": ("--solver", "beam", "--discharge-partial", "0.50"),
+    "beam_dpartial75": ("--solver", "beam", "--discharge-partial", "0.75"),
+    "beam_dallarms_stalled": (
+        "--solver", "beam", "--discharge-all-arms", "--discharge-stalled-neighbor"
+    ),
+    "beam_dpartial75_stalled": (
+        "--solver", "beam", "--discharge-partial", "0.75", "--discharge-stalled-neighbor"
+    ),
+    "beam_replan4": ("--solver", "beam", "--pibt-replan", "4"),
+    "beam_replan8": ("--solver", "beam", "--pibt-replan", "8"),
+    "beam_sink_yield": ("--solver", "beam", "--pibt-sink-yield"),
+    "beam_retreat": ("--solver", "beam", "--pibt-arm-retreat"),
+    "beam_retreatlast": ("--solver", "beam", "--pibt-arm-retreat-last"),
+    "beam_agerate": ("--solver", "beam", "--pibt-age-rate"),
+    "beam_retreat_replan8": (
+        "--solver", "beam", "--pibt-arm-retreat", "--pibt-replan", "8"
+    ),
+    "beam_retreatlast_replan8": (
+        "--solver", "beam", "--pibt-arm-retreat-last", "--pibt-replan", "8"
+    ),
+    "beam_yield_replan8": (
+        "--solver", "beam", "--pibt-sink-yield", "--pibt-replan", "8"
+    ),
+    "beam_straggler_all": (
+        "--solver", "beam", "--pibt-sink-yield", "--pibt-arm-retreat-last",
+        "--pibt-age-rate", "--pibt-replan", "8"
+    ),
     "beam_shuffle1": ("--solver", "beam", "--shuffle-order", "1"),
     "beam_shuffle2": ("--solver", "beam", "--shuffle-order", "2"),
     "beam_shuffle3": ("--solver", "beam", "--shuffle-order", "3"),

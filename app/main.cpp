@@ -68,6 +68,7 @@ void usage() {
                  "            [--solver ida|greedy|beam|hybrid] [--solver-iterations N] [--bound-step N] [--no-fastpath]\n"
                  "            [--lb-mode legacy|bf|tt] [--dominance] [--solver-nodes N]\n"
                  "            [--routing dor|direct] [--capacity-formula code|paper] [--isolation-cap N]\n"
+                 "            [--discharge-unweighted|--discharge-random] [--discharge-partial F]\n"
                  "            [--no-pibt-corridor] [--pibt-sink-yield] [--pibt-arm-retreat[-last]]\n"
                  "            [--pibt-age-rate] [--pibt-replan N] [--shuffle-order SEED] [--failure-prob P]\n"
                  "            [--no-discharge] [--metrics DIR] [--trace-jsonl FILE]\n"
@@ -109,6 +110,10 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--discharge-stalled-neighbor") options.sim.discharge.allow_stalled_neighbor = true;
         else if (arg == "--discharge-deterministic") options.sim.discharge.deterministic_cycle = true;
         else if (arg == "--discharge-avail-weighted") options.sim.discharge.avail_weighted = true;
+        else if (arg == "--discharge-unweighted") {
+            options.sim.discharge.deterministic_cycle = true;
+            options.sim.discharge.avail_weighted = false;
+        }
         else if (arg == "--discharge-random") {
             options.sim.discharge.deterministic_cycle = false;
             options.sim.discharge.avail_weighted = false;
@@ -244,6 +249,10 @@ void print_provenance(const Options& options) {
     if (options.sim.solver.lb_mode != "legacy") std::cout << " lb=" << options.sim.solver.lb_mode;
     if (options.sim.solver.dominance) std::cout << " dom=on";
     if (options.sim.isolation.cap >= 0) std::cout << " cap=" << options.sim.isolation.cap;
+    if (options.sim.isolation.margin != 0) std::cout << " margin=" << options.sim.isolation.margin;
+    if (options.sim.isolation.hysteresis != 0) std::cout << " hysteresis=" << options.sim.isolation.hysteresis;
+    if (!options.sim.gate_resync) std::cout << " gate_resync=off";
+    if (options.sim.subset_scheduling) std::cout << " subset=on";
     if (!options.sim.pibt_corridor) std::cout << " pibt=off";
     if (options.sim.pibt_sink_yield) std::cout << " sink_yield=on";
     if (options.sim.pibt_arm_retreat) std::cout << " arm_retreat=on";
@@ -253,6 +262,14 @@ void print_provenance(const Options& options) {
     if (options.sim.shuffle_order >= 0) std::cout << " shuffle=" << options.sim.shuffle_order;
     if (options.sim.failure_probability != 0.0)
         std::cout << " failure_prob=" << options.sim.failure_probability;
+    if (!options.sim.discharge.deterministic_cycle)
+        std::cout << " discharge_policy=random";
+    else if (!options.sim.discharge.avail_weighted)
+        std::cout << " discharge_policy=load_only";
+    if (options.sim.discharge.all_arms) std::cout << " discharge_all_arms=on";
+    if (options.sim.discharge.allow_stalled_neighbor) std::cout << " discharge_stalled_neighbor=on";
+    if (options.sim.discharge.partial_stall != 1.0)
+        std::cout << " discharge_partial=" << options.sim.discharge.partial_stall;
     if (options.sim.goal_behavior == lima::GoalBehavior::Stay)
         std::cout << " goal_behavior=stay";
     else if (options.sim.goal_behavior == lima::GoalBehavior::Lifelong)
