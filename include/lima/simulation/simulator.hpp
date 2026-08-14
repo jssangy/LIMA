@@ -27,6 +27,7 @@ struct SimulationStats {
     std::uint64_t committed_moves{};
     std::uint64_t waits{};
     std::uint64_t detected_deadlocks{};
+    std::uint64_t command_failures{};
 };
 
 enum class GoalBehavior : std::uint8_t {
@@ -105,6 +106,11 @@ struct SimulatorConfig {
     // by a fresh seeded random permutation each cycle.  Completion must be
     // invariant to this order for the Gate B completeness claim to hold.
     std::int64_t shuffle_order{-1};
+    // E12 actuator uncertainty: a commanded move is independently dropped
+    // with this probability.  A dropped command becomes a wait; coupled move
+    // groups and dependency chains are conservatively stopped as needed to
+    // preserve vertex/edge safety.
+    double failure_probability{0.0};
     GoalBehavior goal_behavior{GoalBehavior::Disappear};
     bool direct_routing{false};   // skip the highway-alignment (DoR-style) global router
     std::string metrics_dir;      // W1 instrumentation output; empty = disabled
@@ -156,6 +162,7 @@ private:
     SimulatorConfig config_;
     std::mt19937_64 rng_;
     std::mt19937_64 shuffle_rng_;  // W7 only; dedicated so rng_ draws are untouched
+    std::mt19937_64 failure_rng_;  // E12 only; dedicated so p=0 preserves every legacy draw
     std::unique_ptr<Planner> planner_;
     IntersectionTopology topology_;
     std::vector<Agent> agents_;
@@ -170,6 +177,7 @@ private:
     std::vector<std::uint8_t> pibt_priority_class_;
     std::vector<CellId> pibt_forced_next_;
     std::vector<CellId> pibt_next_;
+    std::vector<std::uint8_t> execution_failed_;
     std::vector<std::uint8_t> rescue_candidate_;   // pibt_corridor mode only
     std::vector<std::uint8_t> rescue_group_;
     std::vector<IntersectionId> rescue_member_;
@@ -184,6 +192,8 @@ private:
     std::vector<int> intersection_capacity_;
     std::vector<std::uint8_t> deadlock_active_;
     std::vector<std::size_t> deadlock_priority_;
+
+    [[nodiscard]] bool sample_command_failure(AgentId agent);
 
     // Per-timestep workspaces retain their capacity between calls to step().
     std::vector<std::size_t> inside_counts_;

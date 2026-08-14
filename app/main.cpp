@@ -69,7 +69,7 @@ void usage() {
                  "            [--lb-mode legacy|bf|tt] [--dominance] [--solver-nodes N]\n"
                  "            [--routing dor|direct] [--capacity-formula code|paper] [--isolation-cap N]\n"
                  "            [--no-pibt-corridor] [--pibt-sink-yield] [--pibt-arm-retreat[-last]]\n"
-                 "            [--pibt-age-rate] [--pibt-replan N] [--shuffle-order SEED]\n"
+                 "            [--pibt-age-rate] [--pibt-replan N] [--shuffle-order SEED] [--failure-prob P]\n"
                  "            [--no-discharge] [--metrics DIR] [--trace-jsonl FILE]\n"
                  "debug mode reads commands from stdin and answers in JSON:\n"
                  "            step [n] | state | agent ID | intersection ID | summary | invariants | quit\n";
@@ -128,6 +128,11 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--pibt-age-rate") options.sim.pibt_age_rate = true;
         else if (arg == "--pibt-replan") options.sim.pibt_replan = static_cast<std::uint32_t>(std::stoul(std::string(value())));
         else if (arg == "--shuffle-order") options.sim.shuffle_order = std::stoll(std::string(value()));
+        else if (arg == "--failure-prob") {
+            options.sim.failure_probability = std::stod(std::string(value()));
+            if (options.sim.failure_probability < 0.0 || options.sim.failure_probability > 1.0)
+                throw std::invalid_argument("failure-prob must be in [0,1]");
+        }
         else if (arg == "--goal-behavior") {
             const auto name = value();
             if (name == "disappear") options.sim.goal_behavior = lima::GoalBehavior::Disappear;
@@ -220,6 +225,7 @@ bool has_non_default_config(const Options& options) {
         || options.sim.pibt_age_rate
         || options.sim.pibt_replan != 0
         || options.sim.shuffle_order >= 0
+        || options.sim.failure_probability != 0.0
         || options.sim.goal_behavior != lima::GoalBehavior::Disappear
         || !options.sim.discharge_enabled
         || options.sim.direct_routing
@@ -245,6 +251,8 @@ void print_provenance(const Options& options) {
     if (options.sim.pibt_age_rate) std::cout << " age_rate=on";
     if (options.sim.pibt_replan != 0) std::cout << " replan=" << options.sim.pibt_replan;
     if (options.sim.shuffle_order >= 0) std::cout << " shuffle=" << options.sim.shuffle_order;
+    if (options.sim.failure_probability != 0.0)
+        std::cout << " failure_prob=" << options.sim.failure_probability;
     if (!options.sim.discharge_enabled) std::cout << " discharge=off";
     if (options.no_trace) std::cout << " trace=off";
     std::cout << " commit=" << LIMA_COMMIT;
@@ -475,8 +483,10 @@ int main(int argc, char** argv) {
                   << " steps=" << stats.timestep
                   << " completed=" << stats.completed << '/' << tasks.size()
                   << " moves=" << stats.committed_moves
-                  << " waits=" << stats.waits
-                  << " deadlocks=" << stats.detected_deadlocks
+                  << " waits=" << stats.waits;
+        if (options.sim.failure_probability != 0.0)
+            std::cout << " failures=" << stats.command_failures;
+        std::cout << " deadlocks=" << stats.detected_deadlocks
                   << " intersections=" << simulator.topology().intersections().size()
                   << " elapsed_seconds=" << solve_seconds;
         if (options.mode == RunMode::Solve) {

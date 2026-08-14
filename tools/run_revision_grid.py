@@ -96,6 +96,10 @@ VARIANTS = {
     "replan8_drandom": ("--pibt-replan", "8", "--discharge-random"),
     "lifelong": ("--goal-behavior", "lifelong"),
     "beam_stay": ("--solver", "beam", "--goal-behavior", "stay"),
+    "beam_failure01": ("--solver", "beam", "--failure-prob", "0.01"),
+    "beam_failure05": ("--solver", "beam", "--failure-prob", "0.05"),
+    "beam_failure10": ("--solver", "beam", "--failure-prob", "0.10"),
+    "beam_failure20": ("--solver", "beam", "--failure-prob", "0.20"),
 }
 
 

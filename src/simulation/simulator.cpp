@@ -76,6 +76,7 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
     : map_(std::move(map)), config_(std::move(config)), rng_(seed),
       shuffle_rng_(config_.shuffle_order >= 0
           ? static_cast<std::uint64_t>(config_.shuffle_order) ^ 0xd1b54a32d192ed03ULL : 0ULL),
+      failure_rng_(seed ^ 0xa0761d6478bd642fULL),
       planner_(make_planner(planner_kind, map_, rng_)),
       topology_(IntersectionTopology::build(map_)),
       solver_(make_solver(config_.solver)), coordinator_(*solver_, config_.pibt_corridor),
@@ -131,6 +132,7 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
     initial_route_lengths_.reserve(agents_.size());
     for (const Agent& agent : agents_) initial_route_lengths_.push_back(agent.route.size());
     completion_steps_.resize(agents_.size(), 0);
+    execution_failed_.resize(agents_.size(), 0);
     if (!config_.metrics_dir.empty()) metrics_ = std::make_unique<MetricsCollector>(config_.metrics_dir);
     if (!config_.trace_path.empty()) {
         tracer_ = std::make_unique<StepTracer>(config_.trace_path, map_, config_.map_file, seed, agents_);
@@ -181,6 +183,15 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
         scheduled_reserved_.resize(static_cast<std::size_t>(map_.cell_count()));
         movement_origin_.resize(agents_.size(), kInvalidCell);
     }
+}
+
+bool Simulator::sample_command_failure(const AgentId agent) {
+    if (config_.failure_probability <= 0.0) return false;
+    std::bernoulli_distribution distribution(config_.failure_probability);
+    if (!distribution(failure_rng_)) return false;
+    execution_failed_[static_cast<std::size_t>(agent)] = 1;
+    ++stats_.command_failures;
+    return true;
 }
 
 
@@ -310,6 +321,7 @@ bool Simulator::step() {
     });
     if (all_stalled) return false;
     ++stats_.timestep;
+    std::fill(execution_failed_.begin(), execution_failed_.end(), 0);
 
     const std::size_t intersection_count = topology_.intersections().size();
     prev_inside_counts_ = inside_counts_;
@@ -564,6 +576,12 @@ bool Simulator::step() {
             continue;
         }
         if (occupancy_[static_cast<std::size_t>(next)] == kNoAgent) {
+            if (next != agent.position && sample_command_failure(agent.id)) {
+                ++agent.wait_steps;
+                ++stats_.waits;
+                agent.wait_reason = WaitReason::ExecutionFailure;
+                continue;
+            }
             occupancy_[static_cast<std::size_t>(agent.position)] = kNoAgent;
             update_available_on_move(agent.position, next);
             count_zone_entries(agent.position, next);
@@ -596,6 +614,22 @@ bool Simulator::step() {
             }
         }
     }
+    // Unaffected scheduled cohorts move atomically.  If any independently
+    // sampled command is dropped, stop the whole cohort for this timestep so
+    // no follower enters the failed agent's cell.
+    if (config_.failure_probability > 0.0) {
+        for (const IntersectionId iid_value : deadlock_queue_) {
+            const auto iid = static_cast<std::size_t>(iid_value);
+            if (blocked_[iid] || (iid < rescue_group_.size() && rescue_group_[iid] != 0)) continue;
+            bool failed = false;
+            for (const AgentId id : scheduled_members_[iid]) {
+                const Agent& agent = agents_[static_cast<std::size_t>(id)];
+                if (!agent.active || !agent.scheduled() || agent.intended_cell() == agent.position) continue;
+                failed = sample_command_failure(id) || failed;
+            }
+            if (failed) blocked_[iid] = true;
+        }
+    }
     }
     for (Agent& agent : agents_) {
         if (!agent.active || !agent.scheduled()) continue;
@@ -604,7 +638,8 @@ bool Simulator::step() {
         if (iid < blocked_.size() && blocked_[iid]) {
             ++agent.wait_steps;
             ++stats_.waits;
-            agent.wait_reason = WaitReason::ScheduleGroup;
+            agent.wait_reason = execution_failed_[static_cast<std::size_t>(agent.id)] != 0
+                ? WaitReason::ExecutionFailure : WaitReason::ScheduleGroup;
             continue;
         }
         occupancy_[static_cast<std::size_t>(agent.position)] = kNoAgent;
@@ -836,6 +871,17 @@ void Simulator::compute_rescue_groups() {
             for (const AgentId id : members) rescue_member_[static_cast<std::size_t>(id)] = kNoGroup;
             continue;
         }
+        bool command_failed = false;
+        for (const AgentId id : members) {
+            const Agent& agent = agents_[static_cast<std::size_t>(id)];
+            if (next_for(agent) != agent.position)
+                command_failed = sample_command_failure(id) || command_failed;
+        }
+        if (command_failed) {
+            blocked_[iid] = true;
+            for (const AgentId id : members) rescue_member_[static_cast<std::size_t>(id)] = kNoGroup;
+            continue;
+        }
         rescue_group_[iid] = 1;
         for (const CellId destination : destinations)
             scheduled_reserved_[static_cast<std::size_t>(destination)] = 1;
@@ -991,6 +1037,12 @@ void Simulator::run_pibt_movement() {
             continue;
         }
         if (occupancy_[static_cast<std::size_t>(next)] == kNoAgent) {
+            if (next != agent.position && sample_command_failure(agent.id)) {
+                ++agent.wait_steps;
+                ++stats_.waits;
+                agent.wait_reason = WaitReason::ExecutionFailure;
+                continue;
+            }
             occupancy_[static_cast<std::size_t>(agent.position)] = kNoAgent;
             update_available_on_move(agent.position, next);
             count_zone_entries(agent.position, next);
@@ -1040,6 +1092,34 @@ void Simulator::run_pibt_movement() {
             return !block_intersection(agent.position, candidate, true);
         }, pibt_next_);
 
+    if (config_.failure_probability > 0.0) {
+        std::vector<std::uint8_t> cancelled(agents_.size(), 0);
+        for (const Agent& agent : agents_) {
+            const auto index = static_cast<std::size_t>(agent.id);
+            if (pibt_eligible_[index] == 0 || pibt_next_[index] == kInvalidCell
+                || pibt_next_[index] == agent.position) continue;
+            if (sample_command_failure(agent.id)) cancelled[index] = 1;
+        }
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (const Agent& agent : agents_) {
+                const auto index = static_cast<std::size_t>(agent.id);
+                if (pibt_eligible_[index] == 0 || cancelled[index] != 0
+                    || pibt_next_[index] == kInvalidCell || pibt_next_[index] == agent.position) continue;
+                const AgentId occupant = occupancy_[static_cast<std::size_t>(pibt_next_[index])];
+                if (occupant != kNoAgent && cancelled[static_cast<std::size_t>(occupant)] != 0) {
+                    cancelled[index] = 1;
+                    changed = true;
+                }
+            }
+        }
+        for (const Agent& agent : agents_) {
+            const auto index = static_cast<std::size_t>(agent.id);
+            if (cancelled[index] != 0) pibt_next_[index] = agent.position;
+        }
+    }
+
     for (Agent& agent : agents_) {
         const auto index = static_cast<std::size_t>(agent.id);
         if (pibt_eligible_[index] == 0) continue;
@@ -1057,7 +1137,8 @@ void Simulator::run_pibt_movement() {
             }
             ++agent.wait_steps;
             ++stats_.waits;
-            agent.wait_reason = WaitReason::Dependency;
+            agent.wait_reason = execution_failed_[index] != 0
+                ? WaitReason::ExecutionFailure : WaitReason::Dependency;
             continue;
         }
         const CellId forced = pibt_forced_next_[index];

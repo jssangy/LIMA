@@ -16,6 +16,7 @@ enum class WaitReason : std::uint8_t {
     EdgeSwap,
     Dependency,
     ScheduleGroup,
+    ExecutionFailure,
 };
 
 struct Agent {
