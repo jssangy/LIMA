@@ -39,6 +39,7 @@ def main() -> int:
     groups = defaultdict(list)
     for record in records:
         result = record.get("result", {})
+        resource = record.get("resource", {})
         elapsed = result.get("elapsed_s", result.get("comp_time", math.nan))
         row = {
             "tag": record["tag"], "map": record["map"],
@@ -49,6 +50,7 @@ def main() -> int:
             "makespan": number(result.get("makespan"), int),
             "elapsed_seconds": number(elapsed),
             "runner_wall_seconds": record["runner_wall_seconds"],
+            "max_rss_mb": number(resource.get("max_rss_kb")) / 1024.0,
             "timed_out": int(record.get("timed_out", False)),
         }
         cells.append(row)
@@ -75,6 +77,7 @@ def main() -> int:
             if solved else math.nan,
             "elapsed_seconds_median": statistics.median(finite_times) if finite_times else math.nan,
             "timeouts": sum(row["timed_out"] for row in rows),
+            "max_rss_mb_median": statistics.median(row["max_rss_mb"] for row in rows),
         })
     with (output / "summary_groups.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(summary[0]))
@@ -87,15 +90,16 @@ def main() -> int:
         "- Scope: exact submitted maps/scenarios; repeated sink goals; agents disappear at target.",
         f"- Records: {len(records)}; source directories: {', '.join(str(root) for root in roots)}.",
         f"- Algorithms: {', '.join(algorithms)}.", "",
-        "| map | density | agents | algorithm | solved | median makespan | median solved time (s) | timeouts |",
-        "|---|---:|---:|---|---:|---:|---:|---:|",
+        "| map | density | agents | algorithm | solved | median makespan | median solved time (s) | peak MiB | timeouts |",
+        "|---|---:|---:|---|---:|---:|---:|---:|---:|",
     ]
     for row in summary:
         makespan = "-" if math.isnan(row["makespan_median"]) else f"{row['makespan_median']:.0f}"
         elapsed = "-" if math.isnan(row["elapsed_seconds_median"]) else f"{row['elapsed_seconds_median']:.2f}"
         lines.append(
             f"| {row['map']} | {row['density_percent']}% | {row['agents']} | {row['algorithm']} | "
-            f"{row['solved']}/{row['runs']} | {makespan} | {elapsed} | {row['timeouts']} |"
+            f"{row['solved']}/{row['runs']} | {makespan} | {elapsed} | "
+            f"{row['max_rss_mb_median']:.0f} | {row['timeouts']} |"
         )
     lines.append("")
     for algorithm in algorithms:

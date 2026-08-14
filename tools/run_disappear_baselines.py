@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import tempfile
 import time
@@ -79,6 +80,13 @@ def parse_fields(text: str) -> dict[str, str]:
     return dict(re.findall(r"(\w+)=([^\s]+)", lines[-1]))
 
 
+def parse_resource(path: Path) -> dict[str, str]:
+    if not path.is_file():
+        return {}
+    return dict(re.findall(r"^(\w+)=([^\n]+)$",
+                           path.read_text(encoding="utf-8", errors="replace"), re.MULTILINE))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--algorithms", default="cbs,primal2")
@@ -114,7 +122,9 @@ def main() -> int:
     output = ROOT / args.output_dir
     records = output / "records"
     raw = output / "raw"
+    resources = output / "resources"
     raw.mkdir(parents=True, exist_ok=True)
+    resources.mkdir(parents=True, exist_ok=True)
     jobs = []
     for map_name in maps:
         spec = INSTANCES[map_name]
@@ -146,24 +156,34 @@ def main() -> int:
         map_path = (ROOT / spec.map_file).resolve()
         scenario_path = (ROOT / spec.scenario_template.format(s=scenario)).resolve()
         if algorithm == "cbs":
-            command = [str(cbs), "--map", str(map_path), "--scenario", str(scenario_path),
-                       "--agents", str(agents), "--time-limit", str(args.cbs_time_limit)]
+            solver_command = [str(cbs), "--map", str(map_path), "--scenario", str(scenario_path),
+                              "--agents", str(agents), "--time-limit", str(args.cbs_time_limit)]
             timeout = args.cbs_time_limit + 20
         else:
-            command = [str(primal_python), str(primal_script), "--map", str(map_path),
-                       "--scen", str(scenario_path), "-n", str(agents),
-                       "--seed", str(1234 + scenario), "--progress-every", "0"]
+            solver_command = [str(primal_python), str(primal_script), "--map", str(map_path),
+                              "--scen", str(scenario_path), "-n", str(agents),
+                              "--seed", str(1234 + scenario), "--progress-every", "0"]
             timeout = args.primal_time_limit
+        resource_file = resources / f"{tag}_{algorithm}.txt"
+        resource_file.unlink(missing_ok=True)
+        command = ["/usr/bin/time", "-f", "max_rss_kb=%M\nuser_seconds=%U\nsystem_seconds=%S",
+                   "-o", str(resource_file), *solver_command]
         started = time.time()
         timed_out = False
+        proc = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, start_new_session=True)
         try:
-            proc = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=timeout)
-            returncode, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
-        except subprocess.TimeoutExpired as error:
+            stdout, stderr = proc.communicate(timeout=timeout)
+            returncode = proc.returncode
+        except subprocess.TimeoutExpired:
             timed_out = True
+            os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                stdout, stderr = proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                stdout, stderr = proc.communicate()
             returncode = 124
-            stdout = error.stdout.decode() if isinstance(error.stdout, bytes) else (error.stdout or "")
-            stderr = error.stderr.decode() if isinstance(error.stderr, bytes) else (error.stderr or "")
         log_path = raw / f"{tag}_{algorithm}.log"
         log_path.write_text(stdout + ("\n[stderr]\n" + stderr if stderr else ""), encoding="utf-8")
         result = parse_fields(stdout)
@@ -177,6 +197,7 @@ def main() -> int:
             "agents": agents, "scenario": scenario, "algorithm": algorithm,
             "returncode": returncode, "timed_out": timed_out,
             "runner_wall_seconds": time.time() - started, "result": result,
+            "resource": parse_resource(resource_file),
             "command": command, "log": str(log_path.relative_to(ROOT)),
         }
         atomic_json(record, payload)
