@@ -74,6 +74,8 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
                      const std::uint64_t seed, SimulatorConfig config,
                      const std::span<const std::vector<Coord>> preset_routes)
     : map_(std::move(map)), config_(std::move(config)), rng_(seed),
+      shuffle_rng_(config_.shuffle_order >= 0
+          ? static_cast<std::uint64_t>(config_.shuffle_order) ^ 0xd1b54a32d192ed03ULL : 0ULL),
       planner_(make_planner(planner_kind, map_, rng_)),
       topology_(IntersectionTopology::build(map_)),
       solver_(make_solver(config_.solver)), coordinator_(*solver_, config_.pibt_corridor),
@@ -167,7 +169,7 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
         goal_allocator_ = std::make_unique<GoalAllocator>(map_, agents_, seed ^ task_seed_salt);
     }
     if (config_.pibt_corridor) {
-        pibt_ = std::make_unique<PibtResolver>(map_, seed);
+        pibt_ = std::make_unique<PibtResolver>(map_, seed, config_.pibt_age_rate);
         pibt_eligible_.resize(agents_.size());
         pibt_priority_class_.resize(agents_.size());
         pibt_forced_next_.resize(agents_.size(), kInvalidCell);
@@ -387,11 +389,17 @@ bool Simulator::step() {
         deadlock_waiting_[iid] = false;
         candidates_.push_back(intersection.id);
     }
-    std::sort(candidates_.begin(), candidates_.end(), [&](const IntersectionId lhs, const IntersectionId rhs) {
-        const auto l = inside_counts_[static_cast<std::size_t>(lhs)];
-        const auto r = inside_counts_[static_cast<std::size_t>(rhs)];
-        return l != r ? l < r : lhs < rhs;
-    });
+    if (config_.shuffle_order >= 0) {
+        // W7: replace the least-loaded-first processing order with a fresh
+        // seeded permutation every cycle; completion must not depend on it.
+        std::shuffle(candidates_.begin(), candidates_.end(), shuffle_rng_);
+    } else {
+        std::sort(candidates_.begin(), candidates_.end(), [&](const IntersectionId lhs, const IntersectionId rhs) {
+            const auto l = inside_counts_[static_cast<std::size_t>(lhs)];
+            const auto r = inside_counts_[static_cast<std::size_t>(rhs)];
+            return l != r ? l < r : lhs < rhs;
+        });
+    }
 
     pending_.clear();
     for (const IntersectionId iid_value : candidates_) {
@@ -862,6 +870,26 @@ void Simulator::compute_rescue_groups() {
 // move via priority-inheritance backtracking; agents inside keep the original
 // single-route semantics except for constrained boundary-exit roots.
 void Simulator::run_pibt_movement() {
+    // Off-route replan (opt-in straggler fix): an unscheduled agent that PIBT
+    // displaced from its route and that has been waiting recomputes its global
+    // route from its current cell, escaping Manhattan local minima of the
+    // waypoint pull.  Uses only the agent's own state and the static map.
+    if (config_.pibt_replan > 0) {
+        for (Agent& agent : agents_) {
+            if (!agent.active || agent.scheduled()) continue;
+            if (agent.wait_steps < config_.pibt_replan
+                || agent.wait_steps % config_.pibt_replan != 0) continue;
+            const bool off_route = agent.route_cursor >= agent.route.size()
+                || agent.route[agent.route_cursor] != agent.position;
+            if (!off_route) continue;
+            if (active_discharge_target(agent) != kInvalidCell) continue;
+            auto route = plan_global(agent.position, agent.goal);
+            if (route.empty() || route.front() != agent.position || route.back() != agent.goal) continue;
+            agent.route = std::move(route);
+            agent.route_cursor = 0;
+        }
+    }
+
     // Snapshot pre-movement origins: the rescue pass later this step must
     // verify a released dependency has not already moved via PIBT.
     for (const Agent& agent : agents_) if (agent.active)
@@ -898,6 +926,28 @@ void Simulator::run_pibt_movement() {
         } else if (next_outside) {
             pibt_eligible_[index] = 1;
             pibt_priority_class_[index] = 1;
+        }
+    }
+
+    // Sink-yield (opt-in straggler fix): a normal agent about to enter its own
+    // goal cell while a differently-goaled agent stands on it is demoted below
+    // every normal agent, so the occupant's dependency chain becomes the PIBT
+    // root and can push its way free instead of being frozen by the swap rule.
+    // Classes shift up one level so their relative order is preserved.
+    if (config_.pibt_sink_yield) {
+        for (const Agent& agent : agents_) {
+            const auto index = static_cast<std::size_t>(agent.id);
+            if (pibt_eligible_[index] == 0) continue;
+            const std::uint8_t klass = pibt_priority_class_[index];
+            bool yields = false;
+            if (klass == 0 && agent.active && agent.intended_cell() == agent.goal) {
+                const AgentId occupant = occupancy_[static_cast<std::size_t>(agent.goal)];
+                if (occupant != kNoAgent && occupant != agent.id) {
+                    const Agent& other = agents_[static_cast<std::size_t>(occupant)];
+                    yields = other.active && other.goal != agent.goal;
+                }
+            }
+            pibt_priority_class_[index] = yields ? 0 : static_cast<std::uint8_t>(klass + 1);
         }
     }
 
@@ -973,7 +1023,17 @@ void Simulator::run_pibt_movement() {
             // boundary is allowed only through the agent's global route and
             // remains subject to the existing intersection admission gate.
             if (!candidate_outside && candidate != agent.intended_cell()
-                && !rejoins_current_waypoint) return false;
+                && !rejoins_current_waypoint) {
+                if (!config_.pibt_arm_retreat) return false;
+                // Arm-retreat (opt-in straggler fix): permit the detour into
+                // an arm cell (never a center) of intersections without an
+                // active schedule; the admission gate below still applies.
+                // Restores original-PIBT pushability at aisle mouths whose
+                // only free sidestep is an arm cell.
+                if (topology_.is_center(candidate)) return false;
+                for (const IntersectionId iid : topology_.memberships(candidate))
+                    if (deadlock_active_[static_cast<std::size_t>(iid)] != 0) return false;
+            }
             return !block_intersection(agent.position, candidate, true);
         }, pibt_next_);
 

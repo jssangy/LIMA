@@ -66,6 +66,39 @@ struct SimulatorConfig {
     // trimmed egress) and enables rescue-group rotation.  Disable with
     // --no-pibt-corridor for ablation.
     bool pibt_corridor{true};
+    // Straggler-class fixes (Gate C/D tournament, all opt-in; defaults keep
+    // the frozen behavior byte-identical).  Diagnosed mechanism: a sink-cell
+    // occupant at an aisle mouth can become unpushable because its only free
+    // escape is an intersection-arm cell (forbidden detour), while the
+    // sink-seeking root reserves its own cell (PIBT stay) and equal-rate
+    // aging freezes the unlucky priority order forever.
+    //
+    // Sink-yield: an agent whose next intended cell is its own goal, while a
+    // different agent (whose goal it is not) stands on that cell, is demoted
+    // below every normal agent for this cycle so the occupant's dependency
+    // chain can act as root and push its way free.  Uses only the agent's own
+    // goal, the occupant of one adjacent cell, and that occupant's goal
+    // (zone-local, 1-hop).
+    bool pibt_sink_yield{false};
+    // Arm-retreat: a PIBT detour candidate inside a managed intersection arm
+    // is allowed when that intersection has no active schedule, subject to
+    // the same admission gate as route crossings.  Restores original-PIBT
+    // pushability at aisle mouths whose only sidestep is an arm cell.
+    bool pibt_arm_retreat{false};
+    // Age-rate asymmetry: agents accrue priority age at distinct per-agent
+    // rates so frozen equal-age relative orders eventually rotate.
+    bool pibt_age_rate{false};
+    // Off-route replan: an unscheduled agent displaced from its route
+    // (position != route[cursor]) that has waited this many steps recomputes
+    // its global route from its current cell (0 = disabled).  Rescues agents
+    // parked in a Manhattan local minimum of the waypoint pull.  Must be
+    // smaller than stall_threshold to fire before the run is declared stalled.
+    std::uint32_t pibt_replan{0};
+    // W7 no-prior-priority check: when >= 0, the per-cycle intersection
+    // scheduling order (normally least-loaded first, id tie-break) is replaced
+    // by a fresh seeded random permutation each cycle.  Completion must be
+    // invariant to this order for the Gate B completeness claim to hold.
+    std::int64_t shuffle_order{-1};
     GoalBehavior goal_behavior{GoalBehavior::Disappear};
     bool direct_routing{false};   // skip the highway-alignment (DoR-style) global router
     std::string metrics_dir;      // W1 instrumentation output; empty = disabled
@@ -116,6 +149,7 @@ private:
     GridMap map_;
     SimulatorConfig config_;
     std::mt19937_64 rng_;
+    std::mt19937_64 shuffle_rng_;  // W7 only; dedicated so rng_ draws are untouched
     std::unique_ptr<Planner> planner_;
     IntersectionTopology topology_;
     std::vector<Agent> agents_;

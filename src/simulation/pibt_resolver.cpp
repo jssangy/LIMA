@@ -8,8 +8,8 @@
 
 namespace lima {
 
-PibtResolver::PibtResolver(const GridMap& map, const std::uint64_t seed)
-    : map_(map), rng_(seed ^ 0x9e3779b97f4a7c15ULL),
+PibtResolver::PibtResolver(const GridMap& map, const std::uint64_t seed, const bool age_rate)
+    : map_(map), rng_(seed ^ 0x9e3779b97f4a7c15ULL), age_rate_(age_rate),
       reserved_by_(static_cast<std::size_t>(map.cell_count()), kNoAgent) {}
 
 void PibtResolver::resize(const std::size_t agent_count) {
@@ -109,7 +109,8 @@ void PibtResolver::resolve(const std::span<const Agent> agents,
     for (std::size_t i = 0; i < agents.size(); ++i) {
         if (initial_distance_[i] == 0 && agents[i].route.size() > 1)
             initial_distance_[i] = static_cast<std::uint32_t>(agents[i].route.size() - 1);
-        if (agents[i].active && agents[i].position != agents[i].goal) ++priority_age_[i];
+        if (agents[i].active && agents[i].position != agents[i].goal)
+            priority_age_[i] += age_rate_ ? 1U + (priority_rank_[i] & 7U) : 1U;
         else priority_age_[i] = 0;
         if (eligible[i] != 0) order_.push_back(static_cast<AgentId>(i));
         else if (agents[i].active)

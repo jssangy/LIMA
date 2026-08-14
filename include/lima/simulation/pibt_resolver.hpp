@@ -17,7 +17,10 @@ class PibtResolver {
 public:
     using CandidateAllowed = std::function<bool(AgentId, CellId)>;
 
-    PibtResolver(const GridMap& map, std::uint64_t seed);
+    // age_rate: when true, waiting agents accrue priority age at distinct
+    // per-agent rates (1 + rank mod 8) instead of a uniform +1, so a frozen
+    // equal-age relative order eventually rotates (straggler-fix variant).
+    PibtResolver(const GridMap& map, std::uint64_t seed, bool age_rate = false);
 
     void resolve(std::span<const Agent> agents,
                  std::span<const AgentId> occupancy,
@@ -29,6 +32,7 @@ public:
 private:
     const GridMap& map_;
     std::mt19937_64 rng_;
+    bool age_rate_{false};
     std::vector<std::uint64_t> priority_age_;
     std::vector<std::uint32_t> initial_distance_;
     std::vector<std::uint32_t> priority_rank_;
