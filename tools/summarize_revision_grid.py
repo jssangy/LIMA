@@ -76,10 +76,13 @@ def collect_metrics(directory: Path) -> dict:
         wall_us = [number(row.get("wall_us"), int) for row in solver]
         expanded = [number(row.get("expanded"), int) for row in solver]
         outcomes = Counter(row.get("outcome", "") for row in solver)
+        fallbacks = sum(number(row.get("fallback"), int) for row in solver)
         result.update(
             solver_calls=len(solver),
             solver_accepted=sum(number(row.get("accepted"), int) for row in solver),
             solver_failures=sum(count for name, count in outcomes.items() if name != "solved"),
+            solver_fallbacks=fallbacks,
+            solver_fallback_rate=fallbacks / len(solver),
             solver_wall_us_total=sum(wall_us),
             solver_wall_us_p50=percentile(wall_us, 0.50),
             solver_wall_us_p90=percentile(wall_us, 0.90),
@@ -149,6 +152,7 @@ def main() -> int:
         "extra_moves_per_agent", "discharges_total", "acquisitions", "broadcasts",
         "gate_signals", "comm_events_total", "comm_events_per_agent", "solver_calls",
         "solver_accepted", "solver_failures", "solver_wall_us_total", "solver_wall_us_p50",
+        "solver_fallbacks", "solver_fallback_rate",
         "solver_wall_us_p90", "solver_wall_us_p99", "solver_wall_us_max",
         "solver_expanded_p99", "solver_expanded_max",
     ]
@@ -181,6 +185,7 @@ def main() -> int:
             "extra_moves_per_agent_median": percentile(vals("extra_moves_per_agent"), 0.50),
             "comm_events_per_agent_median": percentile(vals("comm_events_per_agent"), 0.50),
             "solver_wall_us_p99_median": percentile(vals("solver_wall_us_p99"), 0.50),
+            "solver_fallback_rate_median": percentile(vals("solver_fallback_rate"), 0.50),
         })
     group_fields = list(group_rows[0]) if group_rows else []
     with (root / "summary_groups.csv").open("w", newline="", encoding="utf-8") as stream:
@@ -195,8 +200,8 @@ def main() -> int:
         f"- Binary SHA-256: `{manifest['binary_sha256']}`",
         f"- Cells present: {len(cells)} / {manifest['job_count']}",
         f"- Metrics: {'yes' if manifest['metrics'] else 'no'}; traces: {'yes' if manifest['record_trace'] else 'no'}",
-        "", "| map | density | agents | success | makespan median / p90 | runtime median | mean completion | extra moves / agent | comm events / agent | solver p99 us |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "", "| map | density | agents | success | makespan median / p90 | runtime median | mean completion | extra moves / agent | comm events / agent | solver p99 us | fallback rate |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in group_rows:
         lines.append(
@@ -204,7 +209,7 @@ def main() -> int:
             f"{row['successes']}/{row['runs']} | {fmt(row['makespan_median'], 0)} / {fmt(row['makespan_p90'], 0)} | "
             f"{fmt(row['elapsed_median'], 2)} s | {fmt(row['mean_completion_median'])} | "
             f"{fmt(row['extra_moves_per_agent_median'], 2)} | {fmt(row['comm_events_per_agent_median'], 2)} | "
-            f"{fmt(row['solver_wall_us_p99_median'], 0)} |"
+            f"{fmt(row['solver_wall_us_p99_median'], 0)} | {fmt(row['solver_fallback_rate_median'], 4)} |"
         )
     lines += ["", "`summary_cells.csv` contains the auditable per-cell data.", ""]
     (root / "REPORT.md").write_text("\n".join(lines), encoding="utf-8")
