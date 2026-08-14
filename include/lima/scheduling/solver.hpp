@@ -44,8 +44,10 @@ public:
 };
 
 struct SolverConfig {
-    std::string kind{"ida"};             // ida | astar | wastar | gbfs | ucs | greedy | beam | hybrid
-    std::size_t max_iterations{1'000'000};
+    // Gate A freeze (2026-08-15): TT-scored beam search is the operational
+    // default.  IDA* remains available explicitly for exact-reference runs.
+    std::string kind{"beam"};            // ida | astar | wastar | gbfs | ucs | greedy | beam | hybrid
+    std::size_t max_iterations{2'000'000};
     // Scaled (x2) threshold increment between IDA* iterations.  The shipped
     // default 6 trades optimality for speed; 0 restores the textbook next-bound
     // schedule (optimal solutions when the lower bound is admissible, i.e.
@@ -67,7 +69,7 @@ struct SolverConfig {
     std::uint64_t max_nodes{0};
     // Beam width is explicit so Gate A can measure the speed/coverage curve.
     std::size_t beam_width{2'048};
-    std::string beam_score{"disorder"};  // disorder | bf | tt
+    std::string beam_score{"tt"};        // disorder | bf | tt
     // Weighted-A* heuristic multiplier; ignored by other solver families.
     double best_first_weight{2.0};
 };

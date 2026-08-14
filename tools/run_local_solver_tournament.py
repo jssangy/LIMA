@@ -70,6 +70,10 @@ SOLVERS = {
         "--solver", "wastar", "--lb-mode", "tt", "--search-weight", "1.5",
         "--solver-nodes", "500000",
     ),
+    "wastar1_5_2m": (
+        "--solver", "wastar", "--lb-mode", "tt", "--search-weight", "1.5",
+        "--solver-nodes", "2000000",
+    ),
     "wastar2": (
         "--solver", "wastar", "--lb-mode", "tt", "--search-weight", "2",
         "--solver-nodes", "500000",
@@ -83,6 +87,9 @@ SOLVERS = {
     ),
     "gbfs_tt": (
         "--solver", "gbfs", "--lb-mode", "tt", "--solver-nodes", "500000",
+    ),
+    "gbfs_tt_2m": (
+        "--solver", "gbfs", "--lb-mode", "tt", "--solver-nodes", "2000000",
     ),
     "ucs": ("--solver", "ucs", "--solver-nodes", "500000"),
     "beam1": (
@@ -155,6 +162,12 @@ SOLVERS = {
         "--solver-nodes", "100000", "--solver-iterations", "2000000",
     ),
 }
+
+# The two 2M-node best-first variants were added only for the independent
+# finalist repeat.  Keep the full-sweep default identical to the completed
+# 38-configuration Gate A experiment while allowing either by explicit name.
+FINALIST_ONLY = {"wastar1_5_2m", "gbfs_tt_2m"}
+DEFAULT_SOLVERS = tuple(name for name in SOLVERS if name not in FINALIST_ONLY)
 
 # Literature families found in the 2026-08-15 web audit.  `run` means the
 # implementation solves LIMA's exact labeled-stack/overflow-parking goal;
@@ -287,7 +300,7 @@ def summarize_csv(path: Path) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", default="build_phase2/lima")
-    parser.add_argument("--solvers", default=",".join(SOLVERS))
+    parser.add_argument("--solvers", default=",".join(DEFAULT_SOLVERS))
     parser.add_argument("--shapes", default=",".join(SHAPES))
     parser.add_argument("--instances", type=int, default=500)
     parser.add_argument("--min-population", type=int, default=1)

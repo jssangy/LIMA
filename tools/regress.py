@@ -28,13 +28,18 @@ ROOT = Path(__file__).resolve().parent.parent
 DETERMINISTIC = ("status", "steps", "completed", "moves", "waits", "deadlocks",
                  "intersections", "validation", "vertex_conflicts", "edge_conflicts")
 
-def run_cell(binary: Path, map_name: str, scen_dir: str, agents: int, seed: int) -> dict:
+def run_cell(binary: Path, map_name: str, scen_dir: str, agents: int, seed: int,
+             solver: str | None, solver_iterations: int | None) -> dict:
     with tempfile.NamedTemporaryFile(suffix=".txt", delete=True) as tmp:
         cmd = [str(binary), "--mode", "solve", "--map", f"data/maps/{map_name}",
                "--agents", str(agents), "--planner", "bfs", "--seed", str(seed),
                "--output", tmp.name, "--validate-conflicts"]
         if scen_dir:
             cmd += ["--scenario", f"data/scenarios/{scen_dir}/{scen_dir}_s{seed}.scen"]
+        if solver:
+            cmd += ["--solver", solver]
+        if solver_iterations is not None:
+            cmd += ["--solver-iterations", str(solver_iterations)]
         proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=3600)
     # exit 0 = all tasks completed, exit 2 = run ended without completing
     # (step limit / all-stalled); both print a deterministic summary line and
@@ -49,6 +54,11 @@ def main() -> int:
     parser.add_argument("--binary", default="build/lima")
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--golden", default="tests/golden/e0_quick.golden")
+    parser.add_argument("--solver", help="override the binary's default local solver")
+    parser.add_argument("--solver-iterations", type=int,
+                        help="override the local solver iteration budget")
+    parser.add_argument("--invariants-only", action="store_true",
+                        help="check conflict validation instead of exact golden metrics")
     args = parser.parse_args()
 
     binary = (ROOT / args.binary).resolve()
@@ -70,7 +80,8 @@ def main() -> int:
 
     failures = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures = {pool.submit(run_cell, binary, m, sc, a, s): (m, sc, a, s, want)
+        futures = {pool.submit(run_cell, binary, m, sc, a, s,
+                               args.solver, args.solver_iterations): (m, sc, a, s, want)
                    for (m, sc, a, s, want) in cells}
         for future in concurrent.futures.as_completed(futures):
             m, sc, a, s, want = futures[future]
@@ -80,13 +91,23 @@ def main() -> int:
             except Exception as error:  # noqa: BLE001 - report and continue
                 failures.append((label, f"run error: {error}"))
                 continue
-            diffs = [f"{k}: want {want[k]} got {got.get(k, '<missing>')}"
-                     for k in DETERMINISTIC if k in want and got.get(k) != want[k]]
+            if args.invariants_only:
+                required = {
+                    "validation": "ok",
+                    "vertex_conflicts": "0",
+                    "edge_conflicts": "0",
+                }
+                diffs = [f"{k}: want {value} got {got.get(k, '<missing>')}"
+                         for k, value in required.items() if got.get(k) != value]
+            else:
+                diffs = [f"{k}: want {want[k]} got {got.get(k, '<missing>')}"
+                         for k in DETERMINISTIC if k in want and got.get(k) != want[k]]
             if diffs:
                 failures.append((label, "; ".join(diffs)))
             print(f"{'FAIL' if diffs else 'ok  '} {label}")
 
-    print(f"\n{len(cells) - len(failures)}/{len(cells)} cells identical")
+    result = "passed invariants" if args.invariants_only else "identical"
+    print(f"\n{len(cells) - len(failures)}/{len(cells)} cells {result}")
     for label, why in failures:
         print(f"  FAIL {label}: {why}")
     return 1 if failures else 0

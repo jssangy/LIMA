@@ -157,8 +157,10 @@ Every solve summary now ends with provenance fields (`solver=`, `routing=`, `cap
 
 | Option | Effect |
 |---|---|
-| `--solver ida\|greedy` | Local intersection solver (default `ida`) |
-| `--solver-iterations N` | IDA* threshold-restart limit |
+| `--solver ida\|astar\|wastar\|gbfs\|ucs\|greedy\|beam\|hybrid` | Local intersection solver (default `beam`) |
+| `--solver-iterations N` | Search expansion/restart limit (default 2,000,000) |
+| `--beam-width N` | Beam width (default 2,048; Gate A frozen value) |
+| `--beam-score disorder\|bf\|tt` | Beam ranking function (default `tt`; Gate A frozen value) |
 | `--bound-step N` | Scaled threshold increment between IDA* iterations; `0` = textbook next-bound schedule (optimal solutions) |
 | `--no-fastpath` | Disable the deterministic single-move fast path |
 | `--routing dor\|direct` | Global router: highway alignment (default) or plain shortest path |
