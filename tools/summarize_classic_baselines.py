@@ -21,12 +21,21 @@ def num(value, cast=float, default=math.nan):
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("directory")
+    parser.add_argument("directories", nargs="+")
+    parser.add_argument("--output-dir")
     args = parser.parse_args()
-    root = Path(args.directory).resolve()
-    manifest = json.loads((root / "MANIFEST.json").read_text(encoding="utf-8"))
-    records = [json.loads(path.read_text(encoding="utf-8"))
-               for path in sorted((root / "records").glob("*.json"))]
+    roots = [Path(value).resolve() for value in args.directories]
+    root = Path(args.output_dir).resolve() if args.output_dir else roots[0]
+    root.mkdir(parents=True, exist_ok=True)
+    manifests = [json.loads((source / "MANIFEST.json").read_text(encoding="utf-8"))
+                 for source in roots]
+    budgets = {manifest["time_limit_seconds"] for manifest in manifests}
+    if len(budgets) != 1:
+        parser.error(f"time limits are not equal: {sorted(budgets)}")
+    records = []
+    for source in roots:
+        records.extend(json.loads(path.read_text(encoding="utf-8"))
+                       for path in sorted((source / "records").glob("*.json")))
     groups = defaultdict(list)
     cells = []
     for record in records:
@@ -68,9 +77,11 @@ def main() -> int:
 
     lines = [
         "# Classic MAPF fairness diagnostic", "",
-        f"- Scope: {manifest['semantic_scope']}",
+        f"- Scope: {manifests[0]['semantic_scope']}",
         "- This is not the submitted LIMA task: repeated workstation goals and disappear-at-target are intentionally removed.",
-        f"- Equal time limit: {manifest['time_limit_seconds']} s; cells: {len(records)}/{manifest['job_count']}",
+        f"- Equal time limit: {manifests[0]['time_limit_seconds']} s; cells: "
+        f"{len(records)}/{sum(manifest['job_count'] for manifest in manifests)}",
+        f"- Source directories: {', '.join(str(source) for source in roots)}",
         "", "| map | density | agents | LaCAM solved | PIBT solved | LaCAM makespan | PIBT makespan | LaCAM peak MiB | PIBT peak MiB |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
@@ -88,8 +99,9 @@ def main() -> int:
         )
     la_total = sum(row["solved"] for row in summary if row["algorithm"] == "lacam")
     pi_total = sum(row["solved"] for row in summary if row["algorithm"] == "pibt")
-    per_algo = len(records) // 2
-    lines += ["", f"Overall: LaCAM {la_total}/{per_algo}; PIBT {pi_total}/{per_algo}.", ""]
+    la_runs = sum(row["runs"] for row in summary if row["algorithm"] == "lacam")
+    pi_runs = sum(row["runs"] for row in summary if row["algorithm"] == "pibt")
+    lines += ["", f"Overall: LaCAM {la_total}/{la_runs}; PIBT {pi_total}/{pi_runs}.", ""]
     (root / "REPORT.md").write_text("\n".join(lines), encoding="utf-8")
     print(root / "REPORT.md")
     return 0
