@@ -36,12 +36,12 @@ class Instance:
 
 INSTANCES = {
     "warehouse_10_20": Instance(
-        "data/maps/warehouse_10_20.map",
+        "data/maps/warehouse_10_20_paper.map",
         "data/scenarios/warehouse-10-20-paper/warehouse-10-20-paper_s{s}.scen",
         2649,
     ),
     "warehouse_20_40": Instance(
-        "data/maps/warehouse_20_40.map",
+        "data/maps/warehouse_20_40_paper.map",
         "data/scenarios/warehouse-20-40-paper/warehouse-20-40-paper_s{s}.scen",
         10499,
     ),

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Run resumable LIMA grids on the submitted-paper instance definition.
 
-The canonical revision instance combines the unchanged warehouse geometries
-with the submitted scenarios, and the submitted 187x187 Square-1 geometry with
-its scenarios.  Agent counts follow Table 2 exactly: floor(density * Tiles).
+The canonical revision instance uses the submitted warehouse geometries and
+the submitted 187x187 Square-1 geometry, paired with their submitted scenarios.
+This matters even where topology counts match: later warehouse maps opened a
+cell beside each sink and can change completion. Agent counts follow Table 2
+exactly: floor(density * Tiles).
 
 Each cell is an atomic JSON record. Existing records are skipped, so an
 interrupted grid can be resumed with the same command. Broad grids default to
@@ -38,12 +40,12 @@ class Instance:
 
 INSTANCES = {
     "warehouse_10_20": Instance(
-        "data/maps/warehouse_10_20.map",
+        "data/maps/warehouse_10_20_paper.map",
         "data/scenarios/warehouse-10-20-paper/warehouse-10-20-paper_s{s}.scen",
         2649,
     ),
     "warehouse_20_40": Instance(
-        "data/maps/warehouse_20_40.map",
+        "data/maps/warehouse_20_40_paper.map",
         "data/scenarios/warehouse-20-40-paper/warehouse-20-40-paper_s{s}.scen",
         10499,
     ),
