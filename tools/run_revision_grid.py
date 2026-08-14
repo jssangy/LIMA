@@ -95,6 +95,7 @@ VARIANTS = {
     "replan8_nodisc": ("--pibt-replan", "8", "--no-discharge"),
     "replan8_drandom": ("--pibt-replan", "8", "--discharge-random"),
     "lifelong": ("--goal-behavior", "lifelong"),
+    "lifelong_nopibt": ("--goal-behavior", "lifelong", "--no-pibt-corridor"),
     "beam_stay": ("--solver", "beam", "--goal-behavior", "stay"),
     "beam_failure01": ("--solver", "beam", "--failure-prob", "0.01"),
     "beam_failure05": ("--solver", "beam", "--failure-prob", "0.05"),
