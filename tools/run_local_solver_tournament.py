@@ -101,6 +101,14 @@ SOLVERS = {
     "beam16": (
         "--solver", "beam", "--beam-width", "16", "--solver-iterations", "2000000",
     ),
+    "beam16_tt": (
+        "--solver", "beam", "--beam-width", "16", "--beam-score", "tt",
+        "--solver-iterations", "2000000",
+    ),
+    "beam32_tt": (
+        "--solver", "beam", "--beam-width", "32", "--beam-score", "tt",
+        "--solver-iterations", "2000000",
+    ),
     "beam64": (
         "--solver", "beam", "--beam-width", "64", "--solver-iterations", "2000000",
     ),
@@ -124,6 +132,10 @@ SOLVERS = {
         "--solver", "beam", "--beam-width", "64", "--beam-score", "tt",
         "--solver-iterations", "2000000",
     ),
+    "beam128_tt": (
+        "--solver", "beam", "--beam-width", "128", "--beam-score", "tt",
+        "--solver-iterations", "2000000",
+    ),
     "beam256_bf": (
         "--solver", "beam", "--beam-width", "256", "--beam-score", "bf",
         "--solver-iterations", "2000000",
@@ -132,12 +144,24 @@ SOLVERS = {
         "--solver", "beam", "--beam-width", "256", "--beam-score", "tt",
         "--solver-iterations", "2000000",
     ),
+    "beam512_tt": (
+        "--solver", "beam", "--beam-width", "512", "--beam-score", "tt",
+        "--solver-iterations", "2000000",
+    ),
+    "beam1024_tt": (
+        "--solver", "beam", "--beam-width", "1024", "--beam-score", "tt",
+        "--solver-iterations", "2000000",
+    ),
     "beam2048_bf": (
         "--solver", "beam", "--beam-width", "2048", "--beam-score", "bf",
         "--solver-iterations", "2000000",
     ),
     "beam2048_tt": (
         "--solver", "beam", "--beam-width", "2048", "--beam-score", "tt",
+        "--solver-iterations", "2000000",
+    ),
+    "beam4096_tt": (
+        "--solver", "beam", "--beam-width", "4096", "--beam-score", "tt",
         "--solver-iterations", "2000000",
     ),
     "beam8192_tt": (
@@ -164,8 +188,8 @@ SOLVERS = {
 }
 
 # The two 2M-node best-first variants were added only for the independent
-# finalist repeat.  Keep the full-sweep default identical to the completed
-# 38-configuration Gate A experiment while allowing either by explicit name.
+# finalist repeat.  Exclude them from full sweeps while retaining the six
+# intermediate TT-beam widths added by the Gate A refinement.
 FINALIST_ONLY = {"wastar1_5_2m", "gbfs_tt_2m"}
 DEFAULT_SOLVERS = tuple(name for name in SOLVERS if name not in FINALIST_ONLY)
 
@@ -174,6 +198,18 @@ DEFAULT_SOLVERS = tuple(name for name in SOLVERS if name not in FINALIST_ONLY)
 # `catalog_only` prevents a misleading apples-to-oranges label when the paper
 # solves classical priority-sorted CPMP or needs unavailable training/solvers.
 ALGORITHM_CATALOG = {
+    "optimization_methods_survey": {
+        "status": "catalog_taxonomy_reference",
+        "source": "https://www.sciencedirect.com/science/article/pii/S0360835222005381",
+    },
+    "corridor_method": {
+        "status": "catalog_only_classical_cpmp_goal",
+        "source": "https://link.springer.com/chapter/10.1007/978-3-642-01129-0_89",
+    },
+    "LPFH": {
+        "status": "catalog_only_classical_cpmp_goal",
+        "source": "https://www.sciencedirect.com/science/article/pii/S0957417412002151",
+    },
     "A*/IDA*": {
         "status": "run",
         "source": "https://orbit.dtu.dk/en/publications/solving-the-pre-marshalling-problem-to-optimality-with-a-and-ida-2/",
@@ -206,6 +242,18 @@ ALGORITHM_CATALOG = {
         "status": "catalog_only_stochastic_metaheuristic",
         "source": "https://www.sciencedirect.com/science/article/pii/S0305054816301186",
     },
+    "variable_length_genetic_algorithm": {
+        "status": "catalog_only_stochastic_metaheuristic",
+        "source": "https://doi.org/10.1080/0305215X.2015.1031661",
+    },
+    "iterated_local_search": {
+        "status": "catalog_only_stochastic_metaheuristic",
+        "source": "https://doi.org/10.1109/ISSC55427.2022.9826140",
+    },
+    "fill_and_reduce_greedy_beam": {
+        "status": "catalog_only_classical_cpmp_goal",
+        "source": "https://doi.org/10.1007/s12351-023-00791-9",
+    },
     "branch_and_price": {
         "status": "catalog_only_classical_cpmp_goal",
         "source": "https://arxiv.org/abs/1406.7107",
@@ -225,6 +273,22 @@ ALGORITHM_CATALOG = {
     "constraint_programming": {
         "status": "catalog_only_external_solver_and_model_overhead",
         "source": "https://www.sciencedirect.com/science/article/pii/S0377221722006099",
+    },
+    "dynamic_programming_and_early_CP": {
+        "status": "catalog_only_external_model_and_classical_cpmp_goal",
+        "source": "https://cquimper.github.io/publications/modref2013.pdf",
+    },
+    "limited_crane_time_CP": {
+        "status": "catalog_only_different_objective_and_external_solver",
+        "source": "https://www.sciencedirect.com/science/article/pii/S0305054824001072",
+    },
+    "auxiliary_bay_CP": {
+        "status": "catalog_only_different_problem_and_external_solver",
+        "source": "https://www.sciencedirect.com/science/article/pii/S2666822X25000061",
+    },
+    "CVaR_cutting_plane": {
+        "status": "catalog_only_uncertainty_objective_and_external_solver",
+        "source": "https://arxiv.org/abs/2405.17576",
     },
     "policy_MCTS": {
         "status": "catalog_only_stochastic_and_classical_cpmp_goal",
