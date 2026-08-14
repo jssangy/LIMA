@@ -138,6 +138,43 @@ public:
     }
 };
 
+// Operational cutoff policy used by the revision experiments.  IDA* remains
+// the exact-search first choice, but a finite expanded-node budget prevents a
+// single saturated intersection from stalling the whole simulation.  Beam is
+// an explicitly incomplete fallback, so this strategy must not be used to
+// claim the unbounded IDA* completeness result.
+class HybridSolver final : public StackSolver {
+public:
+    HybridSolver(const IdaStarOptions& ida_options, const BeamSearchOptions& beam_options)
+        : ida_(ida_options), beam_(beam_options) {}
+
+    [[nodiscard]] std::string_view name() const noexcept override { return "hybrid"; }
+
+    [[nodiscard]] std::optional<std::vector<StackMove>> solve(
+        const StackProblem& problem, SolverStats* const stats) override {
+        SolverStats primary;
+        if (auto moves = ida_.solve(problem, &primary)) {
+            if (stats) *stats = primary;
+            return moves;
+        }
+
+        SolverStats fallback;
+        auto moves = beam_.solve(problem, &fallback);
+        if (stats) {
+            *stats = fallback;
+            stats->iterations += primary.iterations;
+            stats->expanded_nodes += primary.expanded_nodes;
+            stats->wall_seconds += primary.wall_seconds;
+            stats->fallback_used = true;
+        }
+        return moves;
+    }
+
+private:
+    IdaStarSolver ida_;
+    BeamSolver beam_;
+};
+
 }  // namespace
 
 std::unique_ptr<StackSolver> make_solver(const SolverConfig& config) {
@@ -159,6 +196,17 @@ std::unique_ptr<StackSolver> make_solver(const SolverConfig& config) {
         options.max_expanded_nodes = config.max_iterations;
         options.max_capacity = config.max_capacity;
         return std::make_unique<BeamSolver>(options);
+    }
+    if (config.kind == "hybrid") {
+        if (config.max_nodes == 0)
+            throw std::invalid_argument("hybrid solver requires --solver-nodes N with N > 0");
+        const IdaStarOptions ida_options{
+            config.max_iterations, config.greedy_fastpath, config.bound_step, config.max_capacity,
+            lb_mode, config.dominance, config.max_nodes};
+        BeamSearchOptions beam_options;
+        beam_options.max_expanded_nodes = config.max_iterations;
+        beam_options.max_capacity = config.max_capacity;
+        return std::make_unique<HybridSolver>(ida_options, beam_options);
     }
     throw std::invalid_argument("unknown solver kind: " + config.kind);
 }

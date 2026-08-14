@@ -65,7 +65,7 @@ void usage() {
     std::cout << "usage: lima [--map FILE] [--scenario FILE] [--agents N] [--planner bfs|astar]"
                  " [--seed N] [--max-steps N] [--fps N] [--validate-conflicts]"
                  " [--mode realtime|solve|replay|debug] [--output FILE|--no-trace] [--replay FILE]\n"
-                 "            [--solver ida|greedy|beam] [--solver-iterations N] [--bound-step N] [--no-fastpath]\n"
+                 "            [--solver ida|greedy|beam|hybrid] [--solver-iterations N] [--bound-step N] [--no-fastpath]\n"
                  "            [--lb-mode legacy|bf|tt] [--dominance] [--solver-nodes N]\n"
                  "            [--routing dor|direct] [--capacity-formula code|paper] [--isolation-cap N]\n"
                  "            [--no-pibt-corridor] [--pibt-sink-yield] [--pibt-arm-retreat[-last]]\n"

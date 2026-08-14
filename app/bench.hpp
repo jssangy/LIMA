@@ -34,7 +34,7 @@ inline int run(StackSolver& solver, const BenchOptions& options) {
         }
         out = &csv;
     }
-    *out << "instance,n,arms,outcome,iterations,expanded,wall_us,solution_len,fastpath\n";
+    *out << "instance,n,arms,outcome,iterations,expanded,wall_us,solution_len,fastpath,fallback\n";
     std::mt19937_64 rng(options.seed);
     const auto arm_count = options.capacities.size();
     std::string arms_text;
@@ -64,7 +64,8 @@ inline int run(StackSolver& solver, const BenchOptions& options) {
         *out << instance << "," << options.items << "," << arms_text << "," << stats.outcome << ","
              << stats.iterations << "," << stats.expanded_nodes << ","
              << static_cast<std::uint64_t>(stats.wall_seconds * 1e6) << ","
-             << stats.solution_length << "," << (stats.fastpath_solved ? 1 : 0) << "\n";
+             << stats.solution_length << "," << (stats.fastpath_solved ? 1 : 0) << ","
+             << (stats.fallback_used ? 1 : 0) << "\n";
     }
     std::cerr << "bench: " << options.instances << " instances, " << failures << " unsolved\n";
     return 0;

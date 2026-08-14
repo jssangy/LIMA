@@ -12,7 +12,7 @@ MetricsCollector::MetricsCollector(const std::filesystem::path& directory) {
         stream << header << '\n';
     };
     open(solver_csv_, "solver_invocations.csv",
-         "t,intersection,intents,outcome,accepted,iterations,expanded,wall_us,solution_len,fastpath");
+         "t,intersection,intents,outcome,accepted,iterations,expanded,wall_us,solution_len,fastpath,fallback");
     open(discharge_csv_, "discharge_events.csv", "t,intersection,rerouted,loop_cells,agents");
     open(comm_csv_, "comm_steps.csv", "t,acquisitions,broadcasts,gate_signals");
     open(agents_csv_, "agents.csv",
@@ -25,7 +25,8 @@ void MetricsCollector::on_solver_invocation(const std::uint64_t timestep, const 
                 << telemetry.solver.outcome << ',' << (accepted ? 1 : 0) << ','
                 << telemetry.solver.iterations << ',' << telemetry.solver.expanded_nodes << ','
                 << static_cast<std::uint64_t>(telemetry.solver.wall_seconds * 1e6) << ','
-                << telemetry.solver.solution_length << ',' << (telemetry.solver.fastpath_solved ? 1 : 0) << '\n';
+                << telemetry.solver.solution_length << ',' << (telemetry.solver.fastpath_solved ? 1 : 0) << ','
+                << (telemetry.solver.fallback_used ? 1 : 0) << '\n';
 }
 
 void MetricsCollector::on_discharge(const std::uint64_t timestep, const IntersectionId intersection,

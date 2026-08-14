@@ -69,6 +69,8 @@ VARIANTS = {
     "beam_shuffle3": ("--solver", "beam", "--shuffle-order", "3"),
     "beam_shuffle4": ("--solver", "beam", "--shuffle-order", "4"),
     "beam_shuffle5": ("--solver", "beam", "--shuffle-order", "5"),
+    "hybrid100k": ("--solver", "hybrid", "--solver-nodes", "100000"),
+    "hybrid500k": ("--solver", "hybrid", "--solver-nodes", "500000"),
     "nodes100k": ("--solver-nodes", "100000"),
     "nodes500k": ("--solver-nodes", "500000"),
     "nodes1m": ("--solver-nodes", "1000000"),

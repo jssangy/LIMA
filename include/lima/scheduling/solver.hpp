@@ -29,6 +29,7 @@ struct SolverStats {
     double wall_seconds{};
     std::size_t solution_length{};
     bool fastpath_solved{};            // solved by the deterministic greedy fast path
+    bool fallback_used{};              // hybrid mode exhausted IDA* and invoked beam
     std::string_view outcome{"unsolved"};  // solved | no_solution | iteration_limit | rejected
 };
 
@@ -43,7 +44,7 @@ public:
 };
 
 struct SolverConfig {
-    std::string kind{"ida"};             // ida | greedy
+    std::string kind{"ida"};             // ida | greedy | beam | hybrid
     std::size_t max_iterations{1'000'000};
     // Scaled (x2) threshold increment between IDA* iterations.  The shipped
     // default 6 trades optimality for speed; 0 restores the textbook next-bound
@@ -61,6 +62,8 @@ struct SolverConfig {
     // Opt-in TT18-style dominance pruning for IDA* (see IdaStarOptions).
     bool dominance{false};
     // Opt-in IDA* expanded-node budget; 0 = unlimited (shipped default).
+    // Hybrid mode requires a positive value and falls back to beam when the
+    // IDA* budget is exhausted.
     std::uint64_t max_nodes{0};
 };
 
