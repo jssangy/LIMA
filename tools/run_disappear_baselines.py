@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import hashlib
 import json
 import os
 import re
@@ -61,6 +62,14 @@ def atomic_json(path: Path, payload: dict) -> None:
         stream.write("\n")
         tmp = Path(stream.name)
     os.replace(tmp, path)
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def parse_fields(text: str) -> dict[str, str]:
@@ -120,6 +129,13 @@ def main() -> int:
         "algorithms": algorithms, "maps": maps, "densities": densities,
         "scenarios": scenarios, "cbs_time_limit_seconds": args.cbs_time_limit,
         "primal_time_limit_seconds": args.primal_time_limit, "job_count": len(jobs),
+        "executables": {
+            "cbs": {"path": str(cbs), "sha256": sha256(cbs)} if "cbs" in algorithms else None,
+            "primal_python": {"path": str(primal_python), "sha256": sha256(primal_python)}
+            if "primal2" in algorithms else None,
+            "primal_script": {"path": str(primal_script), "sha256": sha256(primal_script)}
+            if "primal2" in algorithms else None,
+        },
     })
 
     def run(job):
