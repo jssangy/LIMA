@@ -105,7 +105,6 @@ void SolutionTrace::append(const std::span<const Agent> agents) {
         for (const Agent& agent : agents) previous_active_.push_back(agent.active);
     }
 
-    configurations_.reserve(configurations_.size() + agents.size());
     configurations_.insert(configurations_.end(), current_frame_.begin(), current_frame_.end());
 }
 

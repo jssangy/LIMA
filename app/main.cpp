@@ -36,6 +36,7 @@ struct Options {
     double fps{20.0};
     RunMode mode{RunMode::Realtime};
     std::filesystem::path output;
+    bool no_trace{};
     std::filesystem::path replay;
     std::filesystem::path routes;
     lima::SimulatorConfig sim;
@@ -63,7 +64,7 @@ std::vector<std::vector<lima::Coord>> load_routes(const std::filesystem::path& p
 void usage() {
     std::cout << "usage: lima [--map FILE] [--scenario FILE] [--agents N] [--planner bfs|astar]"
                  " [--seed N] [--max-steps N] [--fps N] [--validate-conflicts]"
-                 " [--mode realtime|solve|replay|debug] [--output FILE] [--replay FILE]\n"
+                 " [--mode realtime|solve|replay|debug] [--output FILE|--no-trace] [--replay FILE]\n"
                  "            [--solver ida|greedy|beam] [--solver-iterations N] [--bound-step N] [--no-fastpath]\n"
                  "            [--lb-mode legacy|bf|tt] [--dominance] [--solver-nodes N]\n"
                  "            [--routing dor|direct] [--capacity-formula code|paper] [--isolation-cap N]\n"
@@ -90,6 +91,7 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--fps") options.fps = std::stod(std::string(value()));
         else if (arg == "--validate-conflicts") options.validate_conflicts = true;
         else if (arg == "--output") options.output = value();
+        else if (arg == "--no-trace") options.no_trace = true;
         else if (arg == "--replay") options.replay = value();
         else if (arg == "--routes") options.routes = value();
         else if (arg == "--solver") options.sim.solver.kind = std::string(value());
@@ -222,7 +224,8 @@ bool has_non_default_config(const Options& options) {
         || !options.sim.discharge_enabled
         || options.sim.direct_routing
         || !options.sim.metrics_dir.empty()
-        || !options.sim.trace_path.empty();
+        || !options.sim.trace_path.empty()
+        || options.no_trace;
 }
 
 // Keeps default-flag stdout byte-compatible with the submitted simulator:
@@ -243,6 +246,7 @@ void print_provenance(const Options& options) {
     if (options.sim.pibt_replan != 0) std::cout << " replan=" << options.sim.pibt_replan;
     if (options.sim.shuffle_order >= 0) std::cout << " shuffle=" << options.sim.shuffle_order;
     if (!options.sim.discharge_enabled) std::cout << " discharge=off";
+    if (options.no_trace) std::cout << " trace=off";
     std::cout << " commit=" << LIMA_COMMIT;
 }
 
@@ -420,8 +424,11 @@ int main(int argc, char** argv) {
         std::vector<std::vector<lima::Coord>> preset_routes;
         if (!options.routes.empty()) preset_routes = load_routes(options.routes);
         lima::Simulator simulator(std::move(map), tasks, options.planner, task_seed, options.sim, preset_routes);
+        if (options.no_trace && !options.output.empty())
+            throw std::invalid_argument("--no-trace and --output are mutually exclusive");
         std::filesystem::path output_path = options.output;
-        if (options.mode == RunMode::Solve && output_path.empty()) output_path = "build/result.txt";
+        if (options.mode == RunMode::Solve && output_path.empty() && !options.no_trace)
+            output_path = "build/result.txt";
         std::unique_ptr<lima::SolutionTrace> recorder;
         if (!output_path.empty()) {
             recorder = std::make_unique<lima::SolutionTrace>(

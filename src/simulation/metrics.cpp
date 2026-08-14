@@ -43,6 +43,13 @@ void MetricsCollector::flush_step(const std::uint64_t timestep) {
     // statistics have their denominator in-band.
     comm_csv_ << timestep << ',' << step_acquisitions_ << ',' << step_broadcasts_ << ','
               << step_gate_signals_ << '\n';
+    // Preserve bounded progress when a long experiment is terminated by its
+    // wall-clock guard. Flushing every 1024 rows keeps the overhead negligible.
+    if ((timestep & 1023U) == 0U) {
+        solver_csv_.flush();
+        discharge_csv_.flush();
+        comm_csv_.flush();
+    }
     step_acquisitions_ = 0;
     step_broadcasts_ = 0;
     step_gate_signals_ = 0;
