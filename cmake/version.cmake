@@ -4,7 +4,10 @@ execute_process(COMMAND git rev-parse --short HEAD
 if(NOT hash)
     set(hash "unknown")
 endif()
-execute_process(COMMAND git status --porcelain
+# Only tracked changes can alter the compiled program.  Ignore unrelated
+# untracked experiment artifacts so the embedded provenance is not marked
+# dirty when the source at HEAD is byte-identical.
+execute_process(COMMAND git status --porcelain --untracked-files=no
     WORKING_DIRECTORY ${SRC}
     OUTPUT_VARIABLE dirty ERROR_QUIET)
 if(dirty)
