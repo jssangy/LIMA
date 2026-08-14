@@ -23,6 +23,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("directories", nargs="+")
     parser.add_argument("--output-dir")
+    parser.add_argument("--overlap-only", action="store_true",
+                        help="report only map/density groups present for both algorithms")
     args = parser.parse_args()
     roots = [Path(value).resolve() for value in args.directories]
     root = Path(args.output_dir).resolve() if args.output_dir else roots[0]
@@ -71,6 +73,15 @@ def main() -> int:
             "max_rss_mb_median": statistics.median(row["max_rss_mb"] for row in rows),
             "max_rss_mb_max": max(row["max_rss_mb"] for row in rows),
         })
+    if args.overlap_only:
+        algorithms_by_group = defaultdict(set)
+        for row in summary:
+            algorithms_by_group[(row["map"], row["density_percent"], row["agents"])].add(
+                row["algorithm"])
+        complete = {key for key, algorithms in algorithms_by_group.items()
+                    if {"lacam", "pibt"}.issubset(algorithms)}
+        summary = [row for row in summary
+                   if (row["map"], row["density_percent"], row["agents"]) in complete]
     with (root / "summary_groups.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(summary[0]))
         writer.writeheader(); writer.writerows(summary)
@@ -82,6 +93,7 @@ def main() -> int:
         f"- Equal time limit: {manifests[0]['time_limit_seconds']} s; cells: "
         f"{len(records)}/{sum(manifest['job_count'] for manifest in manifests)}",
         f"- Source directories: {', '.join(str(source) for source in roots)}",
+        f"- Overlap-only groups: {'yes' if args.overlap_only else 'no'}",
         "", "| map | density | agents | LaCAM solved | PIBT solved | LaCAM makespan | PIBT makespan | LaCAM peak MiB | PIBT peak MiB |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
