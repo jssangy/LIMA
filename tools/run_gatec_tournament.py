@@ -16,6 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from run_revision_grid import VARIANTS
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_VARIANTS = (
@@ -36,12 +38,14 @@ DEFAULT_VARIANTS = (
     "gatec_cap8_subset",
     "gatec_hyst1_subset",
 )
+BROAD_VARIANTS = tuple(name for name in VARIANTS if name.startswith("gatec_"))
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", default="build_gatea_frozen/lima")
-    parser.add_argument("--variants", default=",".join(DEFAULT_VARIANTS))
+    parser.add_argument("--variants", default="")
+    parser.add_argument("--candidate-set", choices=("core", "broad"), default="core")
     parser.add_argument("--maps", default="warehouse_10_20,warehouse_20_40,cross_3030")
     parser.add_argument("--densities", default="1,5,10,20,30,40,50,60")
     parser.add_argument("--scenarios", default="0-1")
@@ -52,7 +56,10 @@ def main() -> int:
     parser.add_argument("--output-root", default="results/phase2_gatec_h10000")
     args = parser.parse_args()
 
-    variants = [value.strip() for value in args.variants.split(",") if value.strip()]
+    selected = args.variants or ",".join(
+        BROAD_VARIANTS if args.candidate_set == "broad" else DEFAULT_VARIANTS
+    )
+    variants = [value.strip() for value in selected.split(",") if value.strip()]
     if not variants:
         parser.error("--variants must not be empty")
     if args.outer_jobs < 1 or args.inner_jobs < 1:

@@ -69,6 +69,7 @@ void usage() {
                  "            [--bound-step N] [--no-fastpath] [--lb-mode legacy|bf|tt] [--dominance]\n"
                  "            [--solver-nodes N] [--beam-width N] [--beam-score disorder|bf|tt] [--search-weight F]\n"
                  "            [--routing dor|direct] [--capacity-formula code|paper] [--isolation-cap N]\n"
+                 "            [--gate-policy NAME] [--gate-param F] [--gate-param2 F] [--gate-param3 F]\n"
                  "            [--discharge-unweighted|--discharge-random] [--discharge-partial F]\n"
                  "            [--no-pibt-corridor] [--pibt-sink-yield] [--pibt-arm-retreat[-last]]\n"
                  "            [--pibt-age-rate] [--pibt-replan N] [--shuffle-order SEED] [--failure-prob P]\n"
@@ -124,6 +125,27 @@ Options parse(const int argc, char** argv) {
         }
         else if (arg == "--discharge-partial") options.sim.discharge.partial_stall = std::stod(std::string(value()));
         else if (arg == "--admit-hysteresis") options.sim.isolation.hysteresis = std::stoi(std::string(value()));
+        else if (arg == "--gate-policy") {
+            const auto name = value();
+            if (name == "static") options.sim.admission.policy = lima::AdmissionPolicy::Static;
+            else if (name == "fraction") options.sim.admission.policy = lima::AdmissionPolicy::FractionalReserve;
+            else if (name == "request") options.sim.admission.policy = lima::AdmissionPolicy::RequestProportional;
+            else if (name == "backpressure") options.sim.admission.policy = lima::AdmissionPolicy::Backpressure;
+            else if (name == "neighbor-pressure") options.sim.admission.policy = lima::AdmissionPolicy::NeighborPressure;
+            else if (name == "aimd") options.sim.admission.policy = lima::AdmissionPolicy::Aimd;
+            else if (name == "red") options.sim.admission.policy = lima::AdmissionPolicy::Red;
+            else if (name == "codel") options.sim.admission.policy = lima::AdmissionPolicy::Codel;
+            else if (name == "pi") options.sim.admission.policy = lima::AdmissionPolicy::Pi;
+            else if (name == "token") options.sim.admission.policy = lima::AdmissionPolicy::TokenBucket;
+            else if (name == "lqf") options.sim.admission.policy = lima::AdmissionPolicy::LongestQueue;
+            else if (name == "oldest") options.sim.admission.policy = lima::AdmissionPolicy::OldestRequest;
+            else if (name == "round-robin") options.sim.admission.policy = lima::AdmissionPolicy::RoundRobin;
+            else if (name == "drr") options.sim.admission.policy = lima::AdmissionPolicy::DeficitRoundRobin;
+            else throw std::invalid_argument("gate-policy must be static, fraction, request, backpressure, neighbor-pressure, aimd, red, codel, pi, token, lqf, oldest, round-robin, or drr");
+        }
+        else if (arg == "--gate-param") options.sim.admission.parameter = std::stod(std::string(value()));
+        else if (arg == "--gate-param2") options.sim.admission.secondary = std::stod(std::string(value()));
+        else if (arg == "--gate-param3") options.sim.admission.tertiary = std::stod(std::string(value()));
         else if (arg == "--no-discharge") options.sim.discharge_enabled = false;
         else if (arg == "--rotation") options.sim.rotation_enabled = true;
         else if (arg == "--gate-resync") options.sim.gate_resync = true;
@@ -204,6 +226,26 @@ std::uint64_t random_seed() {
         ^ static_cast<std::uint64_t>(device()) ^ now;
 }
 
+std::string_view admission_policy_name(const lima::AdmissionPolicy policy) {
+    switch (policy) {
+    case lima::AdmissionPolicy::Static: return "static";
+    case lima::AdmissionPolicy::FractionalReserve: return "fraction";
+    case lima::AdmissionPolicy::RequestProportional: return "request";
+    case lima::AdmissionPolicy::Backpressure: return "backpressure";
+    case lima::AdmissionPolicy::NeighborPressure: return "neighbor-pressure";
+    case lima::AdmissionPolicy::Aimd: return "aimd";
+    case lima::AdmissionPolicy::Red: return "red";
+    case lima::AdmissionPolicy::Codel: return "codel";
+    case lima::AdmissionPolicy::Pi: return "pi";
+    case lima::AdmissionPolicy::TokenBucket: return "token";
+    case lima::AdmissionPolicy::LongestQueue: return "lqf";
+    case lima::AdmissionPolicy::OldestRequest: return "oldest";
+    case lima::AdmissionPolicy::RoundRobin: return "round-robin";
+    case lima::AdmissionPolicy::DeficitRoundRobin: return "drr";
+    }
+    return "unknown";
+}
+
 bool has_non_default_config(const Options& options) {
     const lima::SolverConfig defaults;
     return options.sim.solver.kind != defaults.kind
@@ -227,6 +269,7 @@ bool has_non_default_config(const Options& options) {
         || !options.sim.discharge.avail_weighted
         || options.sim.discharge.partial_stall != 1.0
         || options.sim.isolation.hysteresis != 0
+        || options.sim.admission.policy != lima::AdmissionPolicy::Static
         || options.sim.rotation_enabled
         || !options.sim.gate_resync
         || options.sim.subset_scheduling
@@ -264,6 +307,12 @@ void print_provenance(const Options& options) {
     if (options.sim.isolation.cap >= 0) std::cout << " cap=" << options.sim.isolation.cap;
     if (options.sim.isolation.margin != 0) std::cout << " margin=" << options.sim.isolation.margin;
     if (options.sim.isolation.hysteresis != 0) std::cout << " hysteresis=" << options.sim.isolation.hysteresis;
+    if (options.sim.admission.policy != lima::AdmissionPolicy::Static) {
+        std::cout << " gate_policy=" << admission_policy_name(options.sim.admission.policy);
+        if (options.sim.admission.parameter != 0.0) std::cout << " gate_param=" << options.sim.admission.parameter;
+        if (options.sim.admission.secondary != 0.0) std::cout << " gate_param2=" << options.sim.admission.secondary;
+        if (options.sim.admission.tertiary != 0.0) std::cout << " gate_param3=" << options.sim.admission.tertiary;
+    }
     if (!options.sim.gate_resync) std::cout << " gate_resync=off";
     if (options.sim.subset_scheduling) std::cout << " subset=on";
     if (!options.sim.pibt_corridor) std::cout << " pibt=off";

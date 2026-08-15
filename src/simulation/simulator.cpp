@@ -81,6 +81,7 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
       topology_(IntersectionTopology::build(map_)),
       solver_(make_solver(config_.solver)), coordinator_(*solver_, config_.pibt_corridor),
       discharge_(config_.discharge) {
+    admission_seed_ = seed ^ 0xe7037ed1a0b428dbULL;
     agents_.reserve(tasks.size());
     std::unordered_set<CellId> occupied;
     // Sink semantics (adapted from the coworker despawn_at_goal ctor): on
@@ -147,6 +148,18 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
     }
     intersection_available_.resize(topology_.intersections().size());
     intersection_capacity_.resize(topology_.intersections().size());
+    admission_reserve_.resize(topology_.intersections().size(), config_.isolation.hysteresis);
+    admission_arm_mask_.resize(topology_.intersections().size(), 0x0fU);
+    admission_requests_.resize(topology_.intersections().size());
+    admission_arm_requests_.resize(topology_.intersections().size());
+    admission_arm_max_wait_.resize(topology_.intersections().size());
+    admission_deficit_.resize(topology_.intersections().size());
+    admission_rr_cursor_.resize(topology_.intersections().size());
+    admission_congestion_age_.resize(topology_.intersections().size());
+    admission_window_.resize(topology_.intersections().size());
+    admission_occupancy_ewma_.resize(topology_.intersections().size());
+    admission_integral_.resize(topology_.intersections().size());
+    admission_tokens_.resize(topology_.intersections().size());
     scheduled_members_.resize(topology_.intersections().size());
     deadlock_waiting_.resize(topology_.intersections().size(), false);
     deadlock_active_.resize(topology_.intersections().size(), 0);
@@ -155,6 +168,8 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
         const auto iid = static_cast<std::size_t>(intersection.id);
         intersection_capacity_[iid] = scheduling_capacity(intersection, config_.isolation);
         intersection_available_[iid] = intersection_capacity_[iid];
+        admission_window_[iid] = static_cast<double>(intersection_capacity_[iid]);
+        admission_tokens_[iid] = static_cast<double>(intersection_capacity_[iid]);
     }
     for (const Agent& agent : agents_) if (agent.active) {
         for (const IntersectionId iid : topology_.memberships(agent.position))
@@ -223,23 +238,230 @@ void Simulator::rebuild_deadlock_priorities() {
     }
 }
 
+IntersectionId Simulator::entering_intersection(const CellId current, const CellId next) const {
+    const auto& current_memberships = topology_.memberships(current);
+    if (!current_memberships.empty() && !topology_.is_center(current)) return -1;
+    if (!topology_.is_arm_tip(next)) return -1;
+    for (const IntersectionId iid : topology_.memberships(next)) {
+        if (std::find(current_memberships.begin(), current_memberships.end(), iid)
+            == current_memberships.end()) return iid;
+    }
+    return -1;
+}
+
+void Simulator::update_admission_policy() {
+    std::fill(admission_requests_.begin(), admission_requests_.end(), 0);
+    std::fill(admission_arm_requests_.begin(), admission_arm_requests_.end(),
+              std::array<std::size_t, 4>{});
+    std::fill(admission_arm_max_wait_.begin(), admission_arm_max_wait_.end(),
+              std::array<std::uint32_t, 4>{});
+    std::fill(admission_arm_mask_.begin(), admission_arm_mask_.end(), 0x0fU);
+
+    for (const Agent& agent : agents_) if (agent.active && !agent.scheduled()) {
+        const CellId next = agent.intended_cell();
+        const IntersectionId entering = entering_intersection(agent.position, next);
+        if (entering < 0) continue;
+        const auto iid = static_cast<std::size_t>(entering);
+        const Direction direction = topology_.intersections()[iid].direction_of(next);
+        const auto d = static_cast<std::size_t>(direction);
+        if (d >= 4) continue;
+        ++admission_requests_[iid];
+        ++admission_arm_requests_[iid][d];
+        admission_arm_max_wait_[iid][d] = std::max(admission_arm_max_wait_[iid][d], agent.wait_steps);
+    }
+
+    const auto policy = config_.admission.policy;
+    for (std::size_t iid = 0; iid < topology_.intersections().size(); ++iid) {
+        const int capacity = std::max(1, intersection_capacity_[iid]);
+        const int occupied = static_cast<int>(inside_counts_[iid]);
+        const int available = std::max(0, capacity - occupied);
+        const double ratio = static_cast<double>(occupied) / static_cast<double>(capacity);
+        admission_occupancy_ewma_[iid] += 0.125 * (ratio - admission_occupancy_ewma_[iid]);
+        int reserve = std::max(0, config_.isolation.hysteresis);
+
+        switch (policy) {
+        case AdmissionPolicy::Static:
+            break;
+        case AdmissionPolicy::FractionalReserve: {
+            const double fraction = config_.admission.parameter > 0.0
+                ? config_.admission.parameter : 0.25;
+            reserve = std::max(reserve, static_cast<int>(std::ceil(fraction * capacity)));
+            break;
+        }
+        case AdmissionPolicy::RequestProportional: {
+            const double gain = config_.admission.parameter > 0.0
+                ? config_.admission.parameter : 1.0;
+            const int window = std::clamp(static_cast<int>(std::ceil(
+                gain * static_cast<double>(admission_requests_[iid]))), 0, capacity);
+            reserve = std::max(reserve, capacity - window);
+            break;
+        }
+        case AdmissionPolicy::Backpressure: {
+            const double gain = config_.admission.parameter > 0.0
+                ? config_.admission.parameter : 1.0;
+            if (gain * static_cast<double>(admission_requests_[iid]) <= occupied)
+                reserve = std::max(reserve, available);
+            break;
+        }
+        case AdmissionPolicy::NeighborPressure: {
+            double neighbor_ratio = 0.0;
+            int neighbors = 0;
+            for (const IntersectionId neighbor : topology_.intersections()[iid].neighbors) {
+                if (neighbor < 0) continue;
+                const auto n = static_cast<std::size_t>(neighbor);
+                neighbor_ratio += static_cast<double>(prev_inside_counts_[n])
+                    / static_cast<double>(std::max(1, intersection_capacity_[n]));
+                ++neighbors;
+            }
+            if (neighbors > 0) neighbor_ratio /= static_cast<double>(neighbors);
+            const double gain = config_.admission.parameter > 0.0
+                ? config_.admission.parameter : 1.0;
+            const double request_pressure = gain * static_cast<double>(admission_requests_[iid])
+                / static_cast<double>(capacity);
+            if (request_pressure <= std::max(ratio, neighbor_ratio))
+                reserve = std::max(reserve, available);
+            break;
+        }
+        case AdmissionPolicy::Aimd: {
+            const double beta = config_.admission.parameter > 0.0
+                ? config_.admission.parameter : 0.5;
+            const double increase = config_.admission.secondary > 0.0
+                ? config_.admission.secondary : 0.25;
+            if (stalled_[iid] || ratio >= 0.95)
+                admission_window_[iid] = std::max(1.0, beta * admission_window_[iid]);
+            else admission_window_[iid] = std::min(static_cast<double>(capacity),
+                                                   admission_window_[iid] + increase);
+            reserve = std::max(reserve, capacity - static_cast<int>(std::floor(admission_window_[iid])));
+            break;
+        }
+        case AdmissionPolicy::Red:
+            // The EWMA and deterministic per-request RED mark are evaluated
+            // in red_blocks(); the ordinary capacity gate remains active.
+            break;
+        case AdmissionPolicy::Codel: {
+            const std::uint32_t target = static_cast<std::uint32_t>(
+                config_.admission.parameter > 0.0 ? config_.admission.parameter : 3.0);
+            const std::uint32_t interval = static_cast<std::uint32_t>(
+                config_.admission.secondary > 0.0 ? config_.admission.secondary : 5.0);
+            std::uint32_t oldest = 0;
+            for (const auto wait : admission_arm_max_wait_[iid]) oldest = std::max(oldest, wait);
+            if (oldest > target && occupied > 0) ++admission_congestion_age_[iid];
+            else admission_congestion_age_[iid] = 0;
+            reserve = std::max(reserve, std::min(capacity - 1,
+                static_cast<int>(admission_congestion_age_[iid] / std::max(1U, interval))));
+            break;
+        }
+        case AdmissionPolicy::Pi: {
+            const double target = config_.admission.parameter > 0.0
+                ? config_.admission.parameter : 0.75;
+            const double kp = config_.admission.secondary > 0.0
+                ? config_.admission.secondary : 0.5;
+            const double ki = config_.admission.tertiary > 0.0
+                ? config_.admission.tertiary : 0.05;
+            const double error = admission_occupancy_ewma_[iid] - target;
+            admission_integral_[iid] = std::clamp(admission_integral_[iid] + error, -10.0, 10.0);
+            const double control = std::clamp(kp * error + ki * admission_integral_[iid], 0.0, 0.9);
+            reserve = std::max(reserve, static_cast<int>(std::ceil(control * capacity)));
+            break;
+        }
+        case AdmissionPolicy::TokenBucket: {
+            const double rate = config_.admission.parameter > 0.0
+                ? config_.admission.parameter : 1.0;
+            const double bucket = config_.admission.secondary > 0.0
+                ? config_.admission.secondary : static_cast<double>(capacity);
+            admission_tokens_[iid] = std::min(bucket, admission_tokens_[iid] + rate);
+            break;
+        }
+        case AdmissionPolicy::LongestQueue:
+        case AdmissionPolicy::OldestRequest:
+        case AdmissionPolicy::RoundRobin:
+        case AdmissionPolicy::DeficitRoundRobin: {
+            int selected = -1;
+            if (policy == AdmissionPolicy::RoundRobin) {
+                for (std::size_t offset = 0; offset < 4; ++offset) {
+                    const auto d = (admission_rr_cursor_[iid] + offset) % 4U;
+                    if (admission_arm_requests_[iid][d] != 0) {
+                        selected = static_cast<int>(d);
+                        admission_rr_cursor_[iid] = (d + 1U) % 4U;
+                        break;
+                    }
+                }
+            } else if (policy == AdmissionPolicy::DeficitRoundRobin) {
+                const double quantum = config_.admission.parameter > 0.0
+                    ? config_.admission.parameter : 1.0;
+                for (std::size_t d = 0; d < 4; ++d)
+                    if (admission_arm_requests_[iid][d] != 0) admission_deficit_[iid][d] += quantum;
+                for (std::size_t d = 0; d < 4; ++d) {
+                    if (admission_arm_requests_[iid][d] == 0) continue;
+                    if (selected < 0 || admission_deficit_[iid][d] > admission_deficit_[iid][selected])
+                        selected = static_cast<int>(d);
+                }
+            } else {
+                for (std::size_t d = 0; d < 4; ++d) {
+                    if (admission_arm_requests_[iid][d] == 0) continue;
+                    if (selected < 0) selected = static_cast<int>(d);
+                    else if (policy == AdmissionPolicy::LongestQueue
+                        && admission_arm_requests_[iid][d] > admission_arm_requests_[iid][selected])
+                        selected = static_cast<int>(d);
+                    else if (policy == AdmissionPolicy::OldestRequest
+                        && std::pair(admission_arm_max_wait_[iid][d], admission_arm_requests_[iid][d])
+                           > std::pair(admission_arm_max_wait_[iid][selected], admission_arm_requests_[iid][selected]))
+                        selected = static_cast<int>(d);
+                }
+            }
+            admission_arm_mask_[iid] = selected < 0 ? 0x0fU
+                : static_cast<std::uint8_t>(1U << static_cast<unsigned>(selected));
+            break;
+        }
+        }
+        admission_reserve_[iid] = std::clamp(reserve, 0, capacity);
+    }
+}
+
+bool Simulator::red_blocks(const CellId current, const IntersectionId entering) const {
+    if (config_.admission.policy != AdmissionPolicy::Red) return false;
+    const auto iid = static_cast<std::size_t>(entering);
+    const double minimum = config_.admission.parameter > 0.0
+        ? config_.admission.parameter : 0.50;
+    const double maximum = config_.admission.secondary > minimum
+        ? config_.admission.secondary : 0.90;
+    const double max_probability = config_.admission.tertiary > 0.0
+        ? config_.admission.tertiary : 0.50;
+    const double average = admission_occupancy_ewma_[iid];
+    if (average <= minimum) return false;
+    double probability = 1.0;
+    if (average < maximum)
+        probability = max_probability * (average - minimum) / (maximum - minimum);
+
+    std::uint64_t value = admission_seed_ ^ (stats_.timestep * 0x9e3779b97f4a7c15ULL)
+        ^ (static_cast<std::uint64_t>(current) * 0xbf58476d1ce4e5b9ULL)
+        ^ (static_cast<std::uint64_t>(entering + 1) * 0x94d049bb133111ebULL);
+    value ^= value >> 30U;
+    value *= 0xbf58476d1ce4e5b9ULL;
+    value ^= value >> 27U;
+    value *= 0x94d049bb133111ebULL;
+    value ^= value >> 31U;
+    const double sample = static_cast<double>(value >> 11U) * (1.0 / 9007199254740992.0);
+    return sample < probability;
+}
+
 bool Simulator::block_intersection(const CellId current, const CellId next, const bool normal_only) const {
     const auto& current_memberships = topology_.memberships(current);
     const bool current_outside = current_memberships.empty();
     const bool current_center = topology_.is_center(current);
     if (!current_outside && !current_center) return false;
 
-    if (!topology_.is_arm_tip(next)) return false;
-
-    IntersectionId entering = -1;
-    for (const IntersectionId iid : topology_.memberships(next)) {
-        if (std::find(current_memberships.begin(), current_memberships.end(), iid) == current_memberships.end()) {
-            entering = iid;
-            break;
-        }
-    }
+    const IntersectionId entering = entering_intersection(current, next);
     if (entering < 0) return false;
-    if (normal_only && intersection_available_[static_cast<std::size_t>(entering)] <= config_.isolation.hysteresis) return true;
+    const auto iid = static_cast<std::size_t>(entering);
+    if (normal_only) {
+        if (intersection_available_[iid] <= admission_reserve_[iid]) return true;
+        const auto direction = static_cast<std::size_t>(topology_.intersections()[iid].direction_of(next));
+        if (direction < 4 && (admission_arm_mask_[iid] & (1U << direction)) == 0) return true;
+        if (config_.admission.policy == AdmissionPolicy::TokenBucket && admission_tokens_[iid] < 1.0)
+            return true;
+        if (red_blocks(current, entering)) return true;
+    }
 
     const auto priority = [&](const IntersectionId iid) {
         return deadlock_active_[static_cast<std::size_t>(iid)] != 0
@@ -261,8 +483,15 @@ void Simulator::update_available_on_move(const CellId current, const CellId next
     }
     for (const IntersectionId iid : to) {
         if (std::find(from.begin(), from.end(), iid) != from.end()) continue;
-        intersection_available_[static_cast<std::size_t>(iid)] = std::max(
-            0, intersection_available_[static_cast<std::size_t>(iid)] - 1);
+        const auto index = static_cast<std::size_t>(iid);
+        intersection_available_[index] = std::max(0, intersection_available_[index] - 1);
+        if (config_.admission.policy == AdmissionPolicy::TokenBucket)
+            admission_tokens_[index] = std::max(0.0, admission_tokens_[index] - 1.0);
+        if (config_.admission.policy == AdmissionPolicy::DeficitRoundRobin) {
+            const auto direction = static_cast<std::size_t>(topology_.intersections()[index].direction_of(next));
+            if (direction < 4) admission_deficit_[index][direction] = std::max(
+                0.0, admission_deficit_[index][direction] - 1.0);
+        }
     }
 }
 
@@ -372,6 +601,7 @@ bool Simulator::step() {
         }
         check_[iid] = check_[iid] || stalled_[iid] || deadlock_waiting_[iid];
     }
+    update_admission_policy();
     if (config_.gate_resync) {
         // Ground-truth admission budget.  Quota reservations made below will
         // re-debit within the same step, so reservations survive while the

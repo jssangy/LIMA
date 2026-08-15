@@ -36,12 +36,43 @@ enum class GoalBehavior : std::uint8_t {
     Lifelong,   // agent immediately receives a fresh goal (E9 task stream)
 };
 
+// Gate C admission policies.  Every non-static policy is deliberately
+// implementable by one intersection controller: it uses its own occupancy,
+// requests and waiting ages, plus at most the one-cycle-stale occupancy of
+// directly adjacent intersections.  No global traffic state is exposed.
+enum class AdmissionPolicy : std::uint8_t {
+    Static,
+    FractionalReserve,
+    RequestProportional,
+    Backpressure,
+    NeighborPressure,
+    Aimd,
+    Red,
+    Codel,
+    Pi,
+    TokenBucket,
+    LongestQueue,
+    OldestRequest,
+    RoundRobin,
+    DeficitRoundRobin,
+};
+
+struct AdmissionConfig {
+    AdmissionPolicy policy{AdmissionPolicy::Static};
+    // Policy-specific knobs.  Their interpretation is recorded by the CLI
+    // manifest; zero selects the policy default.
+    double parameter{0.0};
+    double secondary{0.0};
+    double tertiary{0.0};
+};
+
 // Composition of the pluggable pieces.  Defaults reproduce the shipped
 // behavior exactly; every knob exists for a specific revision experiment.
 struct SimulatorConfig {
     SolverConfig solver{};
     IsolationConfig isolation{};
     DischargeConfig discharge{};
+    AdmissionConfig admission{};
     std::uint32_t stall_threshold{10};  // all-active-waiting steps before the run is declared stalled
     bool discharge_enabled{true};
     // Gridlock rotation: when blocked agents form a closed mutual-wait cycle
@@ -190,6 +221,19 @@ private:
     std::vector<bool> deadlock_waiting_;
     std::vector<int> intersection_available_;
     std::vector<int> intersection_capacity_;
+    std::uint64_t admission_seed_{};
+    std::vector<int> admission_reserve_;
+    std::vector<std::uint8_t> admission_arm_mask_;
+    std::vector<std::size_t> admission_requests_;
+    std::vector<std::array<std::size_t, 4>> admission_arm_requests_;
+    std::vector<std::array<std::uint32_t, 4>> admission_arm_max_wait_;
+    std::vector<std::array<double, 4>> admission_deficit_;
+    std::vector<std::uint32_t> admission_rr_cursor_;
+    std::vector<std::uint32_t> admission_congestion_age_;
+    std::vector<double> admission_window_;
+    std::vector<double> admission_occupancy_ewma_;
+    std::vector<double> admission_integral_;
+    std::vector<double> admission_tokens_;
     std::vector<std::uint8_t> deadlock_active_;
     std::vector<std::size_t> deadlock_priority_;
 
@@ -211,6 +255,9 @@ private:
 
     bool has_active_neighbor(IntersectionId intersection) const;
     void rebuild_deadlock_priorities();
+    [[nodiscard]] IntersectionId entering_intersection(CellId current, CellId next) const;
+    void update_admission_policy();
+    [[nodiscard]] bool red_blocks(CellId current, IntersectionId entering) const;
     bool block_intersection(CellId current, CellId next, bool normal_only) const;
     void update_available_on_move(CellId current, CellId next);
     void insert_scheduled_path(Agent& agent, const ScheduledPath& scheduled, IntersectionId intersection);
