@@ -65,6 +65,7 @@ def main() -> int:
 
     rows: list[dict] = []
     manifests: dict[str, dict] = {}
+    expected_cells: dict[str, int] = defaultdict(int)
     seen: set[tuple[str, str]] = set()
     for root in roots:
         for variant_dir in sorted(path for path in root.iterdir() if path.is_dir()):
@@ -74,9 +75,14 @@ def main() -> int:
                 continue
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             variant = manifest["variant"]
-            if variant in manifests and manifests[variant] != manifest:
-                parser.error(f"inconsistent manifests for {variant}")
-            manifests[variant] = manifest
+            if variant in manifests:
+                prior = manifests[variant]
+                comparable = ("binary_sha256", "max_steps", "variant_flags")
+                if any(prior.get(key) != manifest.get(key) for key in comparable):
+                    parser.error(f"inconsistent executable/config manifests for {variant}")
+            else:
+                manifests[variant] = manifest
+            expected_cells[variant] += int(manifest["job_count"])
             horizon = int(manifest["max_steps"])
             for record_path in sorted(records_dir.glob("*.json")):
                 record = json.loads(record_path.read_text(encoding="utf-8"))
@@ -155,7 +161,7 @@ def main() -> int:
         variants.append({
             "variant": variant,
             "cells_present": len(variant_rows),
-            "cells_expected": int(manifest["job_count"]),
+            "cells_expected": expected_cells[variant],
             "watchdogs": sum(row["status"] == "watchdog" for row in variant_rows),
             "horizon_cells": sum(row["status"] == "horizon" for row in variant_rows),
             "global_stall_cells": sum(row["status"] == "global_stall" for row in variant_rows),
