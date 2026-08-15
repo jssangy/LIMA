@@ -157,7 +157,7 @@ Every solve summary now ends with provenance fields (`solver=`, `routing=`, `cap
 
 | Option | Effect |
 |---|---|
-| `--solver ida\|astar\|wastar\|gbfs\|ucs\|greedy\|beam\|hybrid` | Local intersection solver (default `beam`) |
+| `--solver ida\|astar\|wastar\|gbfs\|ucs\|greedy\|beam\|beam-complete\|hybrid` | Local intersection solver (`beam-complete` keeps beam primary and invokes exact IDA* only on failure) |
 | `--solver-iterations N` | Search expansion/restart limit (default 2,000,000) |
 | `--beam-width N` | Beam width (default 2,048; Gate A frozen value) |
 | `--beam-score disorder\|bf\|tt` | Beam ranking function (default `tt`; Gate A frozen value) |
@@ -167,7 +167,8 @@ Every solve summary now ends with provenance fields (`solver=`, `routing=`, `cap
 | `--capacity-formula code\|paper` | Isolation bound: sum-max (shipped) or Eq. 9 sum-max+1 |
 | `--isolation-cap N` | Operational ceiling on the isolation bound |
 | `--no-discharge` | Disable discharge gating |
-| `--discharge-policy composite\|random\|least-load\|max-slack\|rotor\|shortest\|power-two\|backpressure\|demand` | Select the local recirculation-loop policy |
+| `--discharge-policy composite\|random\|least-load\|max-slack\|rotor\|shortest\|power-two\|backpressure\|balanced\|demand` | Select the local recirculation-loop policy |
+| `--discharge-weight F` | Neighbor-backlog weight for the balanced discharge policy |
 
 ### Instrumentation
 

@@ -219,6 +219,18 @@ VARIANTS = {
     "gated_shortest": GATE_C_AIMD25 + ("--discharge-policy", "shortest"),
     "gated_power_two": GATE_C_AIMD25 + ("--discharge-policy", "power-two"),
     "gated_backpressure": GATE_C_AIMD25 + ("--discharge-policy", "backpressure"),
+    "gated_balanced025": GATE_C_AIMD25 + (
+        "--discharge-policy", "balanced", "--discharge-weight", "0.25",
+    ),
+    "gated_balanced050": GATE_C_AIMD25 + (
+        "--discharge-policy", "balanced", "--discharge-weight", "0.50",
+    ),
+    "gated_balanced100": GATE_C_AIMD25 + (
+        "--discharge-policy", "balanced", "--discharge-weight", "1.0",
+    ),
+    "gated_balanced200": GATE_C_AIMD25 + (
+        "--discharge-policy", "balanced", "--discharge-weight", "2.0",
+    ),
     "gated_demand": GATE_C_AIMD25 + ("--discharge-policy", "demand"),
     "gated_allarms": GATE_C_AIMD25 + (
         "--discharge-policy", "composite", "--discharge-all-arms",

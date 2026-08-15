@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <limits>
 #include <stdexcept>
 
 namespace lima {
@@ -183,6 +184,42 @@ private:
     BeamSolver beam_;
 };
 
+// Gate B completeness wrapper: preserve the frozen beam solver as the fast
+// primary, but recover the finite-state exact-search guarantee when beam ever
+// exhausts its width/node budget.  The fallback uses an admissible TT bound,
+// textbook next-bound increments, no greedy fast path, and no node cutoff.
+class CompleteBeamSolver final : public StackSolver {
+public:
+    CompleteBeamSolver(const BeamSearchOptions& beam_options, const IdaStarOptions& ida_options)
+        : beam_(beam_options), ida_(ida_options) {}
+
+    [[nodiscard]] std::string_view name() const noexcept override { return "beam-complete"; }
+
+    [[nodiscard]] std::optional<std::vector<StackMove>> solve(
+        const StackProblem& problem, SolverStats* const stats) override {
+        SolverStats primary;
+        if (auto moves = beam_.solve(problem, &primary)) {
+            if (stats) *stats = primary;
+            return moves;
+        }
+
+        SolverStats fallback;
+        auto moves = ida_.solve(problem, &fallback);
+        if (stats) {
+            *stats = fallback;
+            stats->iterations += primary.iterations;
+            stats->expanded_nodes += primary.expanded_nodes;
+            stats->wall_seconds += primary.wall_seconds;
+            stats->fallback_used = true;
+        }
+        return moves;
+    }
+
+private:
+    BeamSolver beam_;
+    IdaStarSolver ida_;
+};
+
 }  // namespace
 
 std::unique_ptr<StackSolver> make_solver(const SolverConfig& config) {
@@ -210,13 +247,17 @@ std::unique_ptr<StackSolver> make_solver(const SolverConfig& config) {
         return std::make_unique<BestFirstSolver>(BestFirstOptions{
             mode, lb_mode, config.best_first_weight, budget, config.max_capacity});
     }
-    if (config.kind == "beam") {
+    if (config.kind == "beam" || config.kind == "beam-complete") {
         BeamSearchOptions options;
         options.beam_width = config.beam_width;
         options.max_expanded_nodes = config.max_iterations;
         options.max_capacity = config.max_capacity;
         options.score_mode = parse_beam_score(config.beam_score);
-        return std::make_unique<BeamSolver>(options);
+        if (config.kind == "beam") return std::make_unique<BeamSolver>(options);
+        const IdaStarOptions exact_options{
+            std::numeric_limits<std::size_t>::max(), false, 0, config.max_capacity,
+            IdaLbMode::kTt, false, 0};
+        return std::make_unique<CompleteBeamSolver>(options, exact_options);
     }
     if (config.kind == "hybrid") {
         if (config.max_nodes == 0)

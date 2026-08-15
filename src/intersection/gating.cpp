@@ -187,6 +187,25 @@ std::vector<RecirculationDischarge::Event> RecirculationDischarge::run(const Con
                     cycle_index = 0;
                 }
             }
+        } else if (policy == DischargePolicy::Balanced) {
+            // Weighted compromise between the two strongest local signals:
+            // admission slack and adjacent queue differential.  Loop load is
+            // only a deterministic tie-break within an equally scored escape.
+            double best_score = -std::numeric_limits<double>::infinity();
+            std::size_t best_loop_load = std::numeric_limits<std::size_t>::max();
+            for (const FlatChoice& choice : flat) {
+                const IntersectionId b = source.neighbors[candidates[choice.candidate].direction];
+                const int slack = context.available
+                    ? (*context.available)[static_cast<std::size_t>(b)] : 0;
+                const double score = static_cast<double>(slack)
+                    - config_.weight * static_cast<double>(node_load(b));
+                const std::size_t loop_load = cycle_load(choice);
+                if (score > best_score || (score == best_score && loop_load < best_loop_load)) {
+                    best_score = score;
+                    best_loop_load = loop_load;
+                    select_choice(choice);
+                }
+            }
         } else if (policy == DischargePolicy::Demand) {
             std::size_t best_demand = 0;
             bool found = false;

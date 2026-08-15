@@ -29,6 +29,7 @@ enum class DischargePolicy : std::uint8_t {
     Shortest,
     PowerOfTwo,
     Backpressure,
+    Balanced,
     Demand,
 };
 
@@ -52,6 +53,7 @@ struct DischargeConfig {
     bool avail_weighted{true};
     double partial_stall{1.0};         // waiting-member fraction that marks an intersection stalled
     DischargePolicy policy{DischargePolicy::Legacy};
+    double weight{1.0};                // neighbor backlog weight for the balanced policy
 };
 
 [[nodiscard]] int scheduling_capacity(const Intersection& intersection, const IsolationConfig& config);

@@ -65,13 +65,13 @@ void usage() {
     std::cout << "usage: lima [--map FILE] [--scenario FILE] [--agents N] [--planner bfs|astar]"
                  " [--seed N] [--max-steps N] [--fps N] [--validate-conflicts]"
                  " [--mode realtime|solve|replay|debug] [--output FILE|--no-trace] [--replay FILE]\n"
-                 "            [--solver ida|astar|wastar|gbfs|ucs|greedy|beam|hybrid] [--solver-iterations N]\n"
+                 "            [--solver ida|astar|wastar|gbfs|ucs|greedy|beam|beam-complete|hybrid] [--solver-iterations N]\n"
                  "            [--bound-step N] [--no-fastpath] [--lb-mode legacy|bf|tt] [--dominance]\n"
                  "            [--solver-nodes N] [--beam-width N] [--beam-score disorder|bf|tt] [--search-weight F]\n"
                  "            [--routing dor|direct] [--capacity-formula code|paper] [--isolation-cap N]\n"
                  "            [--gate-policy NAME] [--gate-param F] [--gate-param2 F] [--gate-param3 F]\n"
                  "            [--discharge-policy NAME] [--discharge-unweighted|--discharge-random]\n"
-                 "            [--discharge-partial F]\n"
+                 "            [--discharge-partial F] [--discharge-weight F]\n"
                  "            [--no-pibt-corridor] [--pibt-sink-yield] [--pibt-arm-retreat[-last]]\n"
                  "            [--pibt-age-rate] [--pibt-replan N] [--shuffle-order SEED] [--failure-prob P]\n"
                  "            [--no-discharge] [--metrics DIR] [--trace-jsonl FILE]\n"
@@ -135,8 +135,14 @@ Options parse(const int argc, char** argv) {
             else if (name == "shortest") options.sim.discharge.policy = lima::DischargePolicy::Shortest;
             else if (name == "power-two") options.sim.discharge.policy = lima::DischargePolicy::PowerOfTwo;
             else if (name == "backpressure") options.sim.discharge.policy = lima::DischargePolicy::Backpressure;
+            else if (name == "balanced") options.sim.discharge.policy = lima::DischargePolicy::Balanced;
             else if (name == "demand") options.sim.discharge.policy = lima::DischargePolicy::Demand;
             else throw std::invalid_argument("unknown discharge policy: " + std::string(name));
+        }
+        else if (arg == "--discharge-weight") {
+            options.sim.discharge.weight = std::stod(std::string(value()));
+            if (options.sim.discharge.weight < 0.0)
+                throw std::invalid_argument("discharge-weight must be non-negative");
         }
         else if (arg == "--admit-hysteresis") options.sim.isolation.hysteresis = std::stoi(std::string(value()));
         else if (arg == "--gate-policy") {
@@ -278,6 +284,23 @@ std::string_view admission_policy_name(const lima::AdmissionPolicy policy) {
     return "unknown";
 }
 
+std::string_view discharge_policy_name(const lima::DischargePolicy policy) {
+    switch (policy) {
+    case lima::DischargePolicy::Legacy: return "legacy";
+    case lima::DischargePolicy::Composite: return "composite";
+    case lima::DischargePolicy::Random: return "random";
+    case lima::DischargePolicy::LeastLoaded: return "least-load";
+    case lima::DischargePolicy::MaxSlack: return "max-slack";
+    case lima::DischargePolicy::Rotor: return "rotor";
+    case lima::DischargePolicy::Shortest: return "shortest";
+    case lima::DischargePolicy::PowerOfTwo: return "power-two";
+    case lima::DischargePolicy::Backpressure: return "backpressure";
+    case lima::DischargePolicy::Balanced: return "balanced";
+    case lima::DischargePolicy::Demand: return "demand";
+    }
+    return "unknown";
+}
+
 bool has_non_default_config(const Options& options) {
     const lima::SolverConfig defaults;
     return options.sim.solver.kind != defaults.kind
@@ -300,6 +323,8 @@ bool has_non_default_config(const Options& options) {
         || !options.sim.discharge.deterministic_cycle
         || !options.sim.discharge.avail_weighted
         || options.sim.discharge.partial_stall != 1.0
+        || options.sim.discharge.policy != lima::DischargePolicy::Legacy
+        || options.sim.discharge.weight != 1.0
         || options.sim.isolation.hysteresis != 0
         || options.sim.admission.policy != lima::AdmissionPolicy::Static
         || options.sim.rotation_enabled
@@ -356,7 +381,11 @@ void print_provenance(const Options& options) {
     if (options.sim.shuffle_order >= 0) std::cout << " shuffle=" << options.sim.shuffle_order;
     if (options.sim.failure_probability != 0.0)
         std::cout << " failure_prob=" << options.sim.failure_probability;
-    if (!options.sim.discharge.deterministic_cycle)
+    if (options.sim.discharge.policy != lima::DischargePolicy::Legacy) {
+        std::cout << " discharge_policy=" << discharge_policy_name(options.sim.discharge.policy);
+        if (options.sim.discharge.policy == lima::DischargePolicy::Balanced)
+            std::cout << " discharge_weight=" << options.sim.discharge.weight;
+    } else if (!options.sim.discharge.deterministic_cycle)
         std::cout << " discharge_policy=random";
     else if (!options.sim.discharge.avail_weighted)
         std::cout << " discharge_policy=load_only";

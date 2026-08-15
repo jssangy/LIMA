@@ -46,7 +46,7 @@ public:
 struct SolverConfig {
     // Gate A freeze (2026-08-15): TT-scored beam search is the operational
     // default.  IDA* remains available explicitly for exact-reference runs.
-    std::string kind{"beam"};            // ida | astar | wastar | gbfs | ucs | greedy | beam | hybrid
+    std::string kind{"beam"};            // ida | astar | wastar | gbfs | ucs | greedy | beam | beam-complete | hybrid
     std::size_t max_iterations{2'000'000};
     // Scaled (x2) threshold increment between IDA* iterations.  The shipped
     // default 6 trades optimality for speed; 0 restores the textbook next-bound
