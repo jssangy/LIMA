@@ -80,7 +80,16 @@ def main() -> int:
                 completed, total = (int(value) for value in completed_text.split("/", 1))
             except ValueError:
                 completed, total = 0, int(record["agents"])
-            status = "watchdog" if record.get("timed_out") else summary.get("status", "error")
+            raw_status = summary.get("status", "error")
+            steps = number(summary.get("steps"))
+            if record.get("timed_out"):
+                status = "watchdog"
+            elif raw_status == "step_limit" and steps < horizon:
+                status = "global_stall"
+            elif raw_status == "step_limit":
+                status = "horizon"
+            else:
+                status = raw_status
             success = int(status == "completed" and completed == total)
             rows.append({
                 "cell": record["tag"],
@@ -90,12 +99,13 @@ def main() -> int:
                 "scenario": int(record["scenario"]),
                 "variant": variant,
                 "status": status,
+                "raw_status": raw_status,
                 "success": success,
                 "completed": completed,
                 "total": total,
                 "residual": total - completed,
                 "completion_fraction": completed / total if total else 0.0,
-                "steps": number(summary.get("steps")),
+                "steps": steps,
                 "horizon": horizon,
                 "moves": number(summary.get("moves")),
                 "waits": number(summary.get("waits")),
@@ -137,6 +147,8 @@ def main() -> int:
             "cells_present": len(variant_rows),
             "cells_expected": int(manifest["job_count"]),
             "watchdogs": sum(row["status"] == "watchdog" for row in variant_rows),
+            "horizon_cells": sum(row["status"] == "horizon" for row in variant_rows),
+            "global_stall_cells": sum(row["status"] == "global_stall" for row in variant_rows),
             "completed_cells": len(successful),
             "completed_agents": sum(row["completed"] for row in variant_rows),
             "total_agents": sum(row["total"] for row in variant_rows),
@@ -178,6 +190,8 @@ def main() -> int:
             "density_percent": density,
             "runs": len(group),
             "completed_cells": sum(row["success"] for row in group),
+            "horizon_cells": sum(row["status"] == "horizon" for row in group),
+            "global_stall_cells": sum(row["status"] == "global_stall" for row in group),
             "completed_agents": sum(row["completed"] for row in group),
             "total_agents": sum(row["total"] for row in group),
             "residual_agents": sum(row["residual"] for row in group),
@@ -202,13 +216,14 @@ def main() -> int:
         f"- Complete: {'yes' if complete else 'no'}",
         "- Ranking is step-based. Runner wall time is retained only as operational metadata.",
         "",
-        "| rank | variant | cells | watchdog | completed cells | residual agents | agent completion | makespan median | moves median | W/L/T vs base |",
-        "|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| rank | variant | cells | watchdog | completed | horizon | global stall | residual agents | agent completion | makespan median | moves median | W/L/T vs base |",
+        "|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for rank, row in enumerate(variants, 1):
         lines.append(
             f"| {rank} | {row['variant']} | {row['cells_present']}/{row['cells_expected']} | "
-            f"{row['watchdogs']} | {row['completed_cells']} | {row['residual_agents']} | "
+            f"{row['watchdogs']} | {row['completed_cells']} | {row['horizon_cells']} | "
+            f"{row['global_stall_cells']} | {row['residual_agents']} | "
             f"{row['agent_completion_fraction'] * 100:.2f}% | "
             f"{fmt(row['makespan_median'], 0)} | {fmt(row['moves_median_completed'], 0)} | "
             f"{row['paired_wins_vs_base']}/{row['paired_losses_vs_base']}/"
