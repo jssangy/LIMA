@@ -53,6 +53,7 @@ def main() -> int:
     parser.add_argument("--cell-timeout", type=float, default=86_400.0)
     parser.add_argument("--outer-jobs", type=int, default=6)
     parser.add_argument("--inner-jobs", type=int, default=2)
+    parser.add_argument("--record-trace", action="store_true")
     parser.add_argument("--output-root", default="results/phase2_gatec_h10000")
     args = parser.parse_args()
 
@@ -93,6 +94,8 @@ def main() -> int:
             "--max-steps", str(args.max_steps),
             "--output-dir", str(variant_output),
         ]
+        if args.record_trace:
+            command.append("--record-trace")
         environment = os.environ.copy()
         environment["LIMA_GATE_RUNNER_OWNS_LOCK"] = "1"
         try:
