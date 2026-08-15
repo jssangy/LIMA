@@ -230,6 +230,7 @@ private:
     std::vector<CellId> movement_origin_;
     std::vector<std::size_t> initial_route_lengths_;
     std::vector<std::uint64_t> completion_steps_;
+    std::vector<std::uint64_t> task_start_steps_;
     std::vector<IntersectionId> deadlock_queue_;
     std::vector<std::unordered_set<AgentId>> scheduled_members_;
     std::vector<bool> deadlock_waiting_;

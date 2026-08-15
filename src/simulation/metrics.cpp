@@ -16,7 +16,8 @@ MetricsCollector::MetricsCollector(const std::filesystem::path& directory) {
     open(discharge_csv_, "discharge_events.csv", "t,intersection,rerouted,loop_cells,agents");
     open(comm_csv_, "comm_steps.csv", "t,acquisitions,broadcasts,gate_signals");
     open(agents_csv_, "agents.csv",
-         "id,initial_route_len,moves,extra_moves,completion_step,discharges,completed");
+         "id,initial_route_len,moves,extra_moves,completion_step,discharges,completed,tasks_completed");
+    open(task_csv_, "task_completions.csv", "t,agent,task_index,service_steps");
 }
 
 void MetricsCollector::on_solver_invocation(const std::uint64_t timestep, const IntersectionId intersection,
@@ -39,6 +40,12 @@ void MetricsCollector::on_discharge(const std::uint64_t timestep, const Intersec
     discharge_csv_ << '\n';
 }
 
+void MetricsCollector::on_task_completion(const std::uint64_t timestep, const AgentId agent,
+                                          const std::uint64_t task_index,
+                                          const std::uint64_t service_steps) {
+    task_csv_ << timestep << ',' << agent << ',' << task_index << ',' << service_steps << '\n';
+}
+
 void MetricsCollector::flush_step(const std::uint64_t timestep) {
     // One row per simulated step (including all-zero steps) so per-step
     // statistics have their denominator in-band.
@@ -50,6 +57,7 @@ void MetricsCollector::flush_step(const std::uint64_t timestep) {
         solver_csv_.flush();
         discharge_csv_.flush();
         comm_csv_.flush();
+        task_csv_.flush();
     }
     step_acquisitions_ = 0;
     step_broadcasts_ = 0;
@@ -76,13 +84,16 @@ void MetricsCollector::finalize(const std::span<const Agent> agents,
         const std::uint32_t discharges = static_cast<std::size_t>(agent.id) < discharge_counts_.size()
             ? discharge_counts_[static_cast<std::size_t>(agent.id)] : 0;
         agents_csv_ << agent.id << ',' << initial << ',' << agent.moves << ',' << extra << ','
-                    << completion << ',' << discharges << ',' << (agent.active ? 0 : 1) << '\n';
+                    << completion << ',' << discharges << ',' << (agent.active ? 0 : 1) << ','
+                    << agent.tasks_completed << '\n';
     }
     solver_csv_.flush();
     discharge_csv_.flush();
     comm_csv_.flush();
     agents_csv_.flush();
-    for (const std::ofstream* stream : {&solver_csv_, &discharge_csv_, &comm_csv_, &agents_csv_}) {
+    task_csv_.flush();
+    for (const std::ofstream* stream : {
+             &solver_csv_, &discharge_csv_, &comm_csv_, &agents_csv_, &task_csv_}) {
         if (!stream->good()) throw std::runtime_error("metrics write failed (disk full?)");
     }
 }

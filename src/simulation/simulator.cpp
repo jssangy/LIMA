@@ -148,6 +148,7 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
     initial_route_lengths_.reserve(agents_.size());
     for (const Agent& agent : agents_) initial_route_lengths_.push_back(agent.route.size());
     completion_steps_.resize(agents_.size(), 0);
+    task_start_steps_.resize(agents_.size(), 0);
     execution_failed_.resize(agents_.size(), 0);
     if (!config_.metrics_dir.empty()) metrics_ = std::make_unique<MetricsCollector>(config_.metrics_dir);
     if (!config_.trace_path.empty()) {
@@ -1121,16 +1122,20 @@ bool Simulator::step() {
 
     for (Agent& agent : agents_) {
         if (!agent.active || agent.position != agent.goal) continue;
+        const auto index = static_cast<std::size_t>(agent.id);
+        const std::uint64_t service_steps = stats_.timestep - task_start_steps_[index];
         if (config_.goal_behavior == GoalBehavior::Disappear) {
             agent.active = false;
             ++stats_.completed;
-            completion_steps_[static_cast<std::size_t>(agent.id)] = stats_.timestep;
+            completion_steps_[index] = stats_.timestep;
+            if (metrics_) metrics_->on_task_completion(stats_.timestep, agent.id, 1, service_steps);
             if (tracer_) tracer_->add_completion(agent.id);
         } else if (config_.goal_behavior == GoalBehavior::Stay) {
             if (!agent.reached) {
                 agent.reached = true;
                 ++stats_.completed;
-                completion_steps_[static_cast<std::size_t>(agent.id)] = stats_.timestep;
+                completion_steps_[index] = stats_.timestep;
+                if (metrics_) metrics_->on_task_completion(stats_.timestep, agent.id, 1, service_steps);
                 if (tracer_) tracer_->add_completion(agent.id);
             }
         } else {  // Lifelong: serve the task; the allocator hands out the next one
@@ -1138,7 +1143,9 @@ bool Simulator::step() {
                 agent.awaiting_goal = true;
                 ++agent.tasks_completed;
                 ++stats_.completed;
-                completion_steps_[static_cast<std::size_t>(agent.id)] = stats_.timestep;
+                completion_steps_[index] = stats_.timestep;
+                if (metrics_) metrics_->on_task_completion(
+                    stats_.timestep, agent.id, agent.tasks_completed, service_steps);
                 if (tracer_) tracer_->add_completion(agent.id);
             }
         }
@@ -1182,6 +1189,7 @@ void Simulator::assign_lifelong_goals() {
         agent.wait_steps = 0;
         agent.wait_reason = WaitReason::None;
         agent.awaiting_goal = false;
+        task_start_steps_[static_cast<std::size_t>(agent.id)] = stats_.timestep;
     }
 }
 

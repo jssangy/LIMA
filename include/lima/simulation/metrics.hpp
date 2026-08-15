@@ -21,6 +21,8 @@ public:
                               const ScheduleTelemetry& telemetry, bool accepted);
     void on_discharge(std::uint64_t timestep, IntersectionId intersection,
                       std::span<const AgentId> agents, std::size_t loop_cells);
+    void on_task_completion(std::uint64_t timestep, AgentId agent,
+                            std::uint64_t task_index, std::uint64_t service_steps);
     void add_acquisitions(int count) noexcept { step_acquisitions_ += count; }
     void add_broadcasts(int count) noexcept { step_broadcasts_ += count; }
     void add_gate_signals(int count) noexcept { step_gate_signals_ += count; }
@@ -36,6 +38,7 @@ private:
     std::ofstream discharge_csv_;
     std::ofstream comm_csv_;
     std::ofstream agents_csv_;
+    std::ofstream task_csv_;
     std::vector<std::uint32_t> discharge_counts_;
     int step_acquisitions_{};
     int step_broadcasts_{};
