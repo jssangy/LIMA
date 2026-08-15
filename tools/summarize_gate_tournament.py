@@ -54,8 +54,17 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("roots", nargs="+")
     parser.add_argument("--base", default="gatec_base")
+    parser.add_argument(
+        "--variants",
+        default="",
+        help="optional comma-separated variant allow-list",
+    )
     parser.add_argument("--output-dir")
     args = parser.parse_args()
+
+    selected_variants = {
+        value.strip() for value in args.variants.split(",") if value.strip()
+    }
 
     roots = [Path(value).resolve() for value in args.roots]
     if len(roots) > 1 and not args.output_dir:
@@ -75,6 +84,8 @@ def main() -> int:
                 continue
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             variant = manifest["variant"]
+            if selected_variants and variant not in selected_variants:
+                continue
             if variant in manifests:
                 prior = manifests[variant]
                 comparable = ("binary_sha256", "max_steps", "variant_flags")
