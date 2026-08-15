@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <deque>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -1784,6 +1785,36 @@ void Simulator::write_metrics() {
 
 std::vector<CellId> Simulator::plan_global(const CellId start, const CellId goal) {
     if (start == goal) return {start};
+    if (map_.terminal(goal)) {
+        std::vector<CellId> parent(static_cast<std::size_t>(map_.cell_count()), kInvalidCell);
+        std::deque<CellId> queue{goal};
+        parent[static_cast<std::size_t>(goal)] = goal;
+        CellId gateway = kInvalidCell;
+        while (!queue.empty() && gateway == kInvalidCell) {
+            const CellId current = queue.front();
+            queue.pop_front();
+            for (const CellId neighbor : map_.neighbors(current)) {
+                if (!map_.terminal(neighbor) && !map_.goal(neighbor)) continue;
+                if (parent[static_cast<std::size_t>(neighbor)] != kInvalidCell) continue;
+                parent[static_cast<std::size_t>(neighbor)] = current;
+                if (map_.goal(neighbor)) {
+                    gateway = neighbor;
+                    break;
+                }
+                queue.push_back(neighbor);
+            }
+        }
+        if (gateway != kInvalidCell) {
+            auto route = plan_global(start, gateway);
+            if (route.empty()) return {};
+            for (CellId current = gateway; current != goal;) {
+                current = parent[static_cast<std::size_t>(current)];
+                if (current == kInvalidCell) return {};
+                route.push_back(current);
+            }
+            return route;
+        }
+    }
     if (config_.direct_routing) return planner_->plan(start, goal);
     const Coord source = map_.coord(start);
     const Coord destination = map_.coord(goal);
@@ -1834,6 +1865,13 @@ std::vector<CellId> Simulator::plan_global(const CellId start, const CellId goal
 
     bool vertical_goal = destination.y == 0 || destination.y + 1 == map_.height();
     bool horizontal_goal = destination.x == 0 || destination.x + 1 == map_.width();
+    if (map_.goal(goal)) {
+        for (const CellId neighbor : map_.neighbors(goal)) if (map_.terminal(neighbor)) {
+            const Coord terminal = map_.coord(neighbor);
+            vertical_goal = vertical_goal || terminal.y != destination.y;
+            horizontal_goal = horizontal_goal || terminal.x != destination.x;
+        }
+    }
     if (!vertical_goal && !horizontal_goal) horizontal_goal = true;
 
     if (vertical_goal) {

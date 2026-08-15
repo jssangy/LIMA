@@ -19,6 +19,8 @@ GridMap GridMap::load(const std::filesystem::path& path) {
     if (map.width_ <= 0 || map.height_ <= 0) throw std::runtime_error("invalid map dimensions");
 
     map.blocked_.assign(static_cast<std::size_t>(map.cell_count()), 1);
+    map.goal_mask_.assign(static_cast<std::size_t>(map.cell_count()), 0);
+    map.terminal_mask_.assign(static_cast<std::size_t>(map.cell_count()), 0);
     std::string row;
     for (int y = 0; y < map.height_; ++y) {
         if (!(input >> row) || static_cast<int>(row.size()) != map.width_) {
@@ -33,8 +35,12 @@ GridMap GridMap::load(const std::filesystem::path& path) {
             const CellId id = y * map.width_ + x;
             map.blocked_[static_cast<std::size_t>(id)] = free ? 0 : 1;
             if (free) map.free_cells_.push_back(id);
-            if (value == 'S' || value == 'G') map.goals_.push_back(id);
+            if (value == 'S' || value == 'G') {
+                map.goals_.push_back(id);
+                map.goal_mask_[static_cast<std::size_t>(id)] = 1;
+            }
             if (value == 'S') map.sinks_.push_back(id);
+            if (value == 'E') map.terminal_mask_[static_cast<std::size_t>(id)] = 1;
         }
     }
 
@@ -64,6 +70,14 @@ bool GridMap::traversable(const CellId id) const noexcept {
     return id >= 0 && id < cell_count() && blocked_[static_cast<std::size_t>(id)] == 0;
 }
 
+bool GridMap::goal(const CellId id) const noexcept {
+    return id >= 0 && id < cell_count() && goal_mask_[static_cast<std::size_t>(id)] != 0;
+}
+
+bool GridMap::terminal(const CellId id) const noexcept {
+    return id >= 0 && id < cell_count() && terminal_mask_[static_cast<std::size_t>(id)] != 0;
+}
+
 CellId GridMap::cell(const Coord c) const noexcept { return c.y * width_ + c.x; }
 
 Coord GridMap::coord(const CellId id) const noexcept { return {id % width_, id / width_}; }
@@ -74,4 +88,3 @@ const std::vector<CellId>& GridMap::neighbors(const CellId id) const {
 }
 
 }  // namespace lima
-

@@ -15,8 +15,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-ARTIFACT_MANIFEST = ROOT / "results/revision_final/frozen_artifacts_step_v2/MANIFEST.json"
-QUEUE_ROOT = ROOT / "results/revision_final/queue_step_v2"
+ARTIFACT_MANIFEST = ROOT / "results/revision_final/frozen_artifacts_step_v3/MANIFEST.json"
+QUEUE_ROOT = ROOT / "results/revision_final/queue_step_v3"
 
 
 def sha256(path: Path) -> str:
@@ -46,6 +46,10 @@ def verify_frozen_artifacts(manifest: dict) -> None:
         path = ROOT / artifact["path"]
         if not path.is_file() or sha256(path) != artifact["sha256"]:
             raise RuntimeError(f"frozen artifact mismatch: {name}")
+    primal2 = manifest["artifacts"]["primal2_adapter"]
+    primal2_path = Path(primal2["path"])
+    if not primal2_path.is_file() or sha256(primal2_path) != primal2["sha256"]:
+        raise RuntimeError("frozen artifact mismatch: primal2_adapter")
     for key in ("certified_manifest", "lifelong_manifest"):
         path = ROOT / manifest["inputs"][key]
         expected = manifest["inputs"][f"{key}_sha256"]

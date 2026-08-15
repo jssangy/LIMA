@@ -27,7 +27,7 @@ from summarize_telemetry import summarize_metrics
 
 
 ROOT = Path(__file__).resolve().parent.parent
-FREEZE_MANIFEST = ROOT / "results/reference_instantiation_freeze_v1/FINAL_MANIFEST.json"
+FREEZE_MANIFEST = ROOT / "results/revision_final/frozen_artifacts_step_v3/MANIFEST.json"
 
 
 def sha256(path: Path) -> str:
@@ -77,7 +77,7 @@ def main() -> int:
         choices=("lima", "cbs", "lacam", "pibt", "primal2"))
     parser.add_argument(
         "--input-manifest",
-        default="results/revision_final/certified_inputs_v2/MANIFEST.json")
+        default="results/revision_final/certified_inputs_v3/MANIFEST.json")
     parser.add_argument("--maps", help="optional comma-separated map filter")
     parser.add_argument("--targets", help="optional comma-separated target-label filter")
     parser.add_argument("--scenarios", help="optional comma-separated scenario-index filter")
@@ -85,7 +85,7 @@ def main() -> int:
     parser.add_argument("--cbs-max-expansions", type=int, default=100000)
     parser.add_argument("--lacam-max-iterations", type=int, default=100000)
     parser.add_argument(
-        "--lima-binary", default="results/revision_final/frozen_artifacts_step_v2/lima")
+        "--lima-binary", default="results/revision_final/frozen_artifacts_step_v3/lima")
     parser.add_argument(
         "--cbs-binary", default="results/revision_final/frozen_artifacts_step_v2/cbs_baseline")
     parser.add_argument("--pibt-repo", default=str(Path.home() / "mapf-baselines/pibt2"))
@@ -118,7 +118,7 @@ def main() -> int:
     freeze = json.loads(freeze_path.read_text(encoding="utf-8"))
     if freeze.get("status") != "frozen":
         parser.error("freeze manifest is not frozen")
-    lima_artifact = freeze["artifacts"]["lima_binary"]
+    lima_artifact = freeze["artifacts"]["lima"]
     lima = (ROOT / args.lima_binary).resolve()
     cbs = (ROOT / args.cbs_binary).resolve()
     lacam_repo = Path(args.lacam_repo).resolve()
@@ -206,7 +206,15 @@ def main() -> int:
                 if sha256(certificate_path) != entry["certificate_sha256"]:
                     parser.error(f"certificate hash mismatch: {certificate_path}")
                 certificate = json.loads(certificate_path.read_text(encoding="utf-8"))
-                if certificate["validation"]["capacity_violations"] != 0:
+                validation = certificate["validation"]
+                if (
+                    validation["capacity_violations"] != 0
+                    or not validation["unique_starts"]
+                    or not validation["unique_goals"]
+                    or not validation["traversable_goals"]
+                    or validation["same_agent_start_goal"] != 0
+                    or validation["reachable_pairs"] != agents
+                ):
                     parser.error(f"capacity certificate failed: {certificate_path}")
                 cells.append({
                     "map": map_name, "target": target, "agents": agents,
@@ -228,7 +236,7 @@ def main() -> int:
         cell["map"], cell["tile_density_percent"], cell["agents"], cell["scenario"]))
 
     output = (ROOT / (args.output_dir or
-        f"results/revision_final/oneshot_{args.algorithm}_certified_step_v2")).resolve()
+        f"results/revision_final/oneshot_{args.algorithm}_certified_step_v3")).resolve()
     records, resources, logs, metrics, instances, solutions = (
         output / "records", output / "resources", output / "logs", output / "metrics",
         output / "instances", output / "solutions")
@@ -256,7 +264,10 @@ def main() -> int:
     runner = Path(__file__).resolve()
     fingerprint_payload = {
         "schema_version": 2,
-        "semantic_scope": "one-shot; capacity-certified starts; disappear at physical sink",
+        "semantic_scope": (
+            "one-shot; unique capacity-certified starts and goals; "
+            "fixed-point-free tasks; disappear at goal"
+        ),
         "algorithm": args.algorithm,
         "executables": {str(path): sha256(path) for path in executables},
         "lima_version": lima_version.stdout.strip(),

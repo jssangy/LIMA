@@ -120,7 +120,7 @@ def main() -> int:
     parser.add_argument("--algorithm", required=True, choices=("lima", "primal2"))
     parser.add_argument(
         "--input-manifest",
-        default="results/revision_final/certified_inputs_v2/MANIFEST.json",
+        default="results/revision_final/certified_inputs_v3/MANIFEST.json",
     )
     parser.add_argument("--maps", default=",".join(INSTANCES))
     parser.add_argument("--densities", default=",".join(map(str, DEFAULT_DENSITIES)))
@@ -134,7 +134,7 @@ def main() -> int:
     parser.add_argument("--rerun", action="store_true")
     parser.add_argument("--no-early-stop", action="store_true")
     parser.add_argument(
-        "--lima", default="results/revision_final/frozen_artifacts_step_v2/lima")
+        "--lima", default="results/revision_final/frozen_artifacts_step_v3/lima")
     parser.add_argument(
         "--primal-python", default=str(Path.home() / "miniconda3/envs/primal2/bin/python"))
     parser.add_argument(
@@ -167,7 +167,7 @@ def main() -> int:
         parser.error("instrumented LIMA binary does not expose the frozen profile")
 
     output = (ROOT / (args.output_dir or
-        f"results/revision_final/stochastic_{args.algorithm}_step_v2")).resolve()
+        f"results/revision_final/stochastic_{args.algorithm}_step_v3")).resolve()
     trace_root = (ROOT / args.trace_root).resolve()
     records, resources, logs, metrics = (
         output / "records", output / "resources", output / "logs", output / "metrics")
@@ -217,7 +217,15 @@ def main() -> int:
                 if sha256(ROOT / certificate_file) != scenario_entry["certificate_sha256"]:
                     parser.error(f"certificate hash mismatch: {certificate_file}")
                 certificate = json.loads((ROOT / certificate_file).read_text(encoding="utf-8"))
-                if certificate["validation"]["capacity_violations"] != 0:
+                validation = certificate["validation"]
+                if (
+                    validation["capacity_violations"] != 0
+                    or not validation["unique_starts"]
+                    or not validation["unique_goals"]
+                    or not validation["traversable_goals"]
+                    or validation["same_agent_start_goal"] != 0
+                    or validation["reachable_pairs"] != agents
+                ):
                     parser.error(f"capacity certificate failed: {certificate_file}")
                 inputs[scenario_file] = scenario_entry["scenario_sha256"]
                 inputs[certificate_file] = scenario_entry["certificate_sha256"]
@@ -243,7 +251,10 @@ def main() -> int:
     runner = Path(__file__).resolve()
     fingerprint_payload = {
         "schema_version": 2, "algorithm": args.algorithm,
-        "semantic_scope": "one-shot; certified starts; disappear; common stochastic movement delay",
+        "semantic_scope": (
+            "one-shot; unique capacity-certified starts and goals; fixed-point-free tasks; "
+            "disappear at goal; common stochastic movement delay"
+        ),
         "trace_spec": TRACE_SPEC,
         "p0_source": "matching deterministic certified step campaign",
         "executables": {str(path): sha256(path) for path in executables},
