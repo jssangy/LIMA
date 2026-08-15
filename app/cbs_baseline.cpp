@@ -90,6 +90,8 @@ struct OpenOrder {
     }
 };
 
+using OpenQueue = std::priority_queue<OpenEntry, std::vector<OpenEntry>, OpenOrder>;
+
 // Constraints gathered for one agent, hashed for O(1) lookups in the low level.
 struct ConstraintTables {
     std::unordered_set<std::int64_t> vertex;  // t * C + cell
@@ -262,6 +264,73 @@ struct Options {
     double time_limit{60.0};
 };
 
+// Write one spatial route per agent in the waypoint format consumed by
+// app/main.cpp --routes.  CBS paths are space-time paths, so repeated cells
+// represent waits; collapsing each consecutive run preserves both endpoints
+// and leaves only 4-connected spatial moves.
+bool dump_paths(const GridMap& map,
+                const std::vector<std::shared_ptr<const Path>>& paths) {
+    const char* const dump = std::getenv("CBS_DUMP");
+    if (!dump || *dump == '\0') return false;
+
+    std::vector<Path> spatial_paths;
+    spatial_paths.reserve(paths.size());
+    for (const auto& path_ptr : paths) {
+        if (!path_ptr || path_ptr->empty()) return false;
+        Path spatial;
+        spatial.reserve(path_ptr->size());
+        for (const CellId cell : *path_ptr) {
+            if (!map.traversable(cell)) return false;
+            if (spatial.empty() || spatial.back() != cell) spatial.push_back(cell);
+        }
+        for (std::size_t i = 1; i < spatial.size(); ++i) {
+            const lima::Coord previous = map.coord(spatial[i - 1]);
+            const lima::Coord current = map.coord(spatial[i]);
+            const int distance = std::abs(previous.x - current.x)
+                                 + std::abs(previous.y - current.y);
+            if (distance != 1) return false;
+        }
+        spatial_paths.push_back(std::move(spatial));
+    }
+
+    std::ofstream out(dump);
+    if (!out) return false;
+    for (const Path& path : spatial_paths) {
+        for (std::size_t i = 0; i < path.size(); ++i) {
+            const lima::Coord c = map.coord(path[i]);
+            out << (i ? " " : "") << c.x << ' ' << c.y;
+        }
+        out << '\n';
+    }
+    out.close();
+    return out.good();
+}
+
+struct IncumbentDump {
+    bool dumped{false};
+    long long conflicts{0};
+};
+
+IncumbentDump dump_best_conflict_incumbent(
+    OpenQueue open, const std::deque<CTNode>& nodes, const GridMap& map,
+    const std::optional<int> current_node = std::nullopt) {
+    std::optional<OpenEntry> best;
+    const auto consider = [&](const int node_id) {
+        const CTNode& node = nodes[static_cast<std::size_t>(node_id)];
+        if (!node.first_conflict) return;
+        const OpenEntry candidate{node.cost, node.conflict_count, node_id};
+        if (!best || OpenOrder{}(*best, candidate)) best = candidate;
+    };
+    if (current_node) consider(*current_node);
+    while (!open.empty()) {
+        consider(open.top().id);
+        open.pop();
+    }
+    if (!best) return {};
+    const CTNode& node = nodes[static_cast<std::size_t>(best->id)];
+    return {dump_paths(map, node.paths), node.conflict_count};
+}
+
 std::optional<Options> parse_args(const int argc, char** argv) {
     Options opts;
     for (int i = 1; i < argc; ++i) {
@@ -312,10 +381,13 @@ std::optional<Options> parse_args(const int argc, char** argv) {
 }
 
 void report(const bool solved, const std::size_t agents, const long long makespan,
-            const long long soc, const long long expansions, const Clock::time_point start) {
+            const long long soc, const long long expansions, const Clock::time_point start,
+            const IncumbentDump incumbent = {}) {
     const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
-    std::printf("solved=%d agents=%zu makespan=%lld soc=%lld expansions=%lld elapsed_s=%.3f\n",
-                solved ? 1 : 0, agents, makespan, soc, expansions, elapsed);
+    std::printf("solved=%d agents=%zu makespan=%lld soc=%lld expansions=%lld elapsed_s=%.3f "
+                "incumbent_dumped=%d incumbent_conflicts=%lld\n",
+                solved ? 1 : 0, agents, makespan, soc, expansions, elapsed,
+                incumbent.dumped ? 1 : 0, incumbent.conflicts);
 }
 
 }  // namespace
@@ -386,12 +458,13 @@ int main(const int argc, char** argv) {
         nodes.push_back(std::move(root));
     }
 
-    std::priority_queue<OpenEntry, std::vector<OpenEntry>, OpenOrder> open;
+    OpenQueue open;
     open.push({nodes[0].cost, nodes[0].conflict_count, 0});
 
     while (!open.empty()) {
         if (Clock::now() >= deadline) {
-            report(false, n, 0, 0, expansions, start_time);
+            report(false, n, 0, 0, expansions, start_time,
+                   dump_best_conflict_incumbent(open, nodes, map));
             return 0;
         }
         const OpenEntry entry = open.top();
@@ -402,21 +475,10 @@ int main(const int argc, char** argv) {
             for (const auto& path : nodes[static_cast<std::size_t>(node_id)].paths) {
                 makespan = std::max(makespan, static_cast<long long>(path->size()) - 1);
             }
-            // Opt-in debug/route dump (one "x y x y ..." line per agent, the
-            // same waypoint format app/main.cpp --routes consumes); stdout
-            // stays a single summary line either way.
-            if (const char* dump = std::getenv("CBS_DUMP")) {
-                std::ofstream out(dump);
-                for (const auto& path : nodes[static_cast<std::size_t>(node_id)].paths) {
-                    for (std::size_t i = 0; i < path->size(); ++i) {
-                        const lima::Coord c = map.coord((*path)[i]);
-                        out << (i ? " " : "") << c.x << ' ' << c.y;
-                    }
-                    out << '\n';
-                }
-            }
+            const IncumbentDump incumbent{
+                dump_paths(map, nodes[static_cast<std::size_t>(node_id)].paths), 0};
             report(true, n, makespan, nodes[static_cast<std::size_t>(node_id)].cost,
-                   expansions, start_time);
+                   expansions, start_time, incumbent);
             return 0;
         }
         ++expansions;
@@ -450,7 +512,8 @@ int main(const int argc, char** argv) {
             bool timed_out = false;
             auto path = low_level(map, starts[agent], *dist_fields[agent], tables, deadline, timed_out);
             if (timed_out) {
-                report(false, n, 0, 0, expansions, start_time);
+                report(false, n, 0, 0, expansions, start_time,
+                       dump_best_conflict_incumbent(open, nodes, map, node_id));
                 return 0;
             }
             if (!path) continue;  // infeasible child: prune

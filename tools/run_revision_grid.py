@@ -24,6 +24,7 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -71,10 +72,7 @@ GATE_C_AIMD25 = GATE_A_SOLVER + (
     "--gate-policy", "aimd", "--gate-param", "0.25", "--gate-param2", "0.25",
 )
 
-PHASE2_FROZEN = GATE_A_COMPLETE_SOLVER + (
-    "--gate-policy", "aimd", "--gate-param", "0.25", "--gate-param2", "0.25",
-    "--discharge-policy", "composite",
-)
+PHASE2_FROZEN = ("--profile", "lima-default")
 
 
 VARIANTS = {
@@ -362,6 +360,15 @@ def parse_summary(text: str) -> dict[str, str]:
     return dict(re.findall(r"(\w+)=([^\s]+)", lines[-1]))
 
 
+def binary_version(path: Path) -> dict[str, str]:
+    completed = subprocess.run(
+        [str(path), "--version"], cwd=ROOT, capture_output=True, text=True, check=False
+    )
+    if completed.returncode != 0:
+        return {"error": completed.stderr.strip() or f"exit {completed.returncode}"}
+    return parse_summary(completed.stdout)
+
+
 def write_json_atomic(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False, encoding="utf-8") as stream:
@@ -385,6 +392,10 @@ def main() -> int:
     parser.add_argument("--record-trace", action="store_true")
     parser.add_argument("--output-dir")
     parser.add_argument("--rerun", action="store_true")
+    parser.add_argument(
+        "--allow-dirty", action="store_true",
+        help="allow exploratory runs from tracked source changes or a mismatched binary",
+    )
     args = parser.parse_args()
 
     maps = [name.strip() for name in args.maps.split(",") if name.strip()]
@@ -401,6 +412,21 @@ def main() -> int:
     binary = (ROOT / args.binary).resolve()
     if not binary.is_file():
         parser.error(f"binary does not exist: {binary}")
+    git_head = git_text("rev-parse", "HEAD")
+    git_short = git_text("rev-parse", "--short", "HEAD")
+    git_status_tracked = git_text("status", "--short", "--untracked-files=no")
+    version = binary_version(binary)
+    expected_binary_commit = f"{git_short}-dirty" if git_status_tracked else git_short
+    if not args.allow_dirty and git_status_tracked:
+        parser.error(
+            "tracked working tree is dirty; commit the frozen source or use --allow-dirty "
+            "for an explicitly exploratory run"
+        )
+    if not args.allow_dirty and version.get("commit") != expected_binary_commit:
+        parser.error(
+            f"binary/source mismatch: binary commit={version.get('commit')} "
+            f"expected={expected_binary_commit}; rebuild the frozen binary"
+        )
     output = ROOT / (args.output_dir or f"results/revision_grid/{args.variant}")
     runner_lock = output / ".RUNNING"
     if runner_lock.exists() and os.environ.get("LIMA_GATE_RUNNER_OWNS_LOCK") != "1":
@@ -411,14 +437,22 @@ def main() -> int:
     traces_root = output / "traces"
     records.mkdir(parents=True, exist_ok=True)
 
-    instance_files: dict[str, dict[str, str]] = {}
+    instance_files: dict[str, dict[str, object]] = {}
+    input_files: dict[str, dict[str, object]] = {}
     jobs = []
     for map_name in maps:
         instance = INSTANCES[map_name]
         map_path = ROOT / instance.map_file
         if not map_path.is_file():
             parser.error(f"missing map: {map_path}")
-        instance_files[map_name] = {"map": instance.map_file, "map_sha256": sha256(map_path)}
+        instance_files[map_name] = {
+            "map": instance.map_file,
+            "map_sha256": sha256(map_path),
+            "scenarios": {},
+        }
+        input_files[instance.map_file] = {
+            "sha256": sha256(map_path), "size_bytes": map_path.stat().st_size
+        }
         for density in densities:
             agents = density * instance.tiles // 100
             for scenario in scenarios:
@@ -426,14 +460,57 @@ def main() -> int:
                 scenario_path = ROOT / scenario_file
                 if not scenario_path.is_file():
                     parser.error(f"missing scenario: {scenario_path}")
+                scenario_description = {
+                    "sha256": sha256(scenario_path),
+                    "size_bytes": scenario_path.stat().st_size,
+                }
+                input_files[scenario_file] = scenario_description
+                instance_files[map_name]["scenarios"][str(scenario)] = {
+                    "path": scenario_file, **scenario_description
+                }
                 tag = f"{map_name}_d{density:02d}_a{agents}_s{scenario}"
                 jobs.append((map_name, density, agents, scenario, instance.map_file, scenario_file, tag))
 
+    source_files = {
+        "runner": {
+            "path": str(Path(__file__).resolve().relative_to(ROOT)),
+            "sha256": sha256(Path(__file__).resolve()),
+        },
+        "reference_config": {
+            "path": "config/reference_instantiation_v1.json",
+            "sha256": sha256(ROOT / "config/reference_instantiation_v1.json"),
+        },
+    }
+    fingerprint_payload = {
+        "schema_version": 1,
+        "binary_sha256": sha256(binary),
+        "profile": "lima-default" if args.variant.startswith("phase2_") else None,
+        "profile_version": 1 if args.variant.startswith("phase2_") else None,
+        "variant": args.variant,
+        "variant_flags": list(VARIANTS[args.variant]),
+        "maps": maps,
+        "densities": densities,
+        "scenarios": scenarios,
+        "timeout_seconds": args.timeout,
+        "max_steps": args.max_steps,
+        "metrics": args.metrics,
+        "record_trace": args.record_trace,
+        "source_sha256": {key: value["sha256"] for key, value in source_files.items()},
+        "input_sha256": {key: value["sha256"] for key, value in input_files.items()},
+    }
+    experiment_fingerprint = hashlib.sha256(
+        json.dumps(fingerprint_payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()
     manifest = {
+        "schema_version": 1,
+        "experiment_fingerprint": experiment_fingerprint,
+        "created_utc": datetime.now(timezone.utc).isoformat(),
         "binary": str(binary.relative_to(ROOT)),
         "binary_sha256": sha256(binary),
-        "git_head": git_text("rev-parse", "HEAD"),
-        "git_status": git_text("status", "--short"),
+        "binary_version": version,
+        "git_head": git_head,
+        "git_status_tracked": git_status_tracked,
+        "allow_dirty": args.allow_dirty,
         "variant": args.variant,
         "variant_flags": list(VARIANTS[args.variant]),
         "maps": maps,
@@ -444,9 +521,22 @@ def main() -> int:
         "metrics": args.metrics,
         "record_trace": args.record_trace,
         "instances": instance_files,
+        "inputs": input_files,
+        "sources": source_files,
         "job_count": len(jobs),
     }
-    write_json_atomic(output / "MANIFEST.json", manifest)
+    manifest_path = output / "MANIFEST.json"
+    if manifest_path.is_file() and any(records.glob("*.json")):
+        try:
+            existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            parser.error(f"existing manifest is invalid: {manifest_path}")
+        if existing_manifest.get("experiment_fingerprint") != experiment_fingerprint:
+            parser.error(
+                "output directory already contains records from different inputs, source, "
+                "binary, or budgets; choose a new --output-dir"
+            )
+    write_json_atomic(manifest_path, manifest)
 
     def run(job) -> tuple[str, str]:
         map_name, density, agents, scenario, map_file, scenario_file, tag = job

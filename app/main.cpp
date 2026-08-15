@@ -23,6 +23,8 @@
 
 namespace {
 
+constexpr int kLimaDefaultProfileVersion = 1;
+
 enum class RunMode { Realtime, Solve, Replay, Debug, Bench };
 
 struct Options {
@@ -39,9 +41,50 @@ struct Options {
     bool no_trace{};
     std::filesystem::path replay;
     std::filesystem::path routes;
+    std::string profile{"legacy"};
     lima::SimulatorConfig sim;
     lima::bench::BenchOptions bench;
 };
+
+// Named component bundles. Profiles are applied before the ordinary CLI pass,
+// so every per-component option remains an order-independent override.
+void apply_profile(Options& options, const std::string_view name) {
+    if (name == "legacy") {
+        options.profile = "legacy";
+        return;
+    }
+    if (name != "lima-default")
+        throw std::invalid_argument("profile must be legacy or lima-default");
+
+    options.profile = "lima-default";
+
+    // Route Planner: Structured Waypoint Routing (SWR) with BFS segments.
+    // --planner/--routing/--routes may replace this provider after the profile
+    // has been applied.
+    options.planner = lima::PlannerKind::Bfs;
+    options.sim.direct_routing = false;
+
+    // Admission Controller: Gate C winner (AIMD-25).
+    options.sim.isolation = lima::IsolationConfig{};
+    options.sim.isolation.formula = lima::CapacityFormula::SumMinusMax;
+    options.sim.admission = lima::AdmissionConfig{};
+    options.sim.admission.policy = lima::AdmissionPolicy::Aimd;
+    options.sim.admission.parameter = 0.25;
+    options.sim.admission.secondary = 0.25;
+    options.sim.gate_resync = true;
+
+    // Marshalling Solver: frozen beam primary plus uncut exact fallback.
+    options.sim.solver = lima::SolverConfig{};
+    options.sim.solver.kind = "beam-complete";
+    options.sim.solver.max_iterations = 2'000'000;
+    options.sim.solver.beam_width = 2'048;
+    options.sim.solver.beam_score = "tt";
+
+    // Recirculation Controller: Gate D winner.
+    options.sim.discharge = lima::DischargeConfig{};
+    options.sim.discharge.policy = lima::DischargePolicy::Composite;
+    options.sim.discharge_enabled = true;
+}
 
 // One line per agent: "x y x y ..." waypoint pairs; an empty line keeps the
 // built-in router for that agent (CBS-timeout partial route sets).
@@ -62,13 +105,13 @@ std::vector<std::vector<lima::Coord>> load_routes(const std::filesystem::path& p
 }
 
 void usage() {
-    std::cout << "usage: lima [--map FILE] [--scenario FILE] [--agents N] [--planner bfs|astar]"
+    std::cout << "usage: lima [--profile legacy|lima-default] [--map FILE] [--scenario FILE] [--agents N] [--planner bfs|astar]"
                  " [--seed N] [--max-steps N] [--fps N] [--validate-conflicts]"
                  " [--mode realtime|solve|replay|debug] [--output FILE|--no-trace] [--replay FILE]\n"
                  "            [--solver ida|astar|wastar|gbfs|ucs|greedy|beam|beam-complete|hybrid] [--solver-iterations N]\n"
                  "            [--bound-step N] [--no-fastpath] [--lb-mode legacy|bf|tt] [--dominance]\n"
                  "            [--solver-nodes N] [--beam-width N] [--beam-score disorder|bf|tt] [--search-weight F]\n"
-                 "            [--routing dor|direct] [--capacity-formula code|paper] [--isolation-cap N]\n"
+                 "            [--routing swr|direct] [--capacity-formula operational|plus-one] [--isolation-cap N]\n"
                  "            [--gate-policy NAME] [--gate-param F] [--gate-param2 F] [--gate-param3 F]\n"
                  "            [--discharge-policy NAME] [--discharge-unweighted|--discharge-random]\n"
                  "            [--discharge-partial F] [--discharge-weight F]\n"
@@ -81,13 +124,25 @@ void usage() {
 
 Options parse(const int argc, char** argv) {
     Options options;
+
+    // Resolve the last named profile first. Explicit component flags in the
+    // normal pass below then override it regardless of argument order.
+    std::string_view selected_profile{"legacy"};
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view(argv[i]) != "--profile") continue;
+        if (++i >= argc) throw std::invalid_argument("missing value after --profile");
+        selected_profile = argv[i];
+    }
+    apply_profile(options, selected_profile);
+
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg = argv[i];
         const auto value = [&]() -> std::string_view {
             if (++i >= argc) throw std::invalid_argument("missing value after " + std::string(arg));
             return argv[i];
         };
-        if (arg == "--map") options.map = value();
+        if (arg == "--profile") (void)value();
+        else if (arg == "--map") options.map = value();
         else if (arg == "--scenario") options.scenario = value();
         else if (arg == "--agents") options.agents = std::stoull(std::string(value()));
         else if (arg == "--seed") options.seed = std::stoull(std::string(value()));
@@ -215,15 +270,17 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--bench-instances") options.bench.instances = std::stoi(std::string(value()));
         else if (arg == "--routing") {
             const auto name = value();
-            if (name == "dor") options.sim.direct_routing = false;
+            if (name == "swr" || name == "dor") options.sim.direct_routing = false;
             else if (name == "direct") options.sim.direct_routing = true;
-            else throw std::invalid_argument("routing must be dor or direct");
+            else throw std::invalid_argument("routing must be swr or direct");
         }
         else if (arg == "--capacity-formula") {
             const auto name = value();
-            if (name == "code") options.sim.isolation.formula = lima::CapacityFormula::SumMinusMax;
-            else if (name == "paper") options.sim.isolation.formula = lima::CapacityFormula::SumMinusMaxPlusOne;
-            else throw std::invalid_argument("capacity-formula must be code or paper");
+            if (name == "operational" || name == "code")
+                options.sim.isolation.formula = lima::CapacityFormula::SumMinusMax;
+            else if (name == "plus-one" || name == "paper")
+                options.sim.isolation.formula = lima::CapacityFormula::SumMinusMaxPlusOne;
+            else throw std::invalid_argument("capacity-formula must be operational or plus-one");
         }
         else if (arg == "--mode") {
             const auto name = value();
@@ -301,9 +358,20 @@ std::string_view discharge_policy_name(const lima::DischargePolicy policy) {
     return "unknown";
 }
 
+std::string_view planner_name(const lima::PlannerKind planner) {
+    switch (planner) {
+    case lima::PlannerKind::Bfs: return "bfs";
+    case lima::PlannerKind::AStar: return "astar";
+    }
+    return "unknown";
+}
+
 bool has_non_default_config(const Options& options) {
     const lima::SolverConfig defaults;
-    return options.sim.solver.kind != defaults.kind
+    return options.profile != "legacy"
+        || options.planner != lima::PlannerKind::Bfs
+        || !options.routes.empty()
+        || options.sim.solver.kind != defaults.kind
         || options.sim.solver.max_iterations != defaults.max_iterations
         || options.sim.solver.bound_step != defaults.bound_step
         || options.sim.solver.greedy_fastpath != defaults.greedy_fastpath
@@ -350,27 +418,46 @@ bool has_non_default_config(const Options& options) {
 // the provenance suffix appears only when a non-default knob is active.
 void print_provenance(const Options& options) {
     if (!has_non_default_config(options)) return;
+    if (options.profile != "legacy")
+        std::cout << " profile=" << options.profile
+                  << " profile_version=" << kLimaDefaultProfileVersion;
+    if (options.profile != "legacy" || options.planner != lima::PlannerKind::Bfs || !options.routes.empty()) {
+        std::cout << " planner=";
+        if (!options.routes.empty()) std::cout << "external+";
+        std::cout << planner_name(options.planner);
+    }
     std::cout << " solver=" << options.sim.solver.kind
-              << " routing=" << (options.sim.direct_routing ? "direct" : "dor")
-              << " capacity=" << (options.sim.isolation.formula == lima::CapacityFormula::SumMinusMax ? "code" : "paper");
+              << " routing=" << (options.sim.direct_routing ? "direct" : "swr")
+              << " capacity=" << (options.sim.isolation.formula == lima::CapacityFormula::SumMinusMax
+                  ? "operational" : "plus-one");
+    if (options.profile != "legacy"
+        || options.sim.solver.max_iterations != lima::SolverConfig{}.max_iterations)
+        std::cout << " solver_iterations=" << options.sim.solver.max_iterations;
     if (options.sim.solver.lb_mode != "legacy") std::cout << " lb=" << options.sim.solver.lb_mode;
     if (options.sim.solver.dominance) std::cout << " dom=on";
-    if (options.sim.solver.beam_width != lima::SolverConfig{}.beam_width)
+    if (options.profile != "legacy"
+        || options.sim.solver.beam_width != lima::SolverConfig{}.beam_width)
         std::cout << " beam_width=" << options.sim.solver.beam_width;
-    if (options.sim.solver.beam_score != lima::SolverConfig{}.beam_score)
+    if (options.profile != "legacy"
+        || options.sim.solver.beam_score != lima::SolverConfig{}.beam_score)
         std::cout << " beam_score=" << options.sim.solver.beam_score;
+    if (options.sim.solver.kind == "beam-complete")
+        std::cout << " fallback=ida-exact";
     if (options.sim.solver.best_first_weight != lima::SolverConfig{}.best_first_weight)
         std::cout << " search_weight=" << options.sim.solver.best_first_weight;
     if (options.sim.isolation.cap >= 0) std::cout << " cap=" << options.sim.isolation.cap;
     if (options.sim.isolation.margin != 0) std::cout << " margin=" << options.sim.isolation.margin;
     if (options.sim.isolation.hysteresis != 0) std::cout << " hysteresis=" << options.sim.isolation.hysteresis;
-    if (options.sim.admission.policy != lima::AdmissionPolicy::Static) {
+    if (options.profile != "legacy" || options.sim.admission.policy != lima::AdmissionPolicy::Static) {
         std::cout << " gate_policy=" << admission_policy_name(options.sim.admission.policy);
-        if (options.sim.admission.parameter != 0.0) std::cout << " gate_param=" << options.sim.admission.parameter;
-        if (options.sim.admission.secondary != 0.0) std::cout << " gate_param2=" << options.sim.admission.secondary;
-        if (options.sim.admission.tertiary != 0.0) std::cout << " gate_param3=" << options.sim.admission.tertiary;
+        if (options.sim.admission.policy != lima::AdmissionPolicy::Static) {
+            if (options.sim.admission.parameter != 0.0) std::cout << " gate_param=" << options.sim.admission.parameter;
+            if (options.sim.admission.secondary != 0.0) std::cout << " gate_param2=" << options.sim.admission.secondary;
+            if (options.sim.admission.tertiary != 0.0) std::cout << " gate_param3=" << options.sim.admission.tertiary;
+        }
     }
-    if (!options.sim.gate_resync) std::cout << " gate_resync=off";
+    if (options.profile != "legacy" || !options.sim.gate_resync)
+        std::cout << " gate_resync=" << (options.sim.gate_resync ? "on" : "off");
     if (options.sim.subset_scheduling) std::cout << " subset=on";
     if (!options.sim.pibt_corridor) std::cout << " pibt=off";
     if (options.sim.pibt_sink_yield) std::cout << " sink_yield=on";
@@ -381,7 +468,7 @@ void print_provenance(const Options& options) {
     if (options.sim.shuffle_order >= 0) std::cout << " shuffle=" << options.sim.shuffle_order;
     if (options.sim.failure_probability != 0.0)
         std::cout << " failure_prob=" << options.sim.failure_probability;
-    if (options.sim.discharge.policy != lima::DischargePolicy::Legacy) {
+    if (options.profile != "legacy" || options.sim.discharge.policy != lima::DischargePolicy::Legacy) {
         std::cout << " discharge_policy=" << discharge_policy_name(options.sim.discharge.policy);
         if (options.sim.discharge.policy == lima::DischargePolicy::Balanced)
             std::cout << " discharge_weight=" << options.sim.discharge.weight;
@@ -393,11 +480,14 @@ void print_provenance(const Options& options) {
     if (options.sim.discharge.allow_stalled_neighbor) std::cout << " discharge_stalled_neighbor=on";
     if (options.sim.discharge.partial_stall != 1.0)
         std::cout << " discharge_partial=" << options.sim.discharge.partial_stall;
-    if (options.sim.goal_behavior == lima::GoalBehavior::Stay)
+    if (options.profile != "legacy" && options.sim.goal_behavior == lima::GoalBehavior::Disappear)
+        std::cout << " goal_behavior=disappear";
+    else if (options.sim.goal_behavior == lima::GoalBehavior::Stay)
         std::cout << " goal_behavior=stay";
     else if (options.sim.goal_behavior == lima::GoalBehavior::Lifelong)
         std::cout << " goal_behavior=lifelong";
-    if (!options.sim.discharge_enabled) std::cout << " discharge=off";
+    if (options.profile != "legacy" || !options.sim.discharge_enabled)
+        std::cout << " discharge=" << (options.sim.discharge_enabled ? "on" : "off");
     if (options.no_trace) std::cout << " trace=off";
     std::cout << " commit=" << LIMA_COMMIT;
 }
@@ -543,6 +633,12 @@ int run_debug(lima::Simulator& simulator, const Options& options, lima::Solution
 
 int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "--version") {
+            std::cout << "commit=" << LIMA_COMMIT
+                      << " profile=lima-default"
+                      << " profile_version=" << kLimaDefaultProfileVersion << '\n';
+            return 0;
+        }
         Options options = parse(argc, argv);
         if (options.mode == RunMode::Bench) {
             options.bench.seed = options.seed.value_or(random_seed());

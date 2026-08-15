@@ -29,11 +29,14 @@ DETERMINISTIC = ("status", "steps", "completed", "moves", "waits", "deadlocks",
                  "intersections", "validation", "vertex_conflicts", "edge_conflicts")
 
 def run_cell(binary: Path, map_name: str, scen_dir: str, agents: int, seed: int,
-             solver: str | None, solver_iterations: int | None) -> dict:
+             profile: str | None, solver: str | None,
+             solver_iterations: int | None) -> dict:
     with tempfile.NamedTemporaryFile(suffix=".txt", delete=True) as tmp:
         cmd = [str(binary), "--mode", "solve", "--map", f"data/maps/{map_name}",
                "--agents", str(agents), "--planner", "bfs", "--seed", str(seed),
                "--output", tmp.name, "--validate-conflicts"]
+        if profile:
+            cmd += ["--profile", profile]
         if scen_dir:
             cmd += ["--scenario", f"data/scenarios/{scen_dir}/{scen_dir}_s{seed}.scen"]
         if solver:
@@ -54,6 +57,8 @@ def main() -> int:
     parser.add_argument("--binary", default="build/lima")
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--golden", default="tests/golden/e0_quick.golden")
+    parser.add_argument("--profile", choices=("legacy", "lima-default"),
+                        help="apply a named component profile before optional overrides")
     parser.add_argument("--solver", help="override the binary's default local solver")
     parser.add_argument("--solver-iterations", type=int,
                         help="override the local solver iteration budget")
@@ -80,7 +85,7 @@ def main() -> int:
 
     failures = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures = {pool.submit(run_cell, binary, m, sc, a, s,
+        futures = {pool.submit(run_cell, binary, m, sc, a, s, args.profile,
                                args.solver, args.solver_iterations): (m, sc, a, s, want)
                    for (m, sc, a, s, want) in cells}
         for future in concurrent.futures.as_completed(futures):

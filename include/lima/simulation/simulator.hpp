@@ -152,7 +152,7 @@ struct SimulatorConfig {
     // preserve vertex/edge safety.
     double failure_probability{0.0};
     GoalBehavior goal_behavior{GoalBehavior::Disappear};
-    bool direct_routing{false};   // skip the highway-alignment (DoR-style) global router
+    bool direct_routing{false};   // skip Structured Waypoint Routing (SWR)
     std::string metrics_dir;      // W1 instrumentation output; empty = disabled
     std::string trace_path;       // JSONL step trace for the debug harness; empty = disabled
     std::string map_file;         // recorded in the trace header

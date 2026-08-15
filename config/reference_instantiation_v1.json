@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "profile": "lima-default",
+  "profile_version": 1,
+  "reference_instantiation": {
+    "route_planner": {
+      "algorithm": "Structured Waypoint Routing",
+      "routing": "swr",
+      "segment_planner": "bfs",
+      "runtime_information_scope": "static map topology and the robot's own task",
+      "seeded": true
+    },
+    "admission_controller": {
+      "algorithm": "TCP-inspired AIMD admission",
+      "multiplicative_factor": 0.25,
+      "additive_increment": 0.25,
+      "load_signal_ratio": 0.95,
+      "capacity_formula": "sum_minus_max",
+      "capacity_cap": null,
+      "capacity_margin": 0,
+      "capacity_hysteresis": 0,
+      "gate_resynchronization": true
+    },
+    "marshalling_solver": {
+      "algorithm": "lower-bound beam search with complete exact fallback",
+      "solver": "beam-complete",
+      "beam_width": 2048,
+      "beam_score": "tt",
+      "beam_expansion_budget": 2000000,
+      "fallback": "IDA*",
+      "fallback_lower_bound": "tt",
+      "fallback_threshold_schedule": "next-bound",
+      "fallback_greedy_fastpath": false,
+      "fallback_node_cutoff": null
+    },
+    "recirculation_controller": {
+      "algorithm": "composite recirculation",
+      "policy": "composite",
+      "escape_selection": "maximum adjacent admission slack",
+      "loop_tie_break": "minimum one-cycle-stale loop occupancy",
+      "all_arms": false,
+      "allow_stalled_neighbor": false,
+      "stall_fraction": 1.0
+    }
+  },
+  "external_semantics": {
+    "part_of_profile": false,
+    "single_shot": "agent disappears immediately after reaching its unique goal",
+    "lifelong": "agent receives the next goal from its fixed per-agent goal sequence immediately after completion",
+    "execution": "synchronous discrete steps; stochastic command drops are an experimental factor",
+    "stay_at_goal": "excluded"
+  },
+  "expected_provenance": {
+    "profile": "lima-default",
+    "profile_version": "1",
+    "planner": "bfs",
+    "solver": "beam-complete",
+    "routing": "swr",
+    "capacity": "operational",
+    "solver_iterations": "2000000",
+    "beam_width": "2048",
+    "beam_score": "tt",
+    "fallback": "ida-exact",
+    "gate_policy": "aimd",
+    "gate_param": "0.25",
+    "gate_param2": "0.25",
+    "gate_resync": "on",
+    "discharge_policy": "composite",
+    "goal_behavior": "disappear",
+    "discharge": "on"
+  }
+}

@@ -131,6 +131,7 @@ Replay mode also supports `--fps 0`.
 
 | Option | Description |
 |---|---|
+| `--profile legacy\|lima-default` | Apply a named component bundle; `lima-default` is the frozen reference instantiation |
 | `--mode realtime\|solve\|replay` | Select the execution mode |
 | `--map FILE` | Select the map file |
 | `--scenario FILE` | Load a MovingAI scenario |
@@ -151,7 +152,7 @@ Run the following command to display the complete option list:
 
 ## Experiment and debug tooling (revision branch)
 
-Every solve summary now ends with provenance fields (`solver=`, `routing=`, `capacity=`, `commit=`).
+Every solve summary now ends with provenance fields (`profile=`, `profile_version=`, `solver=`, `routing=`, `capacity=`, `commit=`). `--version` prints the embedded source commit and frozen profile version without running an instance.
 
 ### Algorithm knobs
 
@@ -163,8 +164,8 @@ Every solve summary now ends with provenance fields (`solver=`, `routing=`, `cap
 | `--beam-score disorder\|bf\|tt` | Beam ranking function (default `tt`; Gate A frozen value) |
 | `--bound-step N` | Scaled threshold increment between IDA* iterations; `0` = textbook next-bound schedule (optimal solutions) |
 | `--no-fastpath` | Disable the deterministic single-move fast path |
-| `--routing dor\|direct` | Global router: highway alignment (default) or plain shortest path |
-| `--capacity-formula code\|paper` | Isolation bound: sum-max (shipped) or Eq. 9 sum-max+1 |
+| `--routing swr\|direct` | Global router: Structured Waypoint Routing (default) or plain shortest path; `dor` remains a backward-compatible alias |
+| `--capacity-formula operational\|plus-one` | Isolation bound: frozen `sum-max` envelope or the `sum-max+1` sensitivity variant; `code`/`paper` remain legacy aliases |
 | `--isolation-cap N` | Operational ceiling on the isolation bound |
 | `--no-discharge` | Disable discharge gating |
 | `--discharge-policy composite\|random\|least-load\|max-slack\|rotor\|shortest\|power-two\|backpressure\|balanced\|demand` | Select the local recirculation-loop policy |

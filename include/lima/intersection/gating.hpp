@@ -12,8 +12,8 @@
 namespace lima {
 
 // Which local-solvability capacity bound an intersection advertises.
-// SumMinusMax is the shipped implementation; SumMinusMaxPlusOne matches the
-// manuscript's Eq. (9) exactly and exists to reconcile the two (finding M1).
+// SumMinusMax is the frozen operational envelope. SumMinusMaxPlusOne is kept
+// only as a sensitivity/legacy-manuscript audit variant.
 enum class CapacityFormula : std::uint8_t { SumMinusMax, SumMinusMaxPlusOne };
 
 // Local recirculation-loop selection policies.  Every dynamic policy consumes
