@@ -62,8 +62,18 @@ GATE_A_SOLVER = (
     "--solver-iterations", "2000000",
 )
 
+GATE_A_COMPLETE_SOLVER = (
+    "--solver", "beam-complete", "--beam-width", "2048", "--beam-score", "tt",
+    "--solver-iterations", "2000000",
+)
+
 GATE_C_AIMD25 = GATE_A_SOLVER + (
     "--gate-policy", "aimd", "--gate-param", "0.25", "--gate-param2", "0.25",
+)
+
+PHASE2_FROZEN = GATE_A_COMPLETE_SOLVER + (
+    "--gate-policy", "aimd", "--gate-param", "0.25", "--gate-param2", "0.25",
+    "--discharge-policy", "composite",
 )
 
 
@@ -248,6 +258,14 @@ VARIANTS = {
         "--discharge-policy", "composite", "--discharge-partial", "0.75",
         "--discharge-stalled-neighbor",
     ),
+    # Phase 2 frozen composition.  The complete solver preserves the frozen
+    # beam result on success and invokes exact IDA* only if beam fails.
+    "phase2_frozen": PHASE2_FROZEN,
+    "phase2_shuffle1": PHASE2_FROZEN + ("--shuffle-order", "1"),
+    "phase2_shuffle2": PHASE2_FROZEN + ("--shuffle-order", "2"),
+    "phase2_shuffle3": PHASE2_FROZEN + ("--shuffle-order", "3"),
+    "phase2_shuffle4": PHASE2_FROZEN + ("--shuffle-order", "4"),
+    "phase2_shuffle5": PHASE2_FROZEN + ("--shuffle-order", "5"),
     "beam_replan4": ("--solver", "beam", "--pibt-replan", "4"),
     "beam_replan8": ("--solver", "beam", "--pibt-replan", "8"),
     "beam_sink_yield": ("--solver", "beam", "--pibt-sink-yield"),
