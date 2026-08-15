@@ -57,6 +57,12 @@ INSTANCES = {
 }
 
 
+GATE_A_SOLVER = (
+    "--solver", "beam", "--beam-width", "2048", "--beam-score", "tt",
+    "--solver-iterations", "2000000",
+)
+
+
 VARIANTS = {
     "base": (),
     "tt": ("--lb-mode", "tt"),
@@ -85,6 +91,35 @@ VARIANTS = {
     ),
     "beam_dpartial75_stalled": (
         "--solver", "beam", "--discharge-partial", "0.75", "--discharge-stalled-neighbor"
+    ),
+    # Gate C factorial screen.  Every row pins the frozen Gate A solver
+    # explicitly and changes only admission/isolation behavior; discharge and
+    # PIBT remain at their common pre-Gate-C defaults.
+    "gatec_base": GATE_A_SOLVER,
+    "gatec_paper": GATE_A_SOLVER + ("--capacity-formula", "paper"),
+    "gatec_cap4": GATE_A_SOLVER + ("--isolation-cap", "4"),
+    "gatec_cap8": GATE_A_SOLVER + ("--isolation-cap", "8"),
+    "gatec_cap12": GATE_A_SOLVER + ("--isolation-cap", "12"),
+    "gatec_margin1": GATE_A_SOLVER + ("--isolation-margin", "1"),
+    "gatec_margin2": GATE_A_SOLVER + ("--isolation-margin", "2"),
+    "gatec_hyst1": GATE_A_SOLVER + ("--admit-hysteresis", "1"),
+    "gatec_hyst2": GATE_A_SOLVER + ("--admit-hysteresis", "2"),
+    "gatec_subset": GATE_A_SOLVER + ("--subset-scheduling",),
+    "gatec_noresync": GATE_A_SOLVER + ("--no-gate-resync",),
+    "gatec_paper_margin1": GATE_A_SOLVER + (
+        "--capacity-formula", "paper", "--isolation-margin", "1"
+    ),
+    "gatec_paper_hyst1": GATE_A_SOLVER + (
+        "--capacity-formula", "paper", "--admit-hysteresis", "1"
+    ),
+    "gatec_paper_subset": GATE_A_SOLVER + (
+        "--capacity-formula", "paper", "--subset-scheduling"
+    ),
+    "gatec_cap8_subset": GATE_A_SOLVER + (
+        "--isolation-cap", "8", "--subset-scheduling"
+    ),
+    "gatec_hyst1_subset": GATE_A_SOLVER + (
+        "--admit-hysteresis", "1", "--subset-scheduling"
     ),
     "beam_replan4": ("--solver", "beam", "--pibt-replan", "4"),
     "beam_replan8": ("--solver", "beam", "--pibt-replan", "8"),
