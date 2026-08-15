@@ -70,7 +70,8 @@ void usage() {
                  "            [--solver-nodes N] [--beam-width N] [--beam-score disorder|bf|tt] [--search-weight F]\n"
                  "            [--routing dor|direct] [--capacity-formula code|paper] [--isolation-cap N]\n"
                  "            [--gate-policy NAME] [--gate-param F] [--gate-param2 F] [--gate-param3 F]\n"
-                 "            [--discharge-unweighted|--discharge-random] [--discharge-partial F]\n"
+                 "            [--discharge-policy NAME] [--discharge-unweighted|--discharge-random]\n"
+                 "            [--discharge-partial F]\n"
                  "            [--no-pibt-corridor] [--pibt-sink-yield] [--pibt-arm-retreat[-last]]\n"
                  "            [--pibt-age-rate] [--pibt-replan N] [--shuffle-order SEED] [--failure-prob P]\n"
                  "            [--no-discharge] [--metrics DIR] [--trace-jsonl FILE]\n"
@@ -124,6 +125,19 @@ Options parse(const int argc, char** argv) {
             options.sim.discharge.avail_weighted = false;
         }
         else if (arg == "--discharge-partial") options.sim.discharge.partial_stall = std::stod(std::string(value()));
+        else if (arg == "--discharge-policy") {
+            const auto name = value();
+            if (name == "composite") options.sim.discharge.policy = lima::DischargePolicy::Composite;
+            else if (name == "random") options.sim.discharge.policy = lima::DischargePolicy::Random;
+            else if (name == "least-load") options.sim.discharge.policy = lima::DischargePolicy::LeastLoaded;
+            else if (name == "max-slack") options.sim.discharge.policy = lima::DischargePolicy::MaxSlack;
+            else if (name == "rotor") options.sim.discharge.policy = lima::DischargePolicy::Rotor;
+            else if (name == "shortest") options.sim.discharge.policy = lima::DischargePolicy::Shortest;
+            else if (name == "power-two") options.sim.discharge.policy = lima::DischargePolicy::PowerOfTwo;
+            else if (name == "backpressure") options.sim.discharge.policy = lima::DischargePolicy::Backpressure;
+            else if (name == "demand") options.sim.discharge.policy = lima::DischargePolicy::Demand;
+            else throw std::invalid_argument("unknown discharge policy: " + std::string(name));
+        }
         else if (arg == "--admit-hysteresis") options.sim.isolation.hysteresis = std::stoi(std::string(value()));
         else if (arg == "--gate-policy") {
             const auto name = value();

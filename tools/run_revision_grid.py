@@ -62,6 +62,10 @@ GATE_A_SOLVER = (
     "--solver-iterations", "2000000",
 )
 
+GATE_C_AIMD25 = GATE_A_SOLVER + (
+    "--gate-policy", "aimd", "--gate-param", "0.25", "--gate-param2", "0.25",
+)
+
 
 VARIANTS = {
     "base": (),
@@ -204,6 +208,34 @@ VARIANTS = {
     "gatec_fqcodel3": GATE_A_SOLVER + ("--gate-policy", "fq-codel", "--gate-param", "3", "--gate-param2", "5", "--gate-param3", "1"),
     "gatec_fqcodel5": GATE_A_SOLVER + ("--gate-policy", "fq-codel", "--gate-param", "5", "--gate-param2", "10", "--gate-param3", "1"),
     "gatec_fqcodel_q2": GATE_A_SOLVER + ("--gate-policy", "fq-codel", "--gate-param", "3", "--gate-param2", "5", "--gate-param3", "2"),
+    # Gate D family screen.  Gate A and the Gate C finalist are pinned so each
+    # row changes only local recirculation/discharge behavior.
+    "gated_base": GATE_C_AIMD25 + ("--discharge-policy", "composite"),
+    "gated_nodisc": GATE_C_AIMD25 + ("--no-discharge",),
+    "gated_random": GATE_C_AIMD25 + ("--discharge-policy", "random"),
+    "gated_least_load": GATE_C_AIMD25 + ("--discharge-policy", "least-load"),
+    "gated_max_slack": GATE_C_AIMD25 + ("--discharge-policy", "max-slack"),
+    "gated_rotor": GATE_C_AIMD25 + ("--discharge-policy", "rotor"),
+    "gated_shortest": GATE_C_AIMD25 + ("--discharge-policy", "shortest"),
+    "gated_power_two": GATE_C_AIMD25 + ("--discharge-policy", "power-two"),
+    "gated_backpressure": GATE_C_AIMD25 + ("--discharge-policy", "backpressure"),
+    "gated_demand": GATE_C_AIMD25 + ("--discharge-policy", "demand"),
+    "gated_allarms": GATE_C_AIMD25 + (
+        "--discharge-policy", "composite", "--discharge-all-arms",
+    ),
+    "gated_stalled": GATE_C_AIMD25 + (
+        "--discharge-policy", "composite", "--discharge-stalled-neighbor",
+    ),
+    "gated_partial50": GATE_C_AIMD25 + (
+        "--discharge-policy", "composite", "--discharge-partial", "0.50",
+    ),
+    "gated_partial75": GATE_C_AIMD25 + (
+        "--discharge-policy", "composite", "--discharge-partial", "0.75",
+    ),
+    "gated_partial75_stalled": GATE_C_AIMD25 + (
+        "--discharge-policy", "composite", "--discharge-partial", "0.75",
+        "--discharge-stalled-neighbor",
+    ),
     "beam_replan4": ("--solver", "beam", "--pibt-replan", "4"),
     "beam_replan8": ("--solver", "beam", "--pibt-replan", "8"),
     "beam_sink_yield": ("--solver", "beam", "--pibt-sink-yield"),

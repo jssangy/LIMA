@@ -16,6 +16,22 @@ namespace lima {
 // manuscript's Eq. (9) exactly and exists to reconcile the two (finding M1).
 enum class CapacityFormula : std::uint8_t { SumMinusMax, SumMinusMaxPlusOne };
 
+// Local recirculation-loop selection policies.  Every dynamic policy consumes
+// only source state, adjacent-module state, or the one-cycle-stale aggregates
+// already carried by the discharge exchange.
+enum class DischargePolicy : std::uint8_t {
+    Legacy,
+    Composite,
+    Random,
+    LeastLoaded,
+    MaxSlack,
+    Rotor,
+    Shortest,
+    PowerOfTwo,
+    Backpressure,
+    Demand,
+};
+
 struct IsolationConfig {
     CapacityFormula formula{CapacityFormula::SumMinusMax};
     int cap{-1};       // operational ceiling on the bound; -1 disables (experiment E11)
@@ -35,6 +51,7 @@ struct DischargeConfig {
     bool deterministic_cycle{true};
     bool avail_weighted{true};
     double partial_stall{1.0};         // waiting-member fraction that marks an intersection stalled
+    DischargePolicy policy{DischargePolicy::Legacy};
 };
 
 [[nodiscard]] int scheduling_capacity(const Intersection& intersection, const IsolationConfig& config);
@@ -71,6 +88,7 @@ public:
 
 private:
     DischargeConfig config_{};
+    mutable std::vector<std::size_t> rotor_cursor_;
 };
 
 }  // namespace lima

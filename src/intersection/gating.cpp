@@ -64,48 +64,146 @@ std::vector<RecirculationDischarge::Event> RecirculationDischarge::run(const Con
         std::size_t candidate_index = 0;
         std::size_t cycle_index = 0;
         bool reversed = false;
-        if (config_.avail_weighted && context.available) {
+        DischargePolicy policy = config_.policy;
+        if (policy == DischargePolicy::Legacy) {
+            if (config_.avail_weighted) policy = DischargePolicy::Composite;
+            else if (config_.deterministic_cycle) policy = DischargePolicy::LeastLoaded;
+            else policy = DischargePolicy::Random;
+        }
+
+        struct FlatChoice { std::size_t candidate; std::size_t cycle; };
+        std::vector<FlatChoice> flat;
+        for (std::size_t ci = 0; ci < candidates.size(); ++ci)
+            for (std::size_t ki = 0; ki < candidates[ci].cycles.size(); ++ki)
+                flat.push_back({ci, ki});
+
+        const auto node_load = [&](const IntersectionId iid) {
+            const std::size_t index = static_cast<std::size_t>(iid);
+            return context.stale_loads ? (*context.stale_loads)[index] : context.members[index].size();
+        };
+        const auto cycle_load = [&](const FlatChoice& choice) {
+            std::size_t load = 0;
+            for (const IntersectionId node : candidates[choice.candidate].cycles[choice.cycle])
+                load += node_load(node);
+            return load;
+        };
+        const auto select_choice = [&](const FlatChoice& choice) {
+            candidate_index = choice.candidate;
+            cycle_index = choice.cycle;
+        };
+
+        if (policy == DischargePolicy::Composite) {
             // Escape toward the neighbor advertising the most admission slack;
-            // uses only the 1-hop availability the modules already exchange.
+            // within that direction use the one-cycle-stale loop aggregate.
             int best_slack = std::numeric_limits<int>::min();
             for (std::size_t ci = 0; ci < candidates.size(); ++ci) {
                 const IntersectionId b = source.neighbors[candidates[ci].direction];
-                const int slack = (*context.available)[static_cast<std::size_t>(b)];
+                const int slack = context.available
+                    ? (*context.available)[static_cast<std::size_t>(b)] : 0;
                 if (slack > best_slack) {
                     best_slack = slack;
                     candidate_index = ci;
+                    cycle_index = 0;
                 }
             }
-            if (config_.deterministic_cycle && context.stale_loads) {
-                // Composite: within the slack-chosen direction, prefer the
-                // recirculation loop over the least-loaded intersections using
-                // the one-cycle-stale relayed counts.
+            if (context.stale_loads) {
                 std::size_t best_load = std::numeric_limits<std::size_t>::max();
-                const auto& cycles = candidates[candidate_index].cycles;
-                for (std::size_t ki = 0; ki < cycles.size(); ++ki) {
-                    std::size_t load = 0;
-                    for (const IntersectionId node : cycles[ki])
-                        load += (*context.stale_loads)[static_cast<std::size_t>(node)];
+                for (std::size_t ki = 0; ki < candidates[candidate_index].cycles.size(); ++ki) {
+                    const FlatChoice choice{candidate_index, ki};
+                    const std::size_t load = cycle_load(choice);
                     if (load < best_load) {
                         best_load = load;
                         cycle_index = ki;
                     }
                 }
             }
-        } else if (config_.deterministic_cycle) {
-            // Least-loaded choice: prefer the cycle whose member intersections
-            // currently hold the fewest agents, breaking ties by index.
+        } else if (policy == DischargePolicy::LeastLoaded) {
             std::size_t best_load = std::numeric_limits<std::size_t>::max();
+            for (const FlatChoice& choice : flat) {
+                const std::size_t load = cycle_load(choice);
+                if (load < best_load) {
+                    best_load = load;
+                    select_choice(choice);
+                }
+            }
+        } else if (policy == DischargePolicy::MaxSlack) {
+            int best_slack = std::numeric_limits<int>::min();
             for (std::size_t ci = 0; ci < candidates.size(); ++ci) {
-                for (std::size_t ki = 0; ki < candidates[ci].cycles.size(); ++ki) {
-                    std::size_t load = 0;
-                    for (const IntersectionId node : candidates[ci].cycles[ki])
-                        load += context.members[static_cast<std::size_t>(node)].size();
-                    if (load < best_load) {
-                        best_load = load;
-                        candidate_index = ci;
-                        cycle_index = ki;
+                const IntersectionId b = source.neighbors[candidates[ci].direction];
+                const int slack = context.available
+                    ? (*context.available)[static_cast<std::size_t>(b)] : 0;
+                if (slack > best_slack) {
+                    best_slack = slack;
+                    candidate_index = ci;
+                    cycle_index = 0;
+                }
+            }
+        } else if (policy == DischargePolicy::Rotor) {
+            if (rotor_cursor_.size() < intersections.size()) rotor_cursor_.resize(intersections.size());
+            std::size_t& cursor = rotor_cursor_[source_index];
+            select_choice(flat[cursor % flat.size()]);
+            reversed = ((cursor / flat.size()) % 2) != 0;
+            ++cursor;
+        } else if (policy == DischargePolicy::Shortest) {
+            std::size_t best_length = std::numeric_limits<std::size_t>::max();
+            for (const FlatChoice& choice : flat) {
+                const auto& cycle = candidates[choice.candidate].cycles[choice.cycle];
+                const std::array<IntersectionId, 5> nodes{{cycle[0], cycle[1], cycle[2], cycle[3], cycle[0]}};
+                std::size_t length = 0;
+                bool valid = true;
+                for (std::size_t ni = 1; ni < nodes.size(); ++ni) {
+                    const CellId from = intersections[static_cast<std::size_t>(nodes[ni - 1])].center;
+                    const CellId to = intersections[static_cast<std::size_t>(nodes[ni])].center;
+                    const auto segment = context.planner.plan(from, to);
+                    if (segment.empty()) {
+                        valid = false;
+                        break;
                     }
+                    length += segment.size() - 1;
+                }
+                if (valid && length < best_length) {
+                    best_length = length;
+                    select_choice(choice);
+                }
+            }
+        } else if (policy == DischargePolicy::PowerOfTwo) {
+            std::uniform_int_distribution<std::size_t> choose(0, flat.size() - 1);
+            const FlatChoice lhs = flat[choose(context.rng)];
+            const FlatChoice rhs = flat[choose(context.rng)];
+            select_choice(cycle_load(rhs) < cycle_load(lhs) ? rhs : lhs);
+            std::bernoulli_distribution reverse_cycle(0.5);
+            reversed = reverse_cycle(context.rng);
+        } else if (policy == DischargePolicy::Backpressure) {
+            // The source term is common to every choice, so maximizing the
+            // local queue differential is equivalent to minimizing the
+            // adjacent escape-neighbor backlog.
+            std::size_t best_neighbor_load = std::numeric_limits<std::size_t>::max();
+            for (std::size_t ci = 0; ci < candidates.size(); ++ci) {
+                const IntersectionId b = source.neighbors[candidates[ci].direction];
+                const std::size_t load = node_load(b);
+                if (load < best_neighbor_load) {
+                    best_neighbor_load = load;
+                    candidate_index = ci;
+                    cycle_index = 0;
+                }
+            }
+        } else if (policy == DischargePolicy::Demand) {
+            std::size_t best_demand = 0;
+            bool found = false;
+            for (std::size_t ci = 0; ci < candidates.size(); ++ci) {
+                const auto& arm = source.arms[candidates[ci].direction];
+                std::size_t demand = 0;
+                for (const AgentId id : context.members[source_index]) {
+                    const Agent& agent = context.agents[static_cast<std::size_t>(id)];
+                    if (!agent.active || agent.scheduled()) continue;
+                    demand += agent.position == source.center
+                        || std::find(arm.begin(), arm.end(), agent.position) != arm.end();
+                }
+                if (!found || demand > best_demand) {
+                    found = true;
+                    best_demand = demand;
+                    candidate_index = ci;
+                    cycle_index = 0;
                 }
             }
         } else {

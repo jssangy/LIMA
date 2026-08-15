@@ -167,6 +167,7 @@ Every solve summary now ends with provenance fields (`solver=`, `routing=`, `cap
 | `--capacity-formula code\|paper` | Isolation bound: sum-max (shipped) or Eq. 9 sum-max+1 |
 | `--isolation-cap N` | Operational ceiling on the isolation bound |
 | `--no-discharge` | Disable discharge gating |
+| `--discharge-policy composite\|random\|least-load\|max-slack\|rotor\|shortest\|power-two\|backpressure\|demand` | Select the local recirculation-loop policy |
 
 ### Instrumentation
 
