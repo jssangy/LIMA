@@ -41,6 +41,7 @@ struct Options {
     bool no_trace{};
     std::filesystem::path replay;
     std::filesystem::path routes;
+    std::filesystem::path goal_sequences;
     std::string profile{"legacy"};
     lima::SimulatorConfig sim;
     lima::bench::BenchOptions bench;
@@ -117,6 +118,7 @@ void usage() {
                  "            [--discharge-partial F] [--discharge-weight F]\n"
                  "            [--no-pibt-corridor] [--pibt-sink-yield] [--pibt-arm-retreat[-last]]\n"
                  "            [--pibt-age-rate] [--pibt-replan N] [--shuffle-order SEED] [--failure-prob P]\n"
+                 "            [--goal-behavior disappear|stay|lifelong] [--goal-sequences FILE]\n"
                  "            [--no-discharge] [--metrics DIR] [--trace-jsonl FILE]\n"
                  "debug mode reads commands from stdin and answers in JSON:\n"
                  "            step [n] | state | agent ID | intersection ID | summary | invariants | quit\n";
@@ -153,6 +155,7 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--no-trace") options.no_trace = true;
         else if (arg == "--replay") options.replay = value();
         else if (arg == "--routes") options.routes = value();
+        else if (arg == "--goal-sequences") options.goal_sequences = value();
         else if (arg == "--solver") options.sim.solver.kind = std::string(value());
         else if (arg == "--solver-iterations") options.sim.solver.max_iterations = std::stoull(std::string(value()));
         else if (arg == "--bound-step") options.sim.solver.bound_step = std::stoi(std::string(value()));
@@ -371,6 +374,7 @@ bool has_non_default_config(const Options& options) {
     return options.profile != "legacy"
         || options.planner != lima::PlannerKind::Bfs
         || !options.routes.empty()
+        || !options.goal_sequences.empty()
         || options.sim.solver.kind != defaults.kind
         || options.sim.solver.max_iterations != defaults.max_iterations
         || options.sim.solver.bound_step != defaults.bound_step
@@ -487,6 +491,7 @@ void print_provenance(const Options& options) {
         std::cout << " goal_behavior=stay";
     else if (options.sim.goal_behavior == lima::GoalBehavior::Lifelong)
         std::cout << " goal_behavior=lifelong";
+    if (!options.goal_sequences.empty()) std::cout << " goal_sequences=fixed-cyclic";
     if (options.profile != "legacy" || !options.sim.discharge_enabled)
         std::cout << " discharge=" << (options.sim.discharge_enabled ? "on" : "off");
     if (options.no_trace) std::cout << " trace=off";
@@ -674,6 +679,11 @@ int main(int argc, char** argv) {
 
         std::vector<std::vector<lima::Coord>> preset_routes;
         if (!options.routes.empty()) preset_routes = load_routes(options.routes);
+        if (!options.goal_sequences.empty()) {
+            if (options.sim.goal_behavior != lima::GoalBehavior::Lifelong)
+                throw std::invalid_argument("--goal-sequences requires --goal-behavior lifelong");
+            options.sim.lifelong_goal_sequences = load_routes(options.goal_sequences);
+        }
         lima::Simulator simulator(std::move(map), tasks, options.planner, task_seed, options.sim, preset_routes);
         if (options.no_trace && !options.output.empty())
             throw std::invalid_argument("--no-trace and --output are mutually exclusive");

@@ -35,7 +35,8 @@ std::vector<CellId> make_goal_candidates(const GridMap& map) {
 }  // namespace
 
 GoalAllocator::GoalAllocator(const GridMap& map, const std::span<const Agent> agents,
-                             const std::uint64_t seed)
+                             const std::uint64_t seed,
+                             const std::span<const std::vector<Coord>> fixed_sequences)
     : candidates_(make_goal_candidates(map)),
       owner_(static_cast<std::size_t>(map.cell_count()), kNoAgent), rng_(seed) {
     free_and_empty_.reserve(candidates_.size());
@@ -49,6 +50,30 @@ GoalAllocator::GoalAllocator(const GridMap& map, const std::span<const Agent> ag
         AgentId& owner = owner_[static_cast<std::size_t>(agent.goal)];
         if (owner == kNoAgent) owner = agent.id;
     }
+    if (!fixed_sequences.empty()) {
+        if (fixed_sequences.size() != agents.size())
+            throw std::runtime_error("lifelong goal sequence count does not match agent count");
+        fixed_sequences_.resize(agents.size());
+        fixed_cursors_.resize(agents.size(), 1);
+        for (std::size_t i = 0; i < fixed_sequences.size(); ++i) {
+            const auto& source = fixed_sequences[i];
+            if (source.size() < 2)
+                throw std::runtime_error("each lifelong goal sequence needs at least two goals");
+            auto& destination = fixed_sequences_[i];
+            destination.reserve(source.size());
+            for (const Coord coordinate : source) {
+                if (!map.in_bounds(coordinate) || !map.traversable(coordinate))
+                    throw std::runtime_error("lifelong goal sequence contains a non-traversable cell");
+                destination.push_back(map.cell(coordinate));
+            }
+            if (destination.front() != agents[i].goal)
+                throw std::runtime_error("lifelong sequence first goal does not match initial task goal");
+            for (std::size_t j = 0; j < destination.size(); ++j) {
+                if (destination[j] == destination[(j + 1) % destination.size()])
+                    throw std::runtime_error("lifelong goal sequence contains consecutive duplicate goals");
+            }
+        }
+    }
 }
 
 std::optional<CellId> GoalAllocator::reassign(
@@ -58,6 +83,20 @@ std::optional<CellId> GoalAllocator::reassign(
     AgentId& previous_owner = owner_[static_cast<std::size_t>(previous_goal)];
     const bool owned = previous_owner == agent;
     if (owned) previous_owner = kNoAgent;
+
+    if (!fixed_sequences_.empty()) {
+        const auto index = static_cast<std::size_t>(agent);
+        auto& cursor = fixed_cursors_[index];
+        const CellId goal = fixed_sequences_[index][cursor];
+        AgentId& next_owner = owner_[static_cast<std::size_t>(goal)];
+        if (goal == current || next_owner != kNoAgent || !acceptable(goal)) {
+            if (owned) previous_owner = agent;
+            return std::nullopt;
+        }
+        next_owner = agent;
+        cursor = (cursor + 1) % fixed_sequences_[index].size();
+        return goal;
+    }
 
     free_and_empty_.clear();
     free_but_occupied_.clear();

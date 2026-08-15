@@ -202,7 +202,8 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
         // Dedicated task-stream RNG: goal arrivals must never consume rng_,
         // which drives planner tie-breaking for every mode.
         constexpr std::uint64_t task_seed_salt = 0x9e3779b97f4a7c15ULL;
-        goal_allocator_ = std::make_unique<GoalAllocator>(map_, agents_, seed ^ task_seed_salt);
+        goal_allocator_ = std::make_unique<GoalAllocator>(
+            map_, agents_, seed ^ task_seed_salt, config_.lifelong_goal_sequences);
     }
     if (config_.pibt_corridor) {
         pibt_ = std::make_unique<PibtResolver>(map_, seed, config_.pibt_age_rate,

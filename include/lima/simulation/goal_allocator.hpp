@@ -23,7 +23,8 @@ class GridMap;
 // perturb the simulator's shared random stream.
 class GoalAllocator {
 public:
-    GoalAllocator(const GridMap& map, std::span<const Agent> agents, std::uint64_t seed);
+    GoalAllocator(const GridMap& map, std::span<const Agent> agents, std::uint64_t seed,
+                  std::span<const std::vector<Coord>> fixed_sequences = {});
 
     // Returns the next goal for `agent`, or nullopt when no acceptable free
     // cell exists this step (the caller retries on a later step).  Ownership
@@ -38,6 +39,8 @@ private:
     std::vector<AgentId> owner_;
     std::vector<CellId> free_and_empty_;
     std::vector<CellId> free_but_occupied_;
+    std::vector<std::vector<CellId>> fixed_sequences_;
+    std::vector<std::size_t> fixed_cursors_;
     std::mt19937_64 rng_;
 };
 
