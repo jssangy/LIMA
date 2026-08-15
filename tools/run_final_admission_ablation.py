@@ -111,7 +111,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--freeze-manifest", default=str(FREEZE_MANIFEST))
     parser.add_argument("--certified-manifest", default=str(CERTIFIED_MANIFEST))
-    parser.add_argument("--binary", default="build_telemetry/lima")
+    parser.add_argument(
+        "--binary", default="results/revision_final/frozen_artifacts_step_v2/lima")
     parser.add_argument("--max-steps", type=int, default=100000)
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--output-dir", default="results/revision_final/admission_ablation_step_v2")

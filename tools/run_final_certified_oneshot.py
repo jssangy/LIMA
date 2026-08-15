@@ -84,12 +84,18 @@ def main() -> int:
     parser.add_argument("--max-steps", type=int, default=100000)
     parser.add_argument("--cbs-max-expansions", type=int, default=100000)
     parser.add_argument("--lacam-max-iterations", type=int, default=100000)
-    parser.add_argument("--lima-binary", default="build_telemetry/lima")
-    parser.add_argument("--cbs-binary", default="build_telemetry/cbs_baseline")
+    parser.add_argument(
+        "--lima-binary", default="results/revision_final/frozen_artifacts_step_v2/lima")
+    parser.add_argument(
+        "--cbs-binary", default="results/revision_final/frozen_artifacts_step_v2/cbs_baseline")
     parser.add_argument("--pibt-repo", default=str(Path.home() / "mapf-baselines/pibt2"))
-    parser.add_argument("--pibt-binary", default="build/mapf")
+    parser.add_argument(
+        "--pibt-binary",
+        default=str(ROOT / "results/revision_final/frozen_artifacts_step_v2/pibt"))
     parser.add_argument("--lacam-repo", default=str(Path.home() / "mapf-baselines/lacam"))
-    parser.add_argument("--lacam-binary", default="build/main")
+    parser.add_argument(
+        "--lacam-binary",
+        default=str(ROOT / "results/revision_final/frozen_artifacts_step_v2/lacam"))
     parser.add_argument("--jobs", type=int)
     parser.add_argument("--output-dir")
     parser.add_argument("--rerun", action="store_true")

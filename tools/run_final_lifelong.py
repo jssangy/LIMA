@@ -59,7 +59,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--input-manifest", default="results/revision_final/lifelong_inputs_v2/MANIFEST.json")
-    parser.add_argument("--binary", default="build_telemetry/lima")
+    parser.add_argument(
+        "--binary", default="results/revision_final/frozen_artifacts_step_v2/lima")
     parser.add_argument("--variants", default="swr,direct")
     parser.add_argument("--maps", help="optional comma-separated map filter")
     parser.add_argument("--densities", help="optional comma-separated density filter")

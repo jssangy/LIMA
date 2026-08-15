@@ -133,7 +133,8 @@ def main() -> int:
     parser.add_argument("--trace-root", default="results/revision_final/stochastic_trace_descriptors_v1")
     parser.add_argument("--rerun", action="store_true")
     parser.add_argument("--no-early-stop", action="store_true")
-    parser.add_argument("--lima", default="build_telemetry/lima")
+    parser.add_argument(
+        "--lima", default="results/revision_final/frozen_artifacts_step_v2/lima")
     parser.add_argument(
         "--primal-python", default=str(Path.home() / "miniconda3/envs/primal2/bin/python"))
     parser.add_argument(
