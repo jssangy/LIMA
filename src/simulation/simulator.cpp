@@ -160,6 +160,10 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
     admission_occupancy_ewma_.resize(topology_.intersections().size());
     admission_integral_.resize(topology_.intersections().size());
     admission_tokens_.resize(topology_.intersections().size());
+    admission_probability_.resize(topology_.intersections().size());
+    admission_previous_signal_.resize(topology_.intersections().size());
+    admission_arm_probability_.resize(topology_.intersections().size());
+    admission_arm_counter_.resize(topology_.intersections().size());
     scheduled_members_.resize(topology_.intersections().size());
     deadlock_waiting_.resize(topology_.intersections().size(), false);
     deadlock_active_.resize(topology_.intersections().size(), 0);
@@ -336,8 +340,49 @@ void Simulator::update_admission_policy() {
         }
         case AdmissionPolicy::Red:
             // The EWMA and deterministic per-request RED mark are evaluated
-            // in red_blocks(); the ordinary capacity gate remains active.
+            // in admission_policy_blocks(); the ordinary capacity gate remains active.
             break;
+        case AdmissionPolicy::Blue: {
+            const double increase = config_.admission.parameter > 0.0
+                ? config_.admission.parameter : 0.02;
+            const double decrease = config_.admission.secondary > 0.0
+                ? config_.admission.secondary : 0.002;
+            const double maximum = config_.admission.tertiary > 0.0
+                ? config_.admission.tertiary : 0.95;
+            if (stalled_[iid] || occupied >= capacity)
+                admission_probability_[iid] = std::min(
+                    maximum, admission_probability_[iid] + increase);
+            else if (occupied == 0 || (admission_requests_[iid] == 0 && ratio < 0.25))
+                admission_probability_[iid] = std::max(
+                    0.0, admission_probability_[iid] - decrease);
+            break;
+        }
+        case AdmissionPolicy::Rem: {
+            const double target = config_.admission.parameter > 0.0
+                ? config_.admission.parameter : 0.75;
+            const double gain = config_.admission.secondary > 0.0
+                ? config_.admission.secondary : 0.05;
+            const double scale = config_.admission.tertiary > 0.0
+                ? config_.admission.tertiary : 1.0;
+            const double offered = static_cast<double>(admission_requests_[iid])
+                / static_cast<double>(capacity);
+            admission_integral_[iid] = std::clamp(
+                admission_integral_[iid] + gain * (ratio + offered - target), 0.0, 20.0);
+            admission_probability_[iid] = 1.0 - std::exp(-scale * admission_integral_[iid]);
+            break;
+        }
+        case AdmissionPolicy::Avq: {
+            const double target = config_.admission.parameter > 0.0
+                ? config_.admission.parameter : 0.85;
+            const double gain = config_.admission.secondary > 0.0
+                ? config_.admission.secondary : 0.10;
+            admission_window_[iid] = std::clamp(
+                admission_window_[iid] + gain * (target - ratio) * capacity,
+                1.0, static_cast<double>(capacity));
+            reserve = std::max(reserve, capacity
+                - static_cast<int>(std::floor(admission_window_[iid])));
+            break;
+        }
         case AdmissionPolicy::Codel: {
             const std::uint32_t target = static_cast<std::uint32_t>(
                 config_.admission.parameter > 0.0 ? config_.admission.parameter : 3.0);
@@ -364,12 +409,155 @@ void Simulator::update_admission_policy() {
             reserve = std::max(reserve, static_cast<int>(std::ceil(control * capacity)));
             break;
         }
+        case AdmissionPolicy::Pie: {
+            const double target = config_.admission.parameter > 0.0
+                ? config_.admission.parameter : 5.0;
+            const double alpha = config_.admission.secondary > 0.0
+                ? config_.admission.secondary : 0.02;
+            const double beta = config_.admission.tertiary > 0.0
+                ? config_.admission.tertiary : 0.002;
+            double delay = 0.0;
+            for (const auto wait : admission_arm_max_wait_[iid])
+                delay = std::max(delay, static_cast<double>(wait));
+            const double normalized_error = (delay - target) / std::max(1.0, target);
+            const double normalized_delta = (delay - admission_previous_signal_[iid])
+                / std::max(1.0, target);
+            admission_probability_[iid] = std::clamp(
+                admission_probability_[iid] + alpha * normalized_error
+                    + beta * normalized_delta,
+                0.0, 1.0);
+            if (delay <= 0.5 * target)
+                admission_probability_[iid] *= 0.98;
+            admission_previous_signal_[iid] = delay;
+            break;
+        }
         case AdmissionPolicy::TokenBucket: {
             const double rate = config_.admission.parameter > 0.0
                 ? config_.admission.parameter : 1.0;
             const double bucket = config_.admission.secondary > 0.0
                 ? config_.admission.secondary : static_cast<double>(capacity);
             admission_tokens_[iid] = std::min(bucket, admission_tokens_[iid] + rate);
+            break;
+        }
+        case AdmissionPolicy::Sotl: {
+            const double threshold = config_.admission.parameter > 0.0
+                ? config_.admission.parameter : 8.0;
+            const std::uint32_t minimum_green = static_cast<std::uint32_t>(
+                config_.admission.secondary > 0.0 ? config_.admission.secondary : 2.0);
+            std::size_t selected = admission_rr_cursor_[iid] % 4U;
+            ++admission_congestion_age_[iid];
+            for (std::size_t d = 0; d < 4; ++d)
+                if (d != selected) admission_arm_counter_[iid][d]
+                    += static_cast<double>(admission_arm_requests_[iid][d]);
+            std::size_t challenger = selected;
+            for (std::size_t d = 0; d < 4; ++d) {
+                if (admission_arm_requests_[iid][d] == 0) continue;
+                if (admission_arm_counter_[iid][d] > admission_arm_counter_[iid][challenger])
+                    challenger = d;
+            }
+            const bool current_empty = admission_arm_requests_[iid][selected] == 0;
+            if (challenger != selected && (current_empty
+                || (admission_congestion_age_[iid] >= minimum_green
+                    && admission_arm_counter_[iid][challenger] >= threshold))) {
+                selected = challenger;
+                admission_rr_cursor_[iid] = static_cast<std::uint32_t>(selected);
+                admission_congestion_age_[iid] = 0;
+                admission_arm_counter_[iid][selected] = 0.0;
+            }
+            admission_arm_mask_[iid] = admission_requests_[iid] == 0 ? 0x0fU
+                : static_cast<std::uint8_t>(1U << static_cast<unsigned>(selected));
+            break;
+        }
+        case AdmissionPolicy::Choke: {
+            const double threshold = config_.admission.parameter > 0.0
+                ? config_.admission.parameter : 0.50;
+            const double gain = config_.admission.secondary > 0.0
+                ? config_.admission.secondary : 1.0;
+            const double maximum = config_.admission.tertiary > 0.0
+                ? config_.admission.tertiary : 0.95;
+            const bool congested = admission_occupancy_ewma_[iid] >= 0.50
+                && admission_requests_[iid] >= 2;
+            for (std::size_t d = 0; d < 4; ++d) {
+                const double share = admission_requests_[iid] == 0 ? 0.0
+                    : static_cast<double>(admission_arm_requests_[iid][d])
+                        / static_cast<double>(admission_requests_[iid]);
+                admission_arm_probability_[iid][d] = !congested || share <= threshold ? 0.0
+                    : std::min(maximum, gain * (share - threshold)
+                        / std::max(1e-9, 1.0 - threshold));
+            }
+            break;
+        }
+        case AdmissionPolicy::QueueCsma: {
+            const double exponent = config_.admission.parameter > 0.0
+                ? config_.admission.parameter : 1.0;
+            double total_weight = 0.0;
+            std::array<double, 4> weights{};
+            for (std::size_t d = 0; d < 4; ++d) {
+                if (admission_arm_requests_[iid][d] == 0) continue;
+                weights[d] = std::pow(1.0 + static_cast<double>(admission_arm_requests_[iid][d]),
+                                      exponent);
+                total_weight += weights[d];
+            }
+            if (total_weight <= 0.0) break;
+            std::uint64_t value = admission_seed_
+                ^ ((stats_.timestep + 1U) * 0x9e3779b97f4a7c15ULL)
+                ^ ((iid + 1U) * 0xbf58476d1ce4e5b9ULL);
+            value ^= value >> 30U;
+            value *= 0xbf58476d1ce4e5b9ULL;
+            value ^= value >> 27U;
+            value *= 0x94d049bb133111ebULL;
+            value ^= value >> 31U;
+            double draw = static_cast<double>(value >> 11U)
+                * (1.0 / 9007199254740992.0) * total_weight;
+            std::size_t selected = 0;
+            for (std::size_t d = 0; d < 4; ++d) {
+                if (draw < weights[d]) { selected = d; break; }
+                draw -= weights[d];
+            }
+            admission_arm_mask_[iid] = static_cast<std::uint8_t>(
+                1U << static_cast<unsigned>(selected));
+            break;
+        }
+        case AdmissionPolicy::StochasticFairBlue: {
+            const double increase = config_.admission.parameter > 0.0
+                ? config_.admission.parameter : 0.02;
+            const double decrease = config_.admission.secondary > 0.0
+                ? config_.admission.secondary : 0.002;
+            const std::uint32_t delay_target = static_cast<std::uint32_t>(
+                config_.admission.tertiary > 0.0 ? config_.admission.tertiary : 3.0);
+            for (std::size_t d = 0; d < 4; ++d) {
+                if (admission_arm_max_wait_[iid][d] > delay_target)
+                    admission_arm_probability_[iid][d] = std::min(
+                        0.95, admission_arm_probability_[iid][d] + increase);
+                else if (admission_arm_requests_[iid][d] == 0)
+                    admission_arm_probability_[iid][d] = std::max(
+                        0.0, admission_arm_probability_[iid][d] - decrease);
+            }
+            break;
+        }
+        case AdmissionPolicy::FqCodel: {
+            const std::uint32_t target = static_cast<std::uint32_t>(
+                config_.admission.parameter > 0.0 ? config_.admission.parameter : 3.0);
+            const std::uint32_t interval = static_cast<std::uint32_t>(
+                config_.admission.secondary > 0.0 ? config_.admission.secondary : 5.0);
+            const double quantum = config_.admission.tertiary > 0.0
+                ? config_.admission.tertiary : 1.0;
+            std::uint32_t oldest = 0;
+            for (const auto wait : admission_arm_max_wait_[iid]) oldest = std::max(oldest, wait);
+            if (oldest > target && occupied > 0) ++admission_congestion_age_[iid];
+            else admission_congestion_age_[iid] = 0;
+            reserve = std::max(reserve, std::min(capacity - 1,
+                static_cast<int>(admission_congestion_age_[iid] / std::max(1U, interval))));
+            int selected = -1;
+            for (std::size_t d = 0; d < 4; ++d)
+                if (admission_arm_requests_[iid][d] != 0) admission_deficit_[iid][d] += quantum;
+            for (std::size_t d = 0; d < 4; ++d) {
+                if (admission_arm_requests_[iid][d] == 0) continue;
+                if (selected < 0 || admission_deficit_[iid][d] > admission_deficit_[iid][selected])
+                    selected = static_cast<int>(d);
+            }
+            admission_arm_mask_[iid] = selected < 0 ? 0x0fU
+                : static_cast<std::uint8_t>(1U << static_cast<unsigned>(selected));
             break;
         }
         case AdmissionPolicy::LongestQueue:
@@ -418,20 +606,38 @@ void Simulator::update_admission_policy() {
     }
 }
 
-bool Simulator::red_blocks(const CellId current, const IntersectionId entering) const {
-    if (config_.admission.policy != AdmissionPolicy::Red) return false;
+bool Simulator::admission_policy_blocks(const CellId current, const IntersectionId entering,
+                                        const std::size_t direction) const {
     const auto iid = static_cast<std::size_t>(entering);
-    const double minimum = config_.admission.parameter > 0.0
-        ? config_.admission.parameter : 0.50;
-    const double maximum = config_.admission.secondary > minimum
-        ? config_.admission.secondary : 0.90;
-    const double max_probability = config_.admission.tertiary > 0.0
-        ? config_.admission.tertiary : 0.50;
-    const double average = admission_occupancy_ewma_[iid];
-    if (average <= minimum) return false;
-    double probability = 1.0;
-    if (average < maximum)
-        probability = max_probability * (average - minimum) / (maximum - minimum);
+    double probability = 0.0;
+    switch (config_.admission.policy) {
+    case AdmissionPolicy::Red: {
+        const double minimum = config_.admission.parameter > 0.0
+            ? config_.admission.parameter : 0.50;
+        const double maximum = config_.admission.secondary > minimum
+            ? config_.admission.secondary : 0.90;
+        const double max_probability = config_.admission.tertiary > 0.0
+            ? config_.admission.tertiary : 0.50;
+        const double average = admission_occupancy_ewma_[iid];
+        if (average <= minimum) return false;
+        probability = average >= maximum ? 1.0
+            : max_probability * (average - minimum) / (maximum - minimum);
+        break;
+    }
+    case AdmissionPolicy::Blue:
+    case AdmissionPolicy::Rem:
+    case AdmissionPolicy::Pie:
+        probability = admission_probability_[iid];
+        break;
+    case AdmissionPolicy::Choke:
+    case AdmissionPolicy::StochasticFairBlue:
+        if (direction >= 4) return false;
+        probability = admission_arm_probability_[iid][direction];
+        break;
+    default:
+        return false;
+    }
+    if (probability <= 0.0) return false;
 
     std::uint64_t value = admission_seed_ ^ (stats_.timestep * 0x9e3779b97f4a7c15ULL)
         ^ (static_cast<std::uint64_t>(current) * 0xbf58476d1ce4e5b9ULL)
@@ -460,7 +666,7 @@ bool Simulator::block_intersection(const CellId current, const CellId next, cons
         if (direction < 4 && (admission_arm_mask_[iid] & (1U << direction)) == 0) return true;
         if (config_.admission.policy == AdmissionPolicy::TokenBucket && admission_tokens_[iid] < 1.0)
             return true;
-        if (red_blocks(current, entering)) return true;
+        if (admission_policy_blocks(current, entering, direction)) return true;
     }
 
     const auto priority = [&](const IntersectionId iid) {
@@ -487,7 +693,8 @@ void Simulator::update_available_on_move(const CellId current, const CellId next
         intersection_available_[index] = std::max(0, intersection_available_[index] - 1);
         if (config_.admission.policy == AdmissionPolicy::TokenBucket)
             admission_tokens_[index] = std::max(0.0, admission_tokens_[index] - 1.0);
-        if (config_.admission.policy == AdmissionPolicy::DeficitRoundRobin) {
+        if (config_.admission.policy == AdmissionPolicy::DeficitRoundRobin
+            || config_.admission.policy == AdmissionPolicy::FqCodel) {
             const auto direction = static_cast<std::size_t>(topology_.intersections()[index].direction_of(next));
             if (direction < 4) admission_deficit_[index][direction] = std::max(
                 0.0, admission_deficit_[index][direction] - 1.0);

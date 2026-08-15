@@ -48,9 +48,18 @@ enum class AdmissionPolicy : std::uint8_t {
     NeighborPressure,
     Aimd,
     Red,
+    Blue,
+    Rem,
+    Avq,
     Codel,
     Pi,
+    Pie,
     TokenBucket,
+    Sotl,
+    Choke,
+    QueueCsma,
+    StochasticFairBlue,
+    FqCodel,
     LongestQueue,
     OldestRequest,
     RoundRobin,
@@ -234,6 +243,10 @@ private:
     std::vector<double> admission_occupancy_ewma_;
     std::vector<double> admission_integral_;
     std::vector<double> admission_tokens_;
+    std::vector<double> admission_probability_;
+    std::vector<double> admission_previous_signal_;
+    std::vector<std::array<double, 4>> admission_arm_probability_;
+    std::vector<std::array<double, 4>> admission_arm_counter_;
     std::vector<std::uint8_t> deadlock_active_;
     std::vector<std::size_t> deadlock_priority_;
 
@@ -257,7 +270,8 @@ private:
     void rebuild_deadlock_priorities();
     [[nodiscard]] IntersectionId entering_intersection(CellId current, CellId next) const;
     void update_admission_policy();
-    [[nodiscard]] bool red_blocks(CellId current, IntersectionId entering) const;
+    [[nodiscard]] bool admission_policy_blocks(CellId current, IntersectionId entering,
+                                                std::size_t direction) const;
     bool block_intersection(CellId current, CellId next, bool normal_only) const;
     void update_available_on_move(CellId current, CellId next);
     void insert_scheduled_path(Agent& agent, const ScheduledPath& scheduled, IntersectionId intersection);
