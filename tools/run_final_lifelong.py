@@ -10,13 +10,14 @@ import json
 import os
 import platform
 import re
-import signal
 import socket
 import subprocess
 import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+from summarize_telemetry import summarize_metrics
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -57,17 +58,16 @@ def parse_resource(path: Path) -> dict[str, str]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--input-manifest", default="results/revision_final/lifelong_inputs_v1/MANIFEST.json")
-    parser.add_argument("--binary", default="build_lifelong/lima")
+        "--input-manifest", default="results/revision_final/lifelong_inputs_v2/MANIFEST.json")
+    parser.add_argument("--binary", default="build_telemetry/lima")
     parser.add_argument("--variants", default="swr,direct")
     parser.add_argument("--maps", help="optional comma-separated map filter")
     parser.add_argument("--densities", help="optional comma-separated density filter")
     parser.add_argument("--scenarios", help="optional comma-separated scenario filter")
     parser.add_argument("--horizon", type=int, default=10000)
     parser.add_argument("--warmup", type=int, default=1000)
-    parser.add_argument("--wall-budget", type=float, default=300.0)
     parser.add_argument("--jobs", type=int, default=8)
-    parser.add_argument("--output-dir", default="results/revision_final/lifelong_lima_v1")
+    parser.add_argument("--output-dir", default="results/revision_final/lifelong_lima_step_v2")
     parser.add_argument("--rerun", action="store_true")
     args = parser.parse_args()
     variants = [item.strip() for item in args.variants.split(",") if item.strip()]
@@ -75,8 +75,6 @@ def main() -> int:
         parser.error("variants must be swr and/or direct")
     if args.jobs < 1 or args.horizon < 1 or args.warmup < 0 or args.warmup >= args.horizon:
         parser.error("invalid jobs, horizon, or warmup")
-    if args.wall_budget <= 0:
-        parser.error("wall-budget must be positive")
     map_filter = set(args.maps.split(",")) if args.maps else None
     density_filter = set(map(int, args.densities.split(","))) if args.densities else None
     scenario_filter = set(map(int, args.scenarios.split(","))) if args.scenarios else None
@@ -139,14 +137,14 @@ def main() -> int:
         directory.mkdir(parents=True, exist_ok=True)
     runner = Path(__file__).resolve()
     fingerprint_payload = {
-        "schema_version": 1, "algorithm": "lima",
+        "schema_version": 2, "algorithm": "lima",
         "semantic_scope": "lifelong; fixed cyclic per-agent goal sequences",
         "binary": str(binary.relative_to(ROOT)), "binary_sha256": sha256(binary),
         "binary_version": version.stdout.strip(), "runner_sha256": sha256(runner),
         "input_manifest_sha256": sha256(input_manifest_path),
         "variants": variants, "cells": [cell["tag"] for cell in cells],
         "horizon_steps": args.horizon, "warmup_steps": args.warmup,
-        "wall_budget_seconds": args.wall_budget,
+        "termination_policy": "fixed discrete horizon; no wall-clock cutoff",
     }
     fingerprint = hashlib.sha256(
         json.dumps(fingerprint_payload, sort_keys=True).encode("utf-8")).hexdigest()
@@ -191,35 +189,33 @@ def main() -> int:
             "-o", str(resource_path), *solver,
         ]
         started = time.time()
-        timed_out = False
         proc = subprocess.Popen(
             command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, start_new_session=True)
-        try:
-            stdout, stderr = proc.communicate(timeout=args.wall_budget + 5)
-            returncode = proc.returncode
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            os.killpg(proc.pid, signal.SIGTERM)
-            try:
-                stdout, stderr = proc.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
-                stdout, stderr = proc.communicate()
-            returncode = 124
+        stdout, stderr = proc.communicate()
+        returncode = proc.returncode
         result = parse_fields(stdout)
-        horizon_completed = result.get("steps") == str(args.horizon)
+        horizon_completed = (
+            returncode in (0, 2)
+            and result.get("status") == "step_limit"
+            and result.get("steps") == str(args.horizon)
+        )
+        telemetry = summarize_metrics(metrics / tag)
+        validation_ok = telemetry["path_conformity"]["online_validation_ok"]
         log_path.write_text(stdout + ("\n[stderr]\n" + stderr if stderr else ""), encoding="utf-8")
         atomic_json(record_path, {
             **cell, "algorithm": "lima", "returncode": returncode,
-            "timed_out": timed_out, "horizon_completed": horizon_completed,
+            "timed_out": False,
+            "horizon_completed": horizon_completed and validation_ok,
+            "normal_termination": horizon_completed and validation_ok,
             "runner_wall_seconds": time.time() - started,
             "result": result, "resource": parse_resource(resource_path),
+            "telemetry": telemetry,
             "metrics": str((metrics / tag).relative_to(ROOT)),
             "command": command, "log": str(log_path.relative_to(ROOT)),
             "experiment_fingerprint": fingerprint,
         })
-        return tag, "timeout" if timed_out else ("horizon" if horizon_completed else "stopped")
+        return tag, "horizon" if horizon_completed and validation_ok else "stopped"
 
     completed = 0
     try:

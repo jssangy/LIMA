@@ -139,19 +139,30 @@ def main() -> int:
     parser.add_argument("--maps", default=",".join(SPECS))
     parser.add_argument("--densities", default=",".join(map(str, DENSITIES)))
     parser.add_argument("--scenarios", default="0-9")
-    parser.add_argument("--output-root", default="results/revision_final/lifelong_inputs_v1")
+    parser.add_argument(
+        "--certified-manifest",
+        default="results/revision_final/certified_inputs_v2/MANIFEST.json",
+    )
+    parser.add_argument("--output-root", default="results/revision_final/lifelong_inputs_v2")
     args = parser.parse_args()
     maps = [item.strip() for item in args.maps.split(",") if item.strip()]
     if not maps or not set(maps).issubset(SPECS):
         parser.error("unknown or empty map selection")
     densities = parse_int_list(args.densities, set(DENSITIES))
     scenarios = parse_int_list(args.scenarios, set(range(10)))
+    certified_path = (ROOT / args.certified_manifest).resolve()
+    certified = json.loads(certified_path.read_text(encoding="utf-8"))
+    if certified.get("capacity_formula") != "sum(arm capacities) - longest arm":
+        parser.error("certified manifest does not use the operational capacity")
     output = (ROOT / args.output_root).resolve()
     script = Path(__file__).resolve()
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "generator": str(script.relative_to(ROOT)), "generator_sha256": sha256(script),
+        "capacity_formula": "sum(arm capacities) - longest arm",
+        "certified_manifest": str(certified_path.relative_to(ROOT)),
+        "certified_manifest_sha256": sha256(certified_path),
         "semantics": {
             "goal_pool": "interior traversable non-sink cells",
             "assignment": "disjoint per-agent subsets",
@@ -163,7 +174,10 @@ def main() -> int:
     generated = 0
     for map_name in maps:
         spec = SPECS[map_name]
-        map_path = ROOT / spec.map_file
+        certified_map = certified["maps"][map_name]
+        map_path = ROOT / certified_map["map_file"]
+        if sha256(map_path) != certified_map["map_sha256"]:
+            raise ValueError(f"map hash mismatch: {map_name}")
         width, height, rows = load_map(map_path)
         pool = [
             (x, y) for y in range(1, height - 1) for x in range(1, width - 1)
@@ -176,11 +190,27 @@ def main() -> int:
         }
         manifest["maps"][map_name] = map_entry
         for density in densities:
-            agents = density * spec.tiles // 100
-            density_entry = {"agents": agents, "scenarios": {}}
+            target_entry = certified_map["targets"][f"d{density:02d}"]
+            agents = int(target_entry["agents"])
+            density_entry = {
+                "agents": agents,
+                "tile_density_percent": target_entry["tile_density_percent"],
+                "capacity_load_percent": target_entry["capacity_load_percent"],
+                "scenarios": {},
+            }
             map_entry["densities"][str(density)] = density_entry
             for scenario in scenarios:
-                source = ROOT / spec.scenario_template.format(s=scenario)
+                source_entry = target_entry["scenarios"][str(scenario)]
+                source = ROOT / source_entry["scenario_file"]
+                source_certificate = ROOT / source_entry["certificate_file"]
+                if sha256(source) != source_entry["scenario_sha256"]:
+                    raise ValueError(f"scenario hash mismatch: {source}")
+                if sha256(source_certificate) != source_entry["certificate_sha256"]:
+                    raise ValueError(f"certificate hash mismatch: {source_certificate}")
+                capacity_certificate = json.loads(
+                    source_certificate.read_text(encoding="utf-8"))
+                if capacity_certificate["validation"]["capacity_violations"] != 0:
+                    raise ValueError(f"capacity certificate failed: {source_certificate}")
                 starts = load_starts(source, agents)
                 if len(set(starts)) != agents:
                     raise AssertionError("source scenario has duplicate starts")
@@ -233,12 +263,15 @@ def main() -> int:
                     "scenario": scenario, "seed": seed,
                     "source_start_scenario": str(source.relative_to(ROOT)),
                     "source_start_scenario_sha256": sha256(source),
+                    "source_capacity_certificate": str(source_certificate.relative_to(ROOT)),
+                    "source_capacity_certificate_sha256": sha256(source_certificate),
                     "scenario_file": str(scenario_path.relative_to(ROOT)),
                     "scenario_sha256": sha256(scenario_path),
                     "sequence_file": str(sequence_path.relative_to(ROOT)),
                     "sequence_sha256": sha256(sequence_path),
                     "validation": {
                         "unique_starts": True, "disjoint_goal_subsets": True,
+                        "capacity_violations": 0,
                         "reachable_goals": len(all_goals),
                         "reachable_goal_pool_size": reachable_pool_size,
                         "minimum_goals_per_agent": min(map(len, buckets)),

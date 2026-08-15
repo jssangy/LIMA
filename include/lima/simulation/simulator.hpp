@@ -282,7 +282,7 @@ private:
     void update_available_on_move(CellId current, CellId next);
     void insert_scheduled_path(Agent& agent, const ScheduledPath& scheduled, IntersectionId intersection);
     void move_agent(Agent& agent);
-    void count_zone_entries(CellId current, CellId next);
+    void count_zone_entries(AgentId agent, CellId current, CellId next);
     void rotate_blocked_cycles();
     void assign_lifelong_goals();
     void move_agent_to(Agent& agent, CellId next);

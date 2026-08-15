@@ -19,6 +19,12 @@ std::uint64_t splitmix64(std::uint64_t value) {
     return value ^ (value >> 31U);
 }
 
+int cell_distance(const GridMap& map, const CellId first, const CellId second) {
+    const Coord a = map.coord(first);
+    const Coord b = map.coord(second);
+    return std::abs(a.x - b.x) + std::abs(a.y - b.y);
+}
+
 std::optional<std::array<int, 4>> predict_final_stack_lengths(
     const std::array<int, 4>& arm_limits, const std::span<const IntersectionIntent> intents,
     const std::array<int, 4>& quotas) {
@@ -150,7 +156,8 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
     completion_steps_.resize(agents_.size(), 0);
     task_start_steps_.resize(agents_.size(), 0);
     execution_failed_.resize(agents_.size(), 0);
-    if (!config_.metrics_dir.empty()) metrics_ = std::make_unique<MetricsCollector>(config_.metrics_dir);
+    if (!config_.metrics_dir.empty())
+        metrics_ = std::make_unique<MetricsCollector>(config_.metrics_dir, map_, agents_);
     if (!config_.trace_path.empty()) {
         tracer_ = std::make_unique<StepTracer>(config_.trace_path, map_, config_.map_file, seed, agents_);
     }
@@ -719,14 +726,14 @@ void Simulator::update_available_on_move(const CellId current, const CellId next
     }
 }
 
-void Simulator::count_zone_entries(const CellId current, const CellId next) {
+void Simulator::count_zone_entries(const AgentId agent, const CellId current, const CellId next) {
     if (!metrics_ || current == next) return;
     const auto& from = topology_.memberships(current);
-    int gained = 0;
     for (const IntersectionId iid : topology_.memberships(next)) {
-        if (std::find(from.begin(), from.end(), iid) == from.end()) ++gained;
+        if (std::find(from.begin(), from.end(), iid) != from.end()) continue;
+        const CellId center = topology_.intersections()[static_cast<std::size_t>(iid)].center;
+        metrics_->on_acquisition(stats_.timestep, agent, iid, cell_distance(map_, next, center));
     }
-    if (gained > 0) metrics_->add_acquisitions(gained);
 }
 
 void Simulator::insert_scheduled_path(Agent& agent, const ScheduledPath& scheduled,
@@ -762,6 +769,13 @@ void Simulator::insert_scheduled_path(Agent& agent, const ScheduledPath& schedul
     if (bridge.size() > 1) connected.insert(connected.end(), bridge.begin() + 1, bridge.end());
     connected.insert(connected.end(), continuation.begin(), continuation.end());
     agent.route = std::move(connected);
+    if (metrics_) {
+        metrics_->on_route_mutation(
+            stats_.timestep, agent.id, "local_schedule",
+            scheduled.path.size() + bridge.size() - 2, rejoin,
+            !bridge.empty() && bridge.back() == rejoin,
+            !agent.route.empty() && agent.route.back() == agent.goal);
+    }
     agent.scheduling_remaining = scheduled.path.size() - 1;
     agent.schedule_group = intersection;
 }
@@ -992,9 +1006,13 @@ bool Simulator::step() {
         deadlock_active_[iid] = 1;
         deadlock_priority_[iid] = deadlock_queue_.size() - 1;
         if (metrics_) {
-            int neighbor_count = 0;
-            for (const IntersectionId neighbor : intersection.neighbors) if (neighbor >= 0) ++neighbor_count;
-            metrics_->add_gate_signals(neighbor_count);
+            for (const IntersectionId neighbor : intersection.neighbors) {
+                if (neighbor < 0) continue;
+                const CellId neighbor_center = topology_.intersections()[
+                    static_cast<std::size_t>(neighbor)].center;
+                metrics_->on_gate_signal(stats_.timestep, iid_value, neighbor,
+                                         cell_distance(map_, intersection.center, neighbor_center));
+            }
         }
         pending_.push_back({iid_value, std::move(*plan)});
     }
@@ -1012,7 +1030,15 @@ bool Simulator::step() {
                 if (observe_schedules) applied.push_back(agent.id);
             }
         }
-        if (metrics_) metrics_->add_broadcasts(static_cast<int>(applied.size()));
+        if (metrics_) {
+            const CellId center = topology_.intersections()[
+                static_cast<std::size_t>(schedule.intersection)].center;
+            for (const AgentId id : applied) {
+                metrics_->on_broadcast(
+                    stats_.timestep, schedule.intersection, id,
+                    cell_distance(map_, center, agents_[static_cast<std::size_t>(id)].position));
+            }
+        }
         if (tracer_ && !applied.empty()) tracer_->add_schedule(schedule.intersection, std::move(applied));
     }
 
@@ -1021,8 +1047,21 @@ bool Simulator::step() {
                                                 &intersection_available_, &prev_inside_counts_});
         for (auto& event : discharge_events) {
             if (metrics_) {
-                metrics_->on_discharge(stats_.timestep, event.intersection, event.agent_ids, event.loop_cells);
-                for (const AgentId id : event.agent_ids) metrics_->note_discharged_agent(id);
+                metrics_->on_discharge(stats_.timestep, event.intersection, event.agent_ids,
+                                       event.agent_loop_cells, event.agent_loop_closed);
+                for (std::size_t i = 0; i < event.agent_ids.size(); ++i) {
+                    const AgentId id = event.agent_ids[i];
+                    metrics_->note_discharged_agent(id);
+                    const Agent& agent = agents_[static_cast<std::size_t>(id)];
+                    const std::size_t loop_cells = i < event.agent_loop_cells.size()
+                        ? event.agent_loop_cells[i] : 0;
+                    const bool loop_closed = i < event.agent_loop_closed.size()
+                        && event.agent_loop_closed[i] != 0;
+                    metrics_->on_route_mutation(
+                        stats_.timestep, id, "recirculation",
+                        loop_cells > 0 ? loop_cells - 1 : 0, agent.position,
+                        loop_closed, !agent.route.empty() && agent.route.back() == agent.goal);
+                }
             }
             if (tracer_) tracer_->add_discharge(event.intersection, std::move(event.agent_ids));
         }
@@ -1053,7 +1092,7 @@ bool Simulator::step() {
             }
             occupancy_[static_cast<std::size_t>(agent.position)] = kNoAgent;
             update_available_on_move(agent.position, next);
-            count_zone_entries(agent.position, next);
+            count_zone_entries(agent.id, agent.position, next);
             move_agent(agent);
             occupancy_[static_cast<std::size_t>(agent.position)] = agent.id;
         } else {
@@ -1114,7 +1153,7 @@ bool Simulator::step() {
         occupancy_[static_cast<std::size_t>(agent.position)] = kNoAgent;
         const CellId previous = agent.position;
         move_agent(agent);
-        count_zone_entries(previous, agent.position);
+        count_zone_entries(agent.id, previous, agent.position);
         occupancy_[static_cast<std::size_t>(agent.position)] = agent.id;
     }
 
@@ -1151,7 +1190,10 @@ bool Simulator::step() {
         }
     }
     if (goal_allocator_) assign_lifelong_goals();
-    if (metrics_) metrics_->flush_step(stats_.timestep);
+    if (metrics_) {
+        metrics_->observe_step(stats_.timestep, agents_);
+        metrics_->flush_step(stats_.timestep);
+    }
     if (tracer_) tracer_->flush_step(stats_.timestep, agents_);
     return true;
 }
@@ -1397,7 +1439,7 @@ void Simulator::compute_rescue_groups() {
                 update_available_on_move(agent.position, forced);
                 move_agent_to(agent, forced);
             }
-            count_zone_entries(previous, agent.position);
+            count_zone_entries(agent.id, previous, agent.position);
             occupancy_[static_cast<std::size_t>(agent.position)] = agent.id;
         }
     }
@@ -1535,7 +1577,7 @@ void Simulator::run_pibt_movement() {
             }
             occupancy_[static_cast<std::size_t>(agent.position)] = kNoAgent;
             update_available_on_move(agent.position, next);
-            count_zone_entries(agent.position, next);
+            count_zone_entries(agent.id, agent.position, next);
             move_agent(agent);
             occupancy_[static_cast<std::size_t>(agent.position)] = agent.id;
         } else {
@@ -1645,7 +1687,7 @@ void Simulator::run_pibt_movement() {
                 agent.route.insert(insertion, agent.position);
         }
         update_available_on_move(agent.position, next);
-        count_zone_entries(agent.position, next);
+        count_zone_entries(agent.id, agent.position, next);
         move_agent_to(agent, next);
     }
 
@@ -1692,7 +1734,7 @@ void Simulator::rotate_blocked_cycles() {
             Agent& agent = agents_[static_cast<std::size_t>(chain[k])];
             const CellId previous = agent.position;
             update_available_on_move(previous, agent.intended_cell());
-            count_zone_entries(previous, agent.intended_cell());
+            count_zone_entries(agent.id, previous, agent.intended_cell());
             occupancy_[static_cast<std::size_t>(previous)] = kNoAgent;
             move_agent(agent);
         }

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run the final AIMD-versus-static admission ablation.
 
-Only the six pre-freeze boundary cells and the six operational-capacity
-certified boundary cells are used.  Route planning, local scheduling,
-recirculation, task semantics, and the frozen executable are otherwise fixed.
+All starts satisfy the operational local-capacity certificate.  Each map uses
+one high-density rung and its certified capacity boundary.  Wall time is
+descriptive only; the simulation terminates by the common discrete horizon.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ import json
 import os
 import platform
 import re
-import signal
 import socket
 import subprocess
 import tempfile
@@ -23,33 +22,20 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from summarize_telemetry import summarize_metrics
+
 
 ROOT = Path(__file__).resolve().parent.parent
 FREEZE_MANIFEST = ROOT / "results/reference_instantiation_freeze_v1/FINAL_MANIFEST.json"
-CERTIFIED_MANIFEST = ROOT / "results/revision_final/certified_inputs_v1/MANIFEST.json"
+CERTIFIED_MANIFEST = ROOT / "results/revision_final/certified_inputs_v2/MANIFEST.json"
 VARIANTS = {
     "aimd": (),
     "static": ("--gate-policy", "static"),
 }
-STANDARD = {
-    "warehouse_10_20": {
-        "map_file": "data/maps/warehouse_10_20_paper.map",
-        "scenario_template": "data/scenarios/warehouse-10-20-paper/warehouse-10-20-paper_s{s}.scen",
-        "density": 50,
-        "agents": 1324,
-    },
-    "warehouse_20_40": {
-        "map_file": "data/maps/warehouse_20_40_paper.map",
-        "scenario_template": "data/scenarios/warehouse-20-40-paper/warehouse-20-40-paper_s{s}.scen",
-        "density": 30,
-        "agents": 3149,
-    },
-    "cross_3030": {
-        "map_file": "data/maps/cross_3030_paper.map",
-        "scenario_template": "data/scenarios/cross-30-30-paper/cross-30-30-paper_s{s}.scen",
-        "density": 50,
-        "agents": 5100,
-    },
+TARGETS = {
+    "warehouse_10_20": ("d60", "boundary"),
+    "warehouse_20_40": ("d50", "boundary"),
+    "cross_3030": ("d70", "boundary"),
 }
 
 
@@ -84,48 +70,40 @@ def parse_resource(path: Path) -> dict[str, str]:
 
 def load_cells(certified_path: Path) -> tuple[list[dict], dict]:
     cells: list[dict] = []
-    for map_name, spec in STANDARD.items():
-        for scenario in (0, 1):
-            cells.append({
-                "scope": "standard_boundary",
-                "map": map_name,
-                "target": f"d{spec['density']:02d}",
-                "agents": spec["agents"],
-                "scenario": scenario,
-                "map_file": spec["map_file"],
-                "scenario_file": spec["scenario_template"].format(s=scenario),
-                "certificate_file": None,
-                "tag": f"standard_{map_name}_d{spec['density']:02d}_a{spec['agents']}_s{scenario}",
-            })
-
     certified = json.loads(certified_path.read_text(encoding="utf-8"))
     if certified.get("capacity_formula") != "sum(arm capacities) - longest arm":
         raise ValueError("certified manifest does not use operational capacity")
-    for map_name, map_entry in certified["maps"].items():
-        target_entry = map_entry["targets"]["boundary"]
-        for scenario in (0, 1):
-            entry = target_entry["scenarios"][str(scenario)]
-            scenario_path = ROOT / entry["scenario_file"]
-            certificate_path = ROOT / entry["certificate_file"]
-            if sha256(scenario_path) != entry["scenario_sha256"]:
-                raise ValueError(f"scenario hash mismatch: {scenario_path}")
-            if sha256(certificate_path) != entry["certificate_sha256"]:
-                raise ValueError(f"certificate hash mismatch: {certificate_path}")
-            certificate = json.loads(certificate_path.read_text(encoding="utf-8"))
-            if certificate["validation"]["capacity_violations"] != 0:
-                raise ValueError(f"capacity certificate failed: {certificate_path}")
-            agents = int(target_entry["agents"])
-            cells.append({
-                "scope": "certified_boundary",
-                "map": map_name,
-                "target": "boundary",
-                "agents": agents,
-                "scenario": scenario,
-                "map_file": map_entry["map_file"],
-                "scenario_file": entry["scenario_file"],
-                "certificate_file": entry["certificate_file"],
-                "tag": f"certified_{map_name}_boundary_a{agents}_s{scenario}",
-            })
+    for map_name, targets in TARGETS.items():
+        map_entry = certified["maps"][map_name]
+        if sha256(ROOT / map_entry["map_file"]) != map_entry["map_sha256"]:
+            raise ValueError(f"map hash mismatch: {map_name}")
+        for target in targets:
+            target_entry = map_entry["targets"][target]
+            for scenario in (0, 1):
+                entry = target_entry["scenarios"][str(scenario)]
+                scenario_path = ROOT / entry["scenario_file"]
+                certificate_path = ROOT / entry["certificate_file"]
+                if sha256(scenario_path) != entry["scenario_sha256"]:
+                    raise ValueError(f"scenario hash mismatch: {scenario_path}")
+                if sha256(certificate_path) != entry["certificate_sha256"]:
+                    raise ValueError(f"certificate hash mismatch: {certificate_path}")
+                certificate = json.loads(certificate_path.read_text(encoding="utf-8"))
+                if certificate["validation"]["capacity_violations"] != 0:
+                    raise ValueError(f"capacity certificate failed: {certificate_path}")
+                agents = int(target_entry["agents"])
+                cells.append({
+                    "scope": "capacity_certified_high_density",
+                    "map": map_name,
+                    "target": target,
+                    "agents": agents,
+                    "tile_density_percent": target_entry["tile_density_percent"],
+                    "capacity_load_percent": target_entry["capacity_load_percent"],
+                    "scenario": scenario,
+                    "map_file": map_entry["map_file"],
+                    "scenario_file": entry["scenario_file"],
+                    "certificate_file": entry["certificate_file"],
+                    "tag": f"certified_{map_name}_{target}_a{agents}_s{scenario}",
+                })
     return cells, certified
 
 
@@ -133,23 +111,28 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--freeze-manifest", default=str(FREEZE_MANIFEST))
     parser.add_argument("--certified-manifest", default=str(CERTIFIED_MANIFEST))
-    parser.add_argument("--wall-budget", type=float, default=300.0)
+    parser.add_argument("--binary", default="build_telemetry/lima")
     parser.add_argument("--max-steps", type=int, default=100000)
     parser.add_argument("--jobs", type=int, default=8)
-    parser.add_argument("--output-dir", default="results/revision_final/admission_ablation_v1")
+    parser.add_argument("--output-dir", default="results/revision_final/admission_ablation_step_v2")
     parser.add_argument("--rerun", action="store_true")
     args = parser.parse_args()
-    if args.jobs < 1 or args.wall_budget <= 0 or args.max_steps < 1:
-        parser.error("jobs, wall-budget, and max-steps must be positive")
+    if args.jobs < 1 or args.max_steps < 1:
+        parser.error("jobs and max-steps must be positive")
 
     freeze_path = Path(args.freeze_manifest).resolve()
     freeze = json.loads(freeze_path.read_text(encoding="utf-8"))
     if freeze.get("status") != "frozen":
         parser.error("freeze manifest is not frozen")
     artifact = freeze["artifacts"]["lima_binary"]
-    binary = (ROOT / artifact["path"]).resolve()
-    if not binary.is_file() or sha256(binary) != artifact["sha256"]:
-        parser.error("frozen LIMA binary missing or hash mismatch")
+    binary = (ROOT / args.binary).resolve()
+    if not binary.is_file():
+        parser.error("instrumented LIMA binary is missing")
+    version = subprocess.run(
+        [str(binary), "--version"], cwd=ROOT,
+        capture_output=True, text=True, check=False)
+    if version.returncode != 0 or "profile=lima-default" not in version.stdout:
+        parser.error("instrumented LIMA binary does not expose the frozen profile")
     certified_path = Path(args.certified_manifest).resolve()
     try:
         cells, _ = load_cells(certified_path)
@@ -168,15 +151,17 @@ def main() -> int:
     runner = Path(__file__).resolve()
     jobs = [(cell, variant) for cell in cells for variant in VARIANTS]
     fingerprint_payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "semantic_scope": "one-shot; AIMD versus static admission; disappear at physical sink",
         "freeze_commit": freeze["git_commit"],
+        "reference_lima_sha256": artifact["sha256"],
         "binary_sha256": sha256(binary),
+        "binary_version": version.stdout.strip(),
         "runner_sha256": sha256(runner),
         "certified_manifest_sha256": sha256(certified_path),
         "cells": [cell["tag"] for cell in cells],
         "variants": VARIANTS,
-        "wall_budget_seconds": args.wall_budget,
+        "termination_policy": "common discrete execution horizon; no wall-clock cutoff",
         "max_steps": args.max_steps,
     }
     fingerprint = hashlib.sha256(
@@ -216,7 +201,8 @@ def main() -> int:
             str(binary), "--profile", "lima-default", "--mode", "solve",
             "--map", cell["map_file"], "--scenario", cell["scenario_file"],
             "--agents", str(cell["agents"]), "--seed", str(cell["scenario"]),
-            "--max-steps", str(args.max_steps), "--no-trace", "--metrics", str(metric_path),
+            "--max-steps", str(args.max_steps), "--goal-behavior", "disappear",
+            "--no-trace", "--metrics", str(metric_path),
             *VARIANTS[variant],
         ]
         command = [
@@ -225,33 +211,28 @@ def main() -> int:
             "-o", str(resource_path), *solver,
         ]
         started = time.time()
-        timed_out = False
         proc = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, start_new_session=True)
-        try:
-            stdout, stderr = proc.communicate(timeout=args.wall_budget)
-            returncode = proc.returncode
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            os.killpg(proc.pid, signal.SIGTERM)
-            try:
-                stdout, stderr = proc.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
-                stdout, stderr = proc.communicate()
-            returncode = 124
+        stdout, stderr = proc.communicate()
+        returncode = proc.returncode
         result = parse_fields(stdout)
-        solved = returncode == 0 and result.get("status") == "completed"
+        telemetry = summarize_metrics(metric_path)
+        solved = (
+            returncode == 0
+            and result.get("status") == "completed"
+            and telemetry["path_conformity"]["online_validation_ok"]
+        )
         log_path.write_text(stdout + ("\n[stderr]\n" + stderr if stderr else ""), encoding="utf-8")
         atomic_json(record_path, {
-            **cell, "variant": variant, "returncode": returncode, "timed_out": timed_out,
+            **cell, "variant": variant, "returncode": returncode, "timed_out": False,
             "solved": solved, "runner_wall_seconds": time.time() - started,
             "result": result, "resource": parse_resource(resource_path),
+            "telemetry": telemetry,
             "command": command, "log": str(log_path.relative_to(ROOT)),
             "metrics": str(metric_path.relative_to(ROOT)),
             "experiment_fingerprint": fingerprint,
         })
-        return tag, "timeout" if timed_out else ("completed" if solved else result.get("status", f"rc{returncode}"))
+        return tag, "completed" if solved else result.get("status", f"rc{returncode}")
 
     completed = 0
     try:

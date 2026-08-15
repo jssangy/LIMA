@@ -261,7 +261,8 @@ struct Options {
     std::filesystem::path map;
     std::filesystem::path scenario;
     std::size_t agents{0};
-    double time_limit{60.0};
+    double time_limit{0.0};
+    long long max_expansions{100000};
 };
 
 // Write one spatial route per agent in the waypoint format consumed by
@@ -368,13 +369,27 @@ std::optional<Options> parse_args(const int argc, char** argv) {
                 std::cerr << "invalid --time-limit value: " << v << "\n";
                 return std::nullopt;
             }
+        } else if (arg == "--max-expansions") {
+            const char* v = value();
+            if (!v) return std::nullopt;
+            try {
+                opts.max_expansions = std::stoll(v);
+            } catch (const std::exception&) {
+                std::cerr << "invalid --max-expansions value: " << v << "\n";
+                return std::nullopt;
+            }
+            if (opts.max_expansions <= 0) {
+                std::cerr << "--max-expansions must be positive\n";
+                return std::nullopt;
+            }
         } else {
             std::cerr << "unknown argument: " << arg << "\n";
             return std::nullopt;
         }
     }
     if (opts.map.empty() || opts.scenario.empty() || opts.agents == 0) {
-        std::cerr << "usage: cbs_baseline --map FILE --scenario FILE --agents N [--time-limit SEC]\n";
+        std::cerr << "usage: cbs_baseline --map FILE --scenario FILE --agents N "
+                     "[--max-expansions N] [--time-limit SEC]\n";
         return std::nullopt;
     }
     return opts;
@@ -396,9 +411,10 @@ int main(const int argc, char** argv) {
     const Clock::time_point start_time = Clock::now();
     const auto opts = parse_args(argc, argv);
     if (!opts) return 2;
-    const Clock::time_point deadline =
-        start_time + std::chrono::duration_cast<Clock::duration>(
-                         std::chrono::duration<double>(opts->time_limit));
+    const Clock::time_point deadline = opts->time_limit > 0.0
+        ? start_time + std::chrono::duration_cast<Clock::duration>(
+                           std::chrono::duration<double>(opts->time_limit))
+        : Clock::time_point::max();
 
     GridMap map;
     std::vector<lima::Task> tasks;
@@ -462,6 +478,11 @@ int main(const int argc, char** argv) {
     open.push({nodes[0].cost, nodes[0].conflict_count, 0});
 
     while (!open.empty()) {
+        if (expansions >= opts->max_expansions) {
+            report(false, n, 0, 0, expansions, start_time,
+                   dump_best_conflict_incumbent(open, nodes, map));
+            return 0;
+        }
         if (Clock::now() >= deadline) {
             report(false, n, 0, 0, expansions, start_time,
                    dump_best_conflict_incumbent(open, nodes, map));

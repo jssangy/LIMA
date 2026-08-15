@@ -11,7 +11,6 @@ import math
 import os
 import platform
 import re
-import signal
 import socket
 import subprocess
 import tempfile
@@ -102,12 +101,11 @@ def main() -> int:
     parser.add_argument("--freeze-manifest", default=str(FREEZE_MANIFEST))
     parser.add_argument("--instances", type=int, default=100)
     parser.add_argument("--seed", type=int, default=1701)
-    parser.add_argument("--wall-budget", type=float, default=300.0)
-    parser.add_argument("--output-dir", default="results/revision_final/local_solver_reference_v1")
+    parser.add_argument("--output-dir", default="results/revision_final/local_solver_reference_step_v2")
     parser.add_argument("--rerun", action="store_true")
     args = parser.parse_args()
-    if args.instances < 1 or args.wall_budget <= 0:
-        parser.error("instances and wall-budget must be positive")
+    if args.instances < 1:
+        parser.error("instances must be positive")
 
     freeze_path = Path(args.freeze_manifest).resolve()
     freeze = json.loads(freeze_path.read_text(encoding="utf-8"))
@@ -131,14 +129,14 @@ def main() -> int:
                          "load": load, "fraction": fraction, "population": population,
                          "tag": f"{shape}_{load}_n{population}"})
     fingerprint_payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "semantic_scope": "synthetic single-intersection distribution; operational capacity",
         "freeze_commit": freeze["git_commit"],
         "binary_sha256": sha256(binary),
         "runner_sha256": sha256(runner),
         "instances_per_cell": args.instances,
         "seed": args.seed,
-        "wall_budget_seconds_per_cell": args.wall_budget,
+        "termination_policy": "fixed instance count; no wall-clock cutoff",
         "jobs": jobs,
     }
     fingerprint = hashlib.sha256(
@@ -182,21 +180,10 @@ def main() -> int:
                 "--seed", str(args.seed), "--output", str(csv_path),
             ]
             started = time.time()
-            timed_out = False
             proc = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     text=True, start_new_session=True)
-            try:
-                stdout, stderr = proc.communicate(timeout=args.wall_budget)
-                returncode = proc.returncode
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                os.killpg(proc.pid, signal.SIGTERM)
-                try:
-                    stdout, stderr = proc.communicate(timeout=5)
-                except subprocess.TimeoutExpired:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                    stdout, stderr = proc.communicate()
-                returncode = 124
+            stdout, stderr = proc.communicate()
+            returncode = proc.returncode
             resource = parse_resource(resource_path)
             summary = summarize(csv_path, args.instances)
             try:
@@ -207,12 +194,12 @@ def main() -> int:
                 user_seconds * 1e6 / summary["rows"] if summary["rows"] else math.nan)
             log_path.write_text(stdout + ("\n[stderr]\n" + stderr if stderr else ""), encoding="utf-8")
             atomic_json(record_path, {
-                **job, "returncode": returncode, "timed_out": timed_out,
+                **job, "returncode": returncode, "timed_out": False,
                 "runner_wall_seconds": time.time() - started, "summary": summary,
                 "resource": resource, "command": command, "raw_csv": str(csv_path.relative_to(ROOT)),
                 "log": str(log_path.relative_to(ROOT)), "experiment_fingerprint": fingerprint,
             })
-            status = "watchdog" if timed_out else f"{summary['solved']}/{summary['rows']}"
+            status = f"{summary['solved']}/{summary['rows']}"
             print(f"[{index}/9] {status:9s} {tag}", flush=True)
     finally:
         lock.unlink(missing_ok=True)

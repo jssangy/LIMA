@@ -84,6 +84,8 @@ public:
         int rerouted{};
         std::size_t loop_cells{};
         std::vector<AgentId> agent_ids;
+        std::vector<std::size_t> agent_loop_cells;
+        std::vector<std::uint8_t> agent_loop_closed;
     };
 
     [[nodiscard]] std::vector<Event> run(const Context& context) const;
