@@ -467,7 +467,8 @@ void print_provenance(const Options& options) {
     if (options.sim.pibt_replan != 0) std::cout << " replan=" << options.sim.pibt_replan;
     if (options.sim.shuffle_order >= 0) std::cout << " shuffle=" << options.sim.shuffle_order;
     if (options.sim.failure_probability != 0.0)
-        std::cout << " failure_prob=" << options.sim.failure_probability;
+        std::cout << " failure_prob=" << options.sim.failure_probability
+                  << " delay_trace=counter-hash-v1";
     if (options.profile != "legacy" || options.sim.discharge.policy != lima::DischargePolicy::Legacy) {
         std::cout << " discharge_policy=" << discharge_policy_name(options.sim.discharge.policy);
         if (options.sim.discharge.policy == lima::DischargePolicy::Balanced)

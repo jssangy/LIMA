@@ -12,6 +12,13 @@
 namespace lima {
 namespace {
 
+std::uint64_t splitmix64(std::uint64_t value) {
+    value += 0x9e3779b97f4a7c15ULL;
+    value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+    value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
+    return value ^ (value >> 31U);
+}
+
 std::optional<std::array<int, 4>> predict_final_stack_lengths(
     const std::array<int, 4>& arm_limits, const std::span<const IntersectionIntent> intents,
     const std::array<int, 4>& quotas) {
@@ -76,7 +83,7 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
     : map_(std::move(map)), config_(std::move(config)), rng_(seed),
       shuffle_rng_(config_.shuffle_order >= 0
           ? static_cast<std::uint64_t>(config_.shuffle_order) ^ 0xd1b54a32d192ed03ULL : 0ULL),
-      failure_rng_(seed ^ 0xa0761d6478bd642fULL),
+      failure_seed_(seed ^ 0xa0761d6478bd642fULL),
       planner_(make_planner(planner_kind, map_, rng_)),
       topology_(IntersectionTopology::build(map_)),
       solver_(make_solver(config_.solver)), coordinator_(*solver_, config_.pibt_corridor),
@@ -221,9 +228,17 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
 
 bool Simulator::sample_command_failure(const AgentId agent) {
     if (config_.failure_probability <= 0.0) return false;
-    std::bernoulli_distribution distribution(config_.failure_probability);
-    if (!distribution(failure_rng_)) return false;
-    execution_failed_[static_cast<std::size_t>(agent)] = 1;
+    const auto index = static_cast<std::size_t>(agent);
+    if (execution_failed_[index] != 0) return true;
+    std::uint64_t counter = failure_seed_;
+    counter ^= (static_cast<std::uint64_t>(agent) + 1ULL) * 0xd2b74407b1ce6e93ULL;
+    counter ^= (stats_.timestep + 1ULL) * 0xca5a826395121157ULL;
+    constexpr std::uint64_t scale = 1ULL << 53U;
+    const auto threshold = static_cast<std::uint64_t>(
+        config_.failure_probability * static_cast<double>(scale));
+    const std::uint64_t sample = splitmix64(counter) >> 11U;
+    if (sample >= threshold) return false;
+    execution_failed_[index] = 1;
     ++stats_.command_failures;
     return true;
 }

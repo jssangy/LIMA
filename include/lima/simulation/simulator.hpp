@@ -202,7 +202,9 @@ private:
     SimulatorConfig config_;
     std::mt19937_64 rng_;
     std::mt19937_64 shuffle_rng_;  // W7 only; dedicated so rng_ draws are untouched
-    std::mt19937_64 failure_rng_;  // E12 only; dedicated so p=0 preserves every legacy draw
+    // Counter-based execution-delay seed. Delay events depend only on
+    // (instance seed, agent id, timestep), never on iteration/call order.
+    std::uint64_t failure_seed_{};
     std::unique_ptr<Planner> planner_;
     IntersectionTopology topology_;
     std::vector<Agent> agents_;
