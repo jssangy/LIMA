@@ -52,66 +52,76 @@ def compare(lhs: dict, rhs: dict) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("root")
+    parser.add_argument("roots", nargs="+")
     parser.add_argument("--base", default="gatec_base")
     parser.add_argument("--output-dir")
     args = parser.parse_args()
 
-    root = Path(args.root).resolve()
-    output = Path(args.output_dir).resolve() if args.output_dir else root / "summary"
+    roots = [Path(value).resolve() for value in args.roots]
+    if len(roots) > 1 and not args.output_dir:
+        parser.error("--output-dir is required when combining multiple roots")
+    output = Path(args.output_dir).resolve() if args.output_dir else roots[0] / "summary"
     output.mkdir(parents=True, exist_ok=True)
 
     rows: list[dict] = []
     manifests: dict[str, dict] = {}
-    for variant_dir in sorted(path for path in root.iterdir() if path.is_dir()):
-        manifest_path = variant_dir / "MANIFEST.json"
-        records_dir = variant_dir / "records"
-        if not manifest_path.is_file() or not records_dir.is_dir():
-            continue
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        variant = manifest["variant"]
-        manifests[variant] = manifest
-        horizon = int(manifest["max_steps"])
-        for record_path in sorted(records_dir.glob("*.json")):
-            record = json.loads(record_path.read_text(encoding="utf-8"))
-            summary = record.get("summary", {})
-            completed_text = summary.get("completed", f"0/{record['agents']}")
-            try:
-                completed, total = (int(value) for value in completed_text.split("/", 1))
-            except ValueError:
-                completed, total = 0, int(record["agents"])
-            raw_status = summary.get("status", "error")
-            steps = number(summary.get("steps"))
-            if record.get("timed_out"):
-                status = "watchdog"
-            elif raw_status == "step_limit" and steps < horizon:
-                status = "global_stall"
-            elif raw_status == "step_limit":
-                status = "horizon"
-            else:
-                status = raw_status
-            success = int(status == "completed" and completed == total)
-            rows.append({
-                "cell": record["tag"],
-                "map": record["map"],
-                "density_percent": int(record["density_percent"]),
-                "agents": int(record["agents"]),
-                "scenario": int(record["scenario"]),
-                "variant": variant,
-                "status": status,
-                "raw_status": raw_status,
-                "success": success,
-                "completed": completed,
-                "total": total,
-                "residual": total - completed,
-                "completion_fraction": completed / total if total else 0.0,
-                "steps": steps,
-                "horizon": horizon,
-                "moves": number(summary.get("moves")),
-                "waits": number(summary.get("waits")),
-                "deadlocks": number(summary.get("deadlocks")),
-                "runner_wall_seconds": float(record.get("runner_wall_seconds", math.nan)),
-            })
+    seen: set[tuple[str, str]] = set()
+    for root in roots:
+        for variant_dir in sorted(path for path in root.iterdir() if path.is_dir()):
+            manifest_path = variant_dir / "MANIFEST.json"
+            records_dir = variant_dir / "records"
+            if not manifest_path.is_file() or not records_dir.is_dir():
+                continue
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            variant = manifest["variant"]
+            if variant in manifests and manifests[variant] != manifest:
+                parser.error(f"inconsistent manifests for {variant}")
+            manifests[variant] = manifest
+            horizon = int(manifest["max_steps"])
+            for record_path in sorted(records_dir.glob("*.json")):
+                record = json.loads(record_path.read_text(encoding="utf-8"))
+                key = (variant, record["tag"])
+                if key in seen:
+                    parser.error(f"duplicate variant/cell record: {variant} {record['tag']}")
+                seen.add(key)
+                summary = record.get("summary", {})
+                completed_text = summary.get("completed", f"0/{record['agents']}")
+                try:
+                    completed, total = (int(value) for value in completed_text.split("/", 1))
+                except ValueError:
+                    completed, total = 0, int(record["agents"])
+                raw_status = summary.get("status", "error")
+                steps = number(summary.get("steps"))
+                if record.get("timed_out"):
+                    status = "watchdog"
+                elif raw_status == "step_limit" and steps < horizon:
+                    status = "global_stall"
+                elif raw_status == "step_limit":
+                    status = "horizon"
+                else:
+                    status = raw_status
+                success = int(status == "completed" and completed == total)
+                rows.append({
+                    "cell": record["tag"],
+                    "map": record["map"],
+                    "density_percent": int(record["density_percent"]),
+                    "agents": int(record["agents"]),
+                    "scenario": int(record["scenario"]),
+                    "variant": variant,
+                    "status": status,
+                    "raw_status": raw_status,
+                    "success": success,
+                    "completed": completed,
+                    "total": total,
+                    "residual": total - completed,
+                    "completion_fraction": completed / total if total else 0.0,
+                    "steps": steps,
+                    "horizon": horizon,
+                    "moves": number(summary.get("moves")),
+                    "waits": number(summary.get("waits")),
+                    "deadlocks": number(summary.get("deadlocks")),
+                    "runner_wall_seconds": float(record.get("runner_wall_seconds", math.nan)),
+                })
 
     if not rows:
         parser.error(f"no tournament records under {root}")
@@ -210,7 +220,7 @@ def main() -> int:
     lines = [
         "# Phase 2 gate tournament",
         "",
-        f"- Root: `{root}`",
+        "- Roots: " + ", ".join(f"`{root}`" for root in roots),
         f"- Variants present: {len(variants)}",
         f"- Records: {len(rows)} / {sum(row['cells_expected'] for row in variants)}",
         f"- Complete: {'yes' if complete else 'no'}",
