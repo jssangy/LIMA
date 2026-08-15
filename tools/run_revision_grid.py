@@ -257,6 +257,10 @@ def main() -> int:
     if not binary.is_file():
         parser.error(f"binary does not exist: {binary}")
     output = ROOT / (args.output_dir or f"results/revision_grid/{args.variant}")
+    runner_lock = output / ".RUNNING"
+    if runner_lock.exists() and os.environ.get("LIMA_GATE_RUNNER_OWNS_LOCK") != "1":
+        print(f"active runner owns variant directory; skipped: {output}")
+        return 0
     records = output / "records"
     metrics_root = output / "metrics"
     traces_root = output / "traces"

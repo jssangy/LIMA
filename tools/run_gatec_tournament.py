@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -63,6 +64,15 @@ def main() -> int:
     output_root = ROOT / args.output_root
 
     def run(variant: str) -> tuple[str, int]:
+        variant_output = output_root / variant
+        variant_output.mkdir(parents=True, exist_ok=True)
+        lock = variant_output / ".RUNNING"
+        try:
+            descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            print(f"variant={variant} already owned by another runner", flush=True)
+            return variant, 0
+        os.close(descriptor)
         command = [
             sys.executable,
             str(script),
@@ -74,10 +84,15 @@ def main() -> int:
             "--jobs", str(args.inner_jobs),
             "--timeout", str(args.cell_timeout),
             "--max-steps", str(args.max_steps),
-            "--output-dir", str(output_root / variant),
+            "--output-dir", str(variant_output),
         ]
-        process = subprocess.run(command, cwd=ROOT, text=True)
-        return variant, process.returncode
+        environment = os.environ.copy()
+        environment["LIMA_GATE_RUNNER_OWNS_LOCK"] = "1"
+        try:
+            process = subprocess.run(command, cwd=ROOT, text=True, env=environment)
+            return variant, process.returncode
+        finally:
+            lock.unlink(missing_ok=True)
 
     failures: list[str] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.outer_jobs) as pool:
