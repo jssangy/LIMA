@@ -23,7 +23,7 @@
 
 namespace {
 
-constexpr int kLimaDefaultProfileVersion = 2;
+constexpr int kLimaDefaultProfileVersion = 3;
 
 enum class RunMode { Realtime, Solve, Replay, Debug, Bench };
 
@@ -64,6 +64,11 @@ void apply_profile(Options& options, const std::string_view name) {
     // has been applied.
     options.planner = lima::PlannerKind::Bfs;
     options.sim.direct_routing = false;
+    // Local PIBT displacement may temporarily move a robot away from its
+    // reference route.  Repair the robot's own suffix after the first failed
+    // rejoin attempt.  This is a route-planner operation over the static map
+    // and the robot's own goal; it introduces no inter-robot communication.
+    options.sim.pibt_replan = 1;
 
     // Admission Controller: acknowledged AIMD admission window.  Gate-C
     // development cells selected beta=0.25 and additive recovery=0.50.

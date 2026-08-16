@@ -23,7 +23,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parent.parent
-CONFIG = ROOT / "config/reference_instantiation_v2.json"
+CONFIG = ROOT / "config/reference_instantiation_v3.json"
 DETERMINISTIC_FIELDS = (
     "status",
     "steps",

@@ -1535,6 +1535,12 @@ void Simulator::run_pibt_movement() {
             if (active_discharge_target(agent) != kInvalidCell) continue;
             auto route = plan_global(agent.position, agent.goal);
             if (route.empty() || route.front() != agent.position || route.back() != agent.goal) continue;
+            if (metrics_) {
+                metrics_->on_route_mutation(
+                    stats_.timestep, agent.id, "route_repair",
+                    route.size() > 0 ? route.size() - 1 : 0, agent.position,
+                    route.front() == agent.position, route.back() == agent.goal);
+            }
             agent.route = std::move(route);
             agent.route_cursor = 0;
         }
