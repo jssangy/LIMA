@@ -401,6 +401,7 @@ def main() -> int:
                 "--map", job["map_file"], "--scenario", job["scenario_file"],
                 "--agents", str(job["agents"]), "--seed", str(job["scenario"]),
                 "--max-steps", str(args.max_steps),
+                "--stall-threshold", str(args.max_steps + 1),
                 "--failure-prob", str(job["probability"]),
                 "--goal-behavior", "disappear", "--no-trace",
                 "--metrics", str(metrics / tag),

@@ -180,7 +180,9 @@ def main() -> int:
             str(binary), "--profile", "lima-default", "--mode", "solve",
             "--map", cell["map_file"], "--scenario", cell["scenario_file"],
             "--agents", str(cell["agents"]), "--seed", str(cell["scenario"]),
-            "--max-steps", str(args.horizon), "--goal-behavior", "lifelong",
+            "--max-steps", str(args.horizon),
+            "--stall-threshold", str(args.horizon + 1),
+            "--goal-behavior", "lifelong",
             "--goal-sequences", cell["sequence_file"],
             "--routing", cell["variant"], "--no-trace", "--metrics", str(metrics / tag),
         ]
