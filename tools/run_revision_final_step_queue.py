@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ARTIFACT_MANIFEST = (
-    ROOT / "results/revision_final/frozen_artifacts_step_v4_optimized/MANIFEST.json"
+    ROOT / "results/revision_final/frozen_artifacts_step_v4_optimized_r1/MANIFEST.json"
 )
 QUEUE_ROOT = ROOT / "results/revision_final/queue_step_v4_optimized_r1"
 
