@@ -134,7 +134,11 @@ def main() -> int:
     fingerprint_payload = {
         "schema_version": 2,
         "semantic_scope": "synthetic single-intersection distribution; operational capacity",
-        "freeze_commit": freeze["git_commit"],
+        "freeze_commit": (
+            freeze.get("git_commit")
+            or freeze.get("source_commit")
+            or freeze["protocol_commit"]
+        ),
         "binary_sha256": sha256(binary),
         "runner_sha256": sha256(runner),
         "instances_per_cell": args.instances,

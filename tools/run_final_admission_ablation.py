@@ -157,7 +157,11 @@ def main() -> int:
     fingerprint_payload = {
         "schema_version": 2,
         "semantic_scope": "one-shot; AIMD versus static admission; disappear at physical sink",
-        "freeze_commit": freeze["git_commit"],
+        "freeze_commit": (
+            freeze.get("git_commit")
+            or freeze.get("source_commit")
+            or freeze["protocol_commit"]
+        ),
         "reference_lima_sha256": artifact["sha256"],
         "binary_sha256": sha256(binary),
         "binary_version": version.stdout.strip(),
