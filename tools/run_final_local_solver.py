@@ -109,7 +109,10 @@ def main() -> int:
 
     freeze_path = Path(args.freeze_manifest).resolve()
     freeze = json.loads(freeze_path.read_text(encoding="utf-8"))
-    artifact = freeze["artifacts"]["lima_binary"]
+    artifact = (
+        freeze["artifacts"].get("lima_binary")
+        or freeze["artifacts"]["lima"]
+    )
     binary = (ROOT / artifact["path"]).resolve()
     if freeze.get("status") != "frozen" or not binary.is_file() or sha256(binary) != artifact["sha256"]:
         parser.error("frozen LIMA artifact missing, mismatched, or not frozen")

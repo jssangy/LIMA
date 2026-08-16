@@ -125,7 +125,10 @@ def main() -> int:
     freeze = json.loads(freeze_path.read_text(encoding="utf-8"))
     if freeze.get("status") != "frozen":
         parser.error("freeze manifest is not frozen")
-    artifact = freeze["artifacts"]["lima_binary"]
+    artifact = (
+        freeze["artifacts"].get("lima_binary")
+        or freeze["artifacts"]["lima"]
+    )
     binary = (ROOT / args.binary).resolve()
     if not binary.is_file():
         parser.error("instrumented LIMA binary is missing")
