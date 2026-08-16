@@ -142,9 +142,12 @@ def main() -> int:
     parser.add_argument(
         "--primal-model",
         default=str(Path.home() / "mapf-baselines/PRIMAL2/model_primal2_oneshot"))
+    parser.add_argument(
+        "--primal-stall-steps", type=int, default=0,
+        help="PRIMAL2-only consecutive no-completion step cutoff (0 = disabled)")
     args = parser.parse_args()
     concurrency = args.jobs or (8 if args.algorithm == "lima" else 2)
-    if concurrency < 1 or args.max_steps < 1:
+    if concurrency < 1 or args.max_steps < 1 or args.primal_stall_steps < 0:
         parser.error("jobs and max-steps must be positive")
     maps = [item.strip() for item in args.maps.split(",") if item.strip()]
     if not maps or not set(maps).issubset(INSTANCES):
@@ -280,6 +283,7 @@ def main() -> int:
             {
                 "mode": "batch",
                 "device": "cpu",
+                "stall_steps": args.primal_stall_steps,
                 "model": str(primal_model),
                 "model_files": primal_model_files,
                 "module_roots": [str(path) for path in primal_module_roots],
@@ -289,7 +293,12 @@ def main() -> int:
         "lima_version": lima_version.stdout.strip(), "runner_sha256": sha256(runner),
         "maps": maps, "densities": densities, "scenarios": scenarios,
         "probabilities": probabilities,
-        "termination_policy": "common discrete execution horizon; no wall-clock cutoff",
+        "termination_policy": (
+            "fixed synchronous execution horizon; PRIMAL2 additionally uses "
+            "a step-based no-completion stagnation rule; no wall-clock cutoff"
+            if args.algorithm == "primal2"
+            else "fixed synchronous execution horizon; no wall-clock cutoff"
+        ),
         "max_steps": args.max_steps, "inputs": inputs,
         "early_stop_policy": (
             "none for LIMA; for PRIMAL2, higher densities skipped after "
@@ -318,8 +327,16 @@ def main() -> int:
         parser.error(f"campaign lock already exists: {lock}")
     lock.write_text(f"pid={os.getpid()}\nstarted_utc={datetime.now(timezone.utc).isoformat()}\n")
 
+    def execution_horizon(job: dict) -> dict:
+        return {
+            "policy": "fixed_max_steps",
+            "max_steps": args.max_steps,
+        }
+
     def run(job: dict) -> tuple[str, str]:
         tag = job["tag"]
+        horizon = execution_horizon(job)
+        effective_max_steps = horizon["max_steps"]
         record_path = records / f"{tag}_{args.algorithm}.json"
         if record_path.exists() and not args.rerun:
             existing = json.loads(record_path.read_text(encoding="utf-8"))
@@ -343,12 +360,14 @@ def main() -> int:
                 "--map", str((ROOT / job["map_file"]).resolve()),
                 "--scen", str((ROOT / job["scenario_file"]).resolve()),
                 "-n", str(job["agents"]), "--seed", str(1234 + job["scenario"]),
-                "--max-steps", str(args.max_steps), "--progress-every", "0",
+                "--max-steps", str(effective_max_steps), "--progress-every", "0",
                 "--delay-prob", str(job["probability"]),
                 "--delay-seed", str(job["scenario"]),
                 "--model", str(primal_model),
                 "--inference", "batch", "--device", "cpu",
             ]
+            if args.primal_stall_steps:
+                solver.extend(["--stall-steps", str(args.primal_stall_steps)])
         command = [
             "/usr/bin/time", "-f",
             "max_rss_kb=%M\nuser_seconds=%U\nsystem_seconds=%S\nelapsed_seconds=%e",
@@ -387,6 +406,7 @@ def main() -> int:
             "runner_wall_seconds": time.time() - started,
             "result": result, "resource": parse_resource(resource_path),
             "telemetry": telemetry,
+            "execution_horizon": horizon,
             "command": command, "log": str(log_path.relative_to(ROOT)),
             "experiment_fingerprint": fingerprint,
         })
@@ -411,6 +431,7 @@ def main() -> int:
             "runner_wall_seconds": 0.0,
             "result": {},
             "resource": {},
+            "execution_horizon": execution_horizon(job),
             "command": None,
             "log": None,
             "experiment_fingerprint": fingerprint,

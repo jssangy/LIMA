@@ -98,6 +98,9 @@ def main() -> int:
         default=str(ROOT / "results/revision_final/frozen_artifacts_step_v2/lacam"))
     parser.add_argument("--jobs", type=int)
     parser.add_argument("--output-dir")
+    parser.add_argument(
+        "--reuse-records-from", action="append", default=[],
+        help="campaign directory whose solved records may be reused with provenance")
     parser.add_argument("--rerun", action="store_true")
     parser.add_argument(
         "--no-early-stop", action="store_true",
@@ -111,10 +114,13 @@ def main() -> int:
     parser.add_argument(
         "--primal-model",
         default=str(Path.home() / "mapf-baselines/PRIMAL2/model_primal2_oneshot"))
+    parser.add_argument(
+        "--primal-stall-steps", type=int, default=0,
+        help="PRIMAL2-only consecutive no-completion step cutoff (0 = disabled)")
     args = parser.parse_args()
     jobs_concurrency = args.jobs or (8 if args.algorithm == "lima" else 2)
     if (jobs_concurrency < 1 or args.max_steps < 1 or args.cbs_max_expansions < 1
-            or args.lacam_max_iterations < 1):
+            or args.lacam_max_iterations < 1 or args.primal_stall_steps < 0):
         parser.error("jobs and deterministic step/search limits must be positive")
 
     freeze_path = Path(args.freeze_manifest).resolve()
@@ -255,6 +261,16 @@ def main() -> int:
 
     output = (ROOT / (args.output_dir or
         f"results/revision_final/oneshot_{args.algorithm}_certified_step_v3")).resolve()
+    reuse_roots = [(ROOT / path).resolve() for path in args.reuse_records_from]
+    reuse_sources = []
+    for source in reuse_roots:
+        manifest = source / "MANIFEST.json"
+        if not manifest.is_file() or not (source / "records").is_dir():
+            parser.error(f"invalid reuse campaign: {source}")
+        reuse_sources.append({
+            "campaign": str(source.relative_to(ROOT)),
+            "manifest_sha256": sha256(manifest),
+        })
     records, resources, logs, metrics, instances, solutions = (
         output / "records", output / "resources", output / "logs", output / "metrics",
         output / "instances", output / "solutions")
@@ -293,7 +309,12 @@ def main() -> int:
         "runner_sha256": sha256(runner),
         "input_manifest_sha256": sha256(input_manifest_path),
         "cells": [cell["tag"] for cell in cells],
-        "termination_policy": "common discrete execution horizon; no wall-clock cutoff",
+        "termination_policy": (
+            "fixed synchronous execution horizon; PRIMAL2 additionally uses "
+            "a step-based no-completion stagnation rule; no wall-clock cutoff"
+            if args.algorithm == "primal2"
+            else "fixed synchronous execution horizon; no wall-clock cutoff"
+        ),
         "max_steps": args.max_steps,
         "cbs_max_expansions": args.cbs_max_expansions,
         "lacam_max_iterations": args.lacam_max_iterations,
@@ -303,6 +324,7 @@ def main() -> int:
             {
                 "mode": "batch",
                 "device": "cpu",
+                "stall_steps": args.primal_stall_steps,
                 "model": str(primal_model),
                 "model_files": primal_model_files,
                 "module_roots": [str(path) for path in primal_module_roots],
@@ -313,6 +335,7 @@ def main() -> int:
             "none for LIMA; higher densities skipped after 0 successes at a density"
             if not args.no_early_stop else "disabled"
         ),
+        "reuse_sources": reuse_sources,
     }
     fingerprint = hashlib.sha256(
         json.dumps(fingerprint_payload, sort_keys=True).encode("utf-8")).hexdigest()
@@ -336,12 +359,70 @@ def main() -> int:
         parser.error(f"campaign lock already exists: {lock}")
     lock.write_text(f"pid={os.getpid()}\nstarted_utc={datetime.now(timezone.utc).isoformat()}\n")
 
+    def execution_horizon(cell: dict) -> dict:
+        return {
+            "policy": "fixed_max_steps",
+            "max_steps": args.max_steps,
+        }
+
+    def materialize_reusable(cell: dict, record_path: Path) -> bool:
+        if args.rerun:
+            return False
+        horizon = execution_horizon(cell)
+        for source in reuse_roots:
+            source_path = source / "records" / record_path.name
+            if not source_path.is_file():
+                continue
+            reusable = json.loads(source_path.read_text(encoding="utf-8"))
+            result = reusable.get("result") or {}
+            try:
+                result_steps = int(result.get("steps", horizon["max_steps"] + 1))
+            except (TypeError, ValueError):
+                continue
+            if (
+                reusable.get("algorithm") == args.algorithm
+                and reusable.get("tag") == cell["tag"]
+                and reusable.get("solved") is True
+                and reusable.get("returncode") == 0
+                and result.get("completed") == f"{cell['agents']}/{cell['agents']}"
+                and result_steps <= horizon["max_steps"]
+                and reusable.get("scenario_sha256") == cell["scenario_sha256"]
+                and reusable.get("certificate_sha256") == cell["certificate_sha256"]
+            ):
+                atomic_json(record_path, {
+                    **reusable,
+                    "experiment_fingerprint": fingerprint,
+                    "execution_horizon": horizon,
+                    "reused_record": {
+                        "source": str(source_path.relative_to(ROOT)),
+                        "source_sha256": sha256(source_path),
+                        "source_experiment_fingerprint": reusable.get(
+                            "experiment_fingerprint"),
+                        "reason": (
+                            "validated solved record completed within the active "
+                            "fixed execution horizon"
+                        ),
+                    },
+                })
+                return True
+        return False
+
+    if reuse_roots and not args.rerun:
+        for cell in cells:
+            record_path = records / f"{cell['tag']}_{args.algorithm}.json"
+            if not record_path.exists():
+                materialize_reusable(cell, record_path)
+
     def run(cell: dict) -> tuple[str, str]:
         tag = cell["tag"]
+        horizon = execution_horizon(cell)
+        effective_max_steps = horizon["max_steps"]
         record_path = records / f"{tag}_{args.algorithm}.json"
         if record_path.exists() and not args.rerun:
             existing = json.loads(record_path.read_text(encoding="utf-8"))
             return tag, "skipped_solved" if existing.get("solved") else "skipped_unsolved"
+        if materialize_reusable(cell, record_path):
+            return tag, "reused_solved"
         resource_path = resources / f"{tag}_{args.algorithm}.txt"
         log_path = logs / f"{tag}_{args.algorithm}.log"
         resource_path.unlink(missing_ok=True)
@@ -406,10 +487,12 @@ def main() -> int:
                 "--map", str((ROOT / cell["map_file"]).resolve()),
                 "--scen", str((ROOT / cell["scenario_file"]).resolve()),
                 "-n", str(cell["agents"]), "--seed", str(1234 + cell["scenario"]),
-                "--max-steps", str(args.max_steps), "--progress-every", "0",
+                "--max-steps", str(effective_max_steps), "--progress-every", "0",
                 "--model", str(primal_model),
                 "--inference", "batch", "--device", "cpu",
             ]
+            if args.primal_stall_steps:
+                solver.extend(["--stall-steps", str(args.primal_stall_steps)])
         command = [
             "/usr/bin/time", "-f",
             "max_rss_kb=%M\nuser_seconds=%U\nsystem_seconds=%S\nelapsed_seconds=%e",
@@ -428,9 +511,12 @@ def main() -> int:
             text=True, start_new_session=True, env=process_env)
         stdout, stderr = proc.communicate()
         returncode = proc.returncode
-        result = parse_fields(stdout)
+        stdout_result = parse_fields(stdout)
+        result = stdout_result
         if args.algorithm in ("pibt", "lacam"):
             result = parse_key_file(solution_path)
+            if args.algorithm == "pibt" and "completed" in stdout_result:
+                result["completed"] = stdout_result["completed"]
         if args.algorithm == "primal2" and "completed" in result:
             done, total = result["completed"].split("/", 1)
             result["solved"] = "1" if done == total else "0"
@@ -459,6 +545,7 @@ def main() -> int:
             "runner_wall_seconds": time.time() - started,
             "result": result, "resource": parse_resource(resource_path),
             "telemetry": telemetry,
+            "execution_horizon": horizon,
             "command": command, "log": str(log_path.relative_to(ROOT)),
             "experiment_fingerprint": fingerprint,
         })
@@ -492,6 +579,7 @@ def main() -> int:
             "runner_wall_seconds": 0.0,
             "result": {},
             "resource": {},
+            "execution_horizon": execution_horizon(cell),
             "command": None,
             "log": None,
             "experiment_fingerprint": fingerprint,
@@ -518,7 +606,7 @@ def main() -> int:
                     successes = 0
                     for tag, status in outcomes:
                         completed += 1
-                        if status in ("solved", "skipped_solved"):
+                        if status in ("solved", "skipped_solved", "reused_solved"):
                             successes += 1
                         print(
                             f"[{completed:3d}/{len(cells):3d}] {status:15s} {tag}",

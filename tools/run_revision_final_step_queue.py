@@ -68,7 +68,7 @@ def commands() -> list[list[tuple[str, list[str]]]]:
     lifelong_inputs = str(ROOT / "results/revision_final/lifelong_inputs_v2/MANIFEST.json")
     lima = str(ROOT / "results/revision_final/frozen_artifacts_step_v4_optimized/lima")
     primal_python = str(Path.home() / "miniconda3/envs/primal2/bin/python")
-    primal_script = str(Path.home() / "mapf-baselines/PRIMAL2-opt/run_our_instances.py")
+    primal_script = str(Path.home() / "mapf-baselines/PRIMAL2-opt/run_our_instances_live.py")
     primal_model = str(Path.home() / "mapf-baselines/PRIMAL2/model_primal2_oneshot")
     return [
         [
@@ -79,13 +79,17 @@ def commands() -> list[list[tuple[str, list[str]]]]:
                 "--output-dir", str(ROOT / "results/revision_final/oneshot_lima_certified_step_v4_optimized"),
             ]),
             ("oneshot_primal2", [
-                python, oneshot, "--algorithm", "primal2", "--jobs", "5",
+                python, oneshot, "--algorithm", "primal2", "--jobs", "4",
                 "--input-manifest", certified, "--freeze-manifest", freeze,
                 "--lima-binary", lima,
                 "--primal-python", primal_python,
                 "--primal-script", primal_script,
                 "--primal-model", primal_model,
-                "--output-dir", str(ROOT / "results/revision_final/oneshot_primal2_certified_step_v4_optimized_r1"),
+                "--max-steps", "5000",
+                "--primal-stall-steps", "256",
+                "--reuse-records-from", str(ROOT / "results/revision_final/oneshot_primal2_certified_step_v4_optimized_r1"),
+                "--reuse-records-from", str(ROOT / "results/revision_final/oneshot_primal2_prefetch_wh10_v4r1"),
+                "--output-dir", str(ROOT / "results/revision_final/oneshot_primal2_certified_step_v6_common5000_stall256"),
             ]),
         ],
         [
@@ -100,7 +104,9 @@ def commands() -> list[list[tuple[str, list[str]]]]:
                 "--primal-python", primal_python,
                 "--primal-script", primal_script,
                 "--primal-model", primal_model,
-                "--output-dir", str(ROOT / "results/revision_final/stochastic_primal2_step_v4_optimized_r1"),
+                "--max-steps", "5000",
+                "--primal-stall-steps", "256",
+                "--output-dir", str(ROOT / "results/revision_final/stochastic_primal2_step_v6_common5000_stall256"),
             ]),
         ],
         [
