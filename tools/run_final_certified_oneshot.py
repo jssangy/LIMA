@@ -131,6 +131,7 @@ def main() -> int:
     primal_python = Path(args.primal_python).resolve()
     primal_script = Path(args.primal_script).resolve()
     primal_model = Path(args.primal_model).resolve()
+    primal_module_roots = [primal_script.parent, primal_model.parent]
     executables = {
         "lima": [lima], "cbs": [cbs], "lacam": [lacam], "pibt": [pibt],
         "primal2": [primal_python, primal_script]
@@ -304,6 +305,7 @@ def main() -> int:
                 "device": "cpu",
                 "model": str(primal_model),
                 "model_files": primal_model_files,
+                "module_roots": [str(path) for path in primal_module_roots],
             }
             if args.algorithm == "primal2" else None
         ),
@@ -414,9 +416,16 @@ def main() -> int:
             "-o", str(resource_path), *solver,
         ]
         started = time.time()
+        process_env = None
+        if args.algorithm == "primal2":
+            process_env = os.environ.copy()
+            module_paths = [str(path) for path in primal_module_roots]
+            if process_env.get("PYTHONPATH"):
+                module_paths.append(process_env["PYTHONPATH"])
+            process_env["PYTHONPATH"] = os.pathsep.join(module_paths)
         proc = subprocess.Popen(
             command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, start_new_session=True)
+            text=True, start_new_session=True, env=process_env)
         stdout, stderr = proc.communicate()
         returncode = proc.returncode
         result = parse_fields(stdout)

@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ARTIFACT_MANIFEST = (
     ROOT / "results/revision_final/frozen_artifacts_step_v4_optimized/MANIFEST.json"
 )
-QUEUE_ROOT = ROOT / "results/revision_final/queue_step_v4_optimized"
+QUEUE_ROOT = ROOT / "results/revision_final/queue_step_v4_optimized_r1"
 
 
 def sha256(path: Path) -> str:
@@ -85,7 +85,7 @@ def commands() -> list[list[tuple[str, list[str]]]]:
                 "--primal-python", primal_python,
                 "--primal-script", primal_script,
                 "--primal-model", primal_model,
-                "--output-dir", str(ROOT / "results/revision_final/oneshot_primal2_certified_step_v4_optimized"),
+                "--output-dir", str(ROOT / "results/revision_final/oneshot_primal2_certified_step_v4_optimized_r1"),
             ]),
         ],
         [
@@ -100,7 +100,7 @@ def commands() -> list[list[tuple[str, list[str]]]]:
                 "--primal-python", primal_python,
                 "--primal-script", primal_script,
                 "--primal-model", primal_model,
-                "--output-dir", str(ROOT / "results/revision_final/stochastic_primal2_step_v4_optimized"),
+                "--output-dir", str(ROOT / "results/revision_final/stochastic_primal2_step_v4_optimized_r1"),
             ]),
         ],
         [
