@@ -108,6 +108,9 @@ def main() -> int:
         "--primal-python", default=str(Path.home() / "miniconda3/envs/primal2/bin/python"))
     parser.add_argument(
         "--primal-script", default=str(Path.home() / "mapf-baselines/PRIMAL2/run_our_instances.py"))
+    parser.add_argument(
+        "--primal-model",
+        default=str(Path.home() / "mapf-baselines/PRIMAL2/model_primal2_oneshot"))
     args = parser.parse_args()
     jobs_concurrency = args.jobs or (8 if args.algorithm == "lima" else 2)
     if (jobs_concurrency < 1 or args.max_steps < 1 or args.cbs_max_expansions < 1
@@ -127,6 +130,7 @@ def main() -> int:
     pibt = (pibt_repo / args.pibt_binary).resolve()
     primal_python = Path(args.primal_python).resolve()
     primal_script = Path(args.primal_script).resolve()
+    primal_model = Path(args.primal_model).resolve()
     executables = {
         "lima": [lima], "cbs": [cbs], "lacam": [lacam], "pibt": [pibt],
         "primal2": [primal_python, primal_script]
@@ -134,6 +138,19 @@ def main() -> int:
     for path in executables:
         if not path.is_file():
             parser.error(f"missing executable or adapter: {path}")
+    primal_model_files = None
+    if args.algorithm == "primal2":
+        if not primal_model.is_dir():
+            parser.error(f"missing PRIMAL2 checkpoint directory: {primal_model}")
+        checkpoint_files = sorted(
+            path for path in primal_model.iterdir()
+            if path.name == "checkpoint" or path.name.startswith("model-97500.cptk")
+        )
+        if not checkpoint_files:
+            parser.error(f"missing PRIMAL2 checkpoint files: {primal_model}")
+        primal_model_files = {
+            path.name: sha256(path) for path in checkpoint_files if path.is_file()
+        }
     lima_version = subprocess.run(
         [str(lima), "--version"], cwd=ROOT,
         capture_output=True, text=True, check=False)
@@ -281,6 +298,15 @@ def main() -> int:
         "lacam_max_iterations": args.lacam_max_iterations,
         "lacam_provenance": lacam_provenance,
         "pibt_provenance": pibt_provenance,
+        "primal2_inference": (
+            {
+                "mode": "batch",
+                "device": "cpu",
+                "model": str(primal_model),
+                "model_files": primal_model_files,
+            }
+            if args.algorithm == "primal2" else None
+        ),
         "early_stop_policy": (
             "none for LIMA; higher densities skipped after 0 successes at a density"
             if not args.no_early_stop else "disabled"
@@ -379,6 +405,8 @@ def main() -> int:
                 "--scen", str((ROOT / cell["scenario_file"]).resolve()),
                 "-n", str(cell["agents"]), "--seed", str(1234 + cell["scenario"]),
                 "--max-steps", str(args.max_steps), "--progress-every", "0",
+                "--model", str(primal_model),
+                "--inference", "batch", "--device", "cpu",
             ]
         command = [
             "/usr/bin/time", "-f",
