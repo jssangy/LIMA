@@ -176,13 +176,25 @@ int disorder_score(const State& state) {
 // Admissible BF/TT lower bounds adapted to the relaxed overflow-parking goal,
 // identical to the IDA*/A* versions.  A beam layer has a common g value, so
 // ranking by h is equivalent to ranking by f=g+h inside that layer.
-int lower_bound2(const State& state, const bool with_pairs) {
+struct Evaluation {
+    int score{};
+    bool solved{};
+};
+
+Evaluation lower_bound2(const State& state, const bool with_pairs) {
     std::array<int, kMaxStacks> count{};
-    for (int s = 0; s < state.count; ++s)
-        for (int p = 0; p < state.size[s]; ++p) ++count[state.cells[s][p]];
+    std::array<std::array<int, kMaxStacks>, kMaxStacks> cross{};
+    for (int s = 0; s < state.count; ++s) {
+        for (int p = 0; p < state.size[s]; ++p) {
+            const int type = state.cells[s][p];
+            ++count[type];
+            if (with_pairs && type != s) ++cross[s][type];
+        }
+    }
 
     std::array<int, kMaxStacks> home_run{};
     std::array<int, kMaxStacks> prefix{};
+    bool is_solved = true;
     for (int s = 0; s < state.count; ++s) {
         int p = 0;
         while (p < state.size[s] && state.cells[s][p] == s) ++p;
@@ -193,6 +205,12 @@ int lower_bound2(const State& state, const bool with_pairs) {
                    && (state.overflow_mask & (1U << state.cells[s][p])) != 0) ++p;
         }
         prefix[s] = p;
+        if (overflow) {
+            if (state.size[s] != state.capacity[s] || home_run[s] != state.size[s])
+                is_solved = false;
+        } else if (prefix[s] != state.size[s]) {
+            is_solved = false;
+        }
     }
 
     int bad = 0;
@@ -214,12 +232,6 @@ int lower_bound2(const State& state, const bool with_pairs) {
 
     int pair_extra = 0;
     if (with_pairs) {
-        std::array<std::array<int, kMaxStacks>, kMaxStacks> cross{};
-        for (int s = 0; s < state.count; ++s)
-            for (int p = 0; p < state.size[s]; ++p) {
-                const int type = state.cells[s][p];
-                if (type != s) ++cross[s][type];
-            }
         for (int u = 0; u < state.count; ++u) {
             if ((state.overflow_mask & (1U << u)) != 0) continue;
             for (int t = u + 1; t < state.count; ++t) {
@@ -228,13 +240,13 @@ int lower_bound2(const State& state, const bool with_pairs) {
             }
         }
     }
-    return (bad + extra + pair_extra) * 2;
+    return {(bad + extra + pair_extra) * 2, is_solved};
 }
 
-int evaluate(const State& state, const BeamScoreMode mode) {
+Evaluation evaluate(const State& state, const BeamScoreMode mode) {
     if (mode == BeamScoreMode::kBf) return lower_bound2(state, false);
     if (mode == BeamScoreMode::kTt) return lower_bound2(state, true);
-    return disorder_score(state);
+    return {disorder_score(state), solved(state)};
 }
 
 void replace_hash(State& state, const int stack, const int position,
@@ -380,19 +392,19 @@ BeamResult run_beam(const std::vector<std::vector<int>>& stacks,
                     const std::uint8_t rank = move_rank(node.state, src, dst);
                     State next = node.state;
                     apply(next, src, dst);
-                    if (solved(next)) {
+                    if (const auto seen = expanded_depth.find(next.hash);
+                        seen != expanded_depth.end() && seen->second <= searched_depth + 1) continue;
+
+                    const Evaluation evaluation = evaluate(next, options.score_mode);
+                    if (evaluation.solved) {
                         paths.push_back({node.path, {src, dst}});
                         result.moves = reconstruct(paths, paths.size() - 1);
                         result.depth = searched_depth + 1;
                         result.outcome = "solved";
                         return result;
                     }
-                    if (const auto seen = expanded_depth.find(next.hash);
-                        seen != expanded_depth.end() && seen->second <= searched_depth + 1) continue;
-
                     Candidate candidate{
-                        std::move(next), node.path, {src, dst}, 0, rank};
-                    candidate.score = evaluate(candidate.state, options.score_mode);
+                        std::move(next), node.path, {src, dst}, evaluation.score, rank};
                     const auto [found, inserted] = candidate_index.emplace(
                         candidate.state.hash, candidates.size());
                     if (inserted) candidates.push_back(std::move(candidate));
