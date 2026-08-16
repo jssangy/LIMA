@@ -175,15 +175,15 @@ def main() -> int:
 
         bonus_commands = {
             "mapf_lns2": [
-                python, str(ROOT / "tools/run_bonus_mapf_lns2.py"), "--jobs", "4",
+                python, str(ROOT / "tools/run_bonus_mapf_lns2.py"), "--jobs", "5",
                 "--max-steps", "5000",
                 "--output-dir", "results/revision_final/bonus_mapf_lns2_common5000_v2"],
             "pibt_lifelong": [
-                python, str(ROOT / "tools/run_bonus_lifelong_pibt.py"), "--jobs", "4",
+                python, str(ROOT / "tools/run_bonus_lifelong_pibt.py"), "--jobs", "5",
                 "--output-dir", "results/revision_final/bonus_lifelong_pibt_v1"],
             "pibt_agent_completion": [
                 python, str(ROOT / "tools/run_final_certified_oneshot.py"),
-                "--algorithm", "pibt", "--jobs", "4", "--no-early-stop",
+                "--algorithm", "pibt", "--jobs", "5", "--no-early-stop",
                 "--max-steps", "5000",
                 "--freeze-manifest",
                 "results/revision_final/frozen_artifacts_step_v4_optimized_r2/MANIFEST.json",

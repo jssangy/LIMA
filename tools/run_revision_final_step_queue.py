@@ -73,13 +73,13 @@ def commands() -> list[list[tuple[str, list[str]]]]:
     return [
         [
             ("oneshot_lima", [
-                python, oneshot, "--algorithm", "lima", "--jobs", "11",
+                python, oneshot, "--algorithm", "lima", "--jobs", "12",
                 "--input-manifest", certified, "--freeze-manifest", freeze,
                 "--lima-binary", lima,
                 "--output-dir", str(ROOT / "results/revision_final/oneshot_lima_certified_step_v4_optimized"),
             ]),
             ("oneshot_primal2", [
-                python, oneshot, "--algorithm", "primal2", "--jobs", "4",
+                python, oneshot, "--algorithm", "primal2", "--jobs", "5",
                 "--input-manifest", certified, "--freeze-manifest", freeze,
                 "--lima-binary", lima,
                 "--primal-python", primal_python,
@@ -89,12 +89,13 @@ def commands() -> list[list[tuple[str, list[str]]]]:
                 "--primal-stall-steps", "256",
                 "--reuse-records-from", str(ROOT / "results/revision_final/oneshot_primal2_certified_step_v4_optimized_r1"),
                 "--reuse-records-from", str(ROOT / "results/revision_final/oneshot_primal2_prefetch_wh10_v4r1"),
+                "--reuse-records-from", str(ROOT / "results/revision_final/oneshot_primal2_prefetch_wh20_v6_common5000"),
                 "--output-dir", str(ROOT / "results/revision_final/oneshot_primal2_certified_step_v6_common5000_stall256"),
             ]),
         ],
         [
             ("stochastic_lima", [
-                python, stochastic, "--algorithm", "lima", "--jobs", "11",
+                python, stochastic, "--algorithm", "lima", "--jobs", "12",
                 "--input-manifest", certified, "--lima", lima,
                 "--output-dir", str(ROOT / "results/revision_final/stochastic_lima_step_v4_optimized"),
             ]),
