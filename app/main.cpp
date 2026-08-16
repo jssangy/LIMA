@@ -23,7 +23,7 @@
 
 namespace {
 
-constexpr int kLimaDefaultProfileVersion = 1;
+constexpr int kLimaDefaultProfileVersion = 2;
 
 enum class RunMode { Realtime, Solve, Replay, Debug, Bench };
 
@@ -65,13 +65,14 @@ void apply_profile(Options& options, const std::string_view name) {
     options.planner = lima::PlannerKind::Bfs;
     options.sim.direct_routing = false;
 
-    // Admission Controller: Gate C winner (AIMD-25).
+    // Admission Controller: acknowledged AIMD admission window.  Gate-C
+    // development cells selected beta=0.25 and additive recovery=0.50.
     options.sim.isolation = lima::IsolationConfig{};
     options.sim.isolation.formula = lima::CapacityFormula::SumMinusMax;
     options.sim.admission = lima::AdmissionConfig{};
     options.sim.admission.policy = lima::AdmissionPolicy::Aimd;
     options.sim.admission.parameter = 0.25;
-    options.sim.admission.secondary = 0.25;
+    options.sim.admission.secondary = 0.50;
     options.sim.gate_resync = true;
 
     // Marshalling Solver: frozen beam primary plus uncut exact fallback.

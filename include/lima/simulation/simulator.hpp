@@ -242,6 +242,13 @@ private:
     std::vector<std::size_t> admission_requests_;
     std::vector<std::array<std::size_t, 4>> admission_arm_requests_;
     std::vector<std::array<std::uint32_t, 4>> admission_arm_max_wait_;
+    // AIMD controls acknowledged admission work in flight, independently of
+    // the physical intersection capacity.  Grants persist across execution
+    // delays until entry is acknowledged or the request is withdrawn.
+    std::vector<IntersectionId> admission_grant_target_;
+    std::vector<std::vector<AgentId>> admission_request_agents_;
+    std::vector<std::size_t> admission_outstanding_;
+    std::vector<std::size_t> admission_acked_;
     std::vector<std::array<double, 4>> admission_deficit_;
     std::vector<std::uint32_t> admission_rr_cursor_;
     std::vector<std::uint32_t> admission_congestion_age_;
@@ -279,7 +286,7 @@ private:
     [[nodiscard]] bool admission_policy_blocks(CellId current, IntersectionId entering,
                                                 std::size_t direction) const;
     bool block_intersection(CellId current, CellId next, bool normal_only) const;
-    void update_available_on_move(CellId current, CellId next);
+    void update_available_on_move(AgentId agent, CellId current, CellId next);
     void insert_scheduled_path(Agent& agent, const ScheduledPath& scheduled, IntersectionId intersection);
     void move_agent(Agent& agent);
     void count_zone_entries(AgentId agent, CellId current, CellId next);
