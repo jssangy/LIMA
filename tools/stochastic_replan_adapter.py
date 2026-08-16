@@ -286,6 +286,28 @@ def emit(payload: dict[str, object]) -> None:
     print(" ".join(f"{key}={value}" for key, value in payload.items()), flush=True)
 
 
+def route_suffixes(
+    plan: list[list[tuple[int, int]]], plan_ids: list[int], start_index: int,
+    active_ids: list[int], goals: list[tuple[int, int]],
+) -> dict[int, tuple[tuple[int, int], ...]]:
+    """Return future cached-route suffixes, trimmed at first goal arrival."""
+    index_by_id = {agent_id: index for index, agent_id in enumerate(plan_ids)}
+    suffixes: dict[int, tuple[tuple[int, int], ...]] = {}
+    for agent_id, goal in zip(active_ids, goals):
+        local_index = index_by_id.get(agent_id)
+        if local_index is None:
+            suffixes[agent_id] = ()
+            continue
+        cells: list[tuple[int, int]] = []
+        for frame in plan[start_index:]:
+            cell = frame[local_index]
+            cells.append(cell)
+            if cell == goal:
+                break
+        suffixes[agent_id] = tuple(cells)
+    return suffixes
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--algorithm", required=True, choices=("pibt", "lacam"))
@@ -320,7 +342,10 @@ def main() -> int:
     delayed_moves = 0
     interventions = 0
     deviation_steps = 0
-    global_messages = 0
+    task_upload_messages = 0
+    state_upload_messages = 0
+    route_delivery_messages = 0
+    route_waypoint_payload = 0
     decision_hash = hashlib.sha256()
     trace: list[dict[str, object]] = []
     status = "step_limit"
@@ -334,7 +359,20 @@ def main() -> int:
         steps = 0
         while steps < args.max_steps and active_ids:
             if need_replan:
-                global_messages += 2 * len(active_ids)
+                initial_plan = plan is None
+                if initial_plan:
+                    task_upload_messages += len(active_ids)
+                else:
+                    # A solver call necessarily receives the current state, even
+                    # if it later returns an unchanged route or fails.
+                    state_upload_messages += len(active_ids)
+                old_suffixes = (
+                    {}
+                    if initial_plan else route_suffixes(
+                        plan, plan_ids, min(plan_index + 2, len(plan)),
+                        active_ids, active_goals,
+                    )
+                )
                 plan, plan_status = planner.plan(
                     positions, active_goals, args.max_steps - steps
                 )
@@ -343,6 +381,17 @@ def main() -> int:
                     break
                 plan_ids = list(active_ids)
                 plan_index = 0
+                new_suffixes = route_suffixes(
+                    plan, plan_ids, 1, active_ids, active_goals
+                )
+                changed_ids = [
+                    agent_id for agent_id in active_ids
+                    if initial_plan or new_suffixes[agent_id] != old_suffixes.get(agent_id)
+                ]
+                route_delivery_messages += len(changed_ids)
+                route_waypoint_payload += sum(
+                    len(new_suffixes[agent_id]) for agent_id in changed_ids
+                )
                 need_replan = False
 
             if plan_index + 1 >= len(plan):
@@ -422,7 +471,15 @@ def main() -> int:
             "delayed_moves": delayed_moves,
             "deviation_steps": deviation_steps,
             "safe_executor_interventions": interventions,
-            "communication_events": global_messages,
+            "communication_events": (
+                task_upload_messages + state_upload_messages
+                + route_delivery_messages
+            ),
+            "communication_task_uploads": task_upload_messages,
+            "communication_state_uploads": state_upload_messages,
+            "communication_route_deliveries": route_delivery_messages,
+            "communication_route_waypoints": route_waypoint_payload,
+            "communication_cached_route_step_events": 0,
             "communication_scope": "global",
             "recovery_latency_steps": 1 if deviation_steps else 0,
             "vertex_conflicts": 0,

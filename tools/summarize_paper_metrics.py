@@ -25,6 +25,11 @@ DEFAULT_CAMPAIGNS = {
     "pibt": ROOT / "results/revision_final/oneshot_pibt_certified_step_v3",
     "primal2": ROOT / "results/revision_final/oneshot_primal2_certified_step_v6_common5000_stall256",
 }
+DEFAULT_TELEMETRY = {
+    "cbs": ROOT / "results/revision_final/oneshot_cbs_telemetry_backfill_v1",
+    "lacam": ROOT / "results/revision_final/oneshot_lacam_telemetry_backfill_v2",
+    "pibt": ROOT / "results/revision_final/oneshot_pibt_telemetry_backfill_v2",
+}
 
 
 def numeric(value) -> float | None:
@@ -107,9 +112,20 @@ def lima_metrics_dir(campaign: Path, record: dict) -> Path:
     return metrics_arg if metrics_arg.is_absolute() else ROOT / metrics_arg
 
 
+def overlay_record(root: Path | None, record: dict, algorithm: str) -> dict:
+    if root is None:
+        return {}
+    path = root / "records" / f"{record['tag']}_{algorithm}_telemetry.json"
+    if not path.is_file():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def record_metrics(
-    algorithm: str, campaign: Path, record: dict, primary_horizon: int
+    algorithm: str, campaign: Path, record: dict, primary_horizon: int,
+    overlay: dict | None = None,
 ) -> dict:
+    overlay = overlay or {}
     result = record.get("result") or record.get("summary") or {}
     extended_solved = solved(record)
     span = numeric(result.get("makespan"))
@@ -168,10 +184,122 @@ def record_metrics(
             ]
             censored_completion_mean = statistics.fmean(censored)
 
+    overlay_trajectory = overlay.get("trajectory") or {}
+    if overlay_trajectory.get("trajectory_observed"):
+        parsed_overlay_completed = numeric(overlay_trajectory.get("completed_agents"))
+        completed_agents = (
+            int(parsed_overlay_completed) if parsed_overlay_completed is not None else None
+        )
+        completion_summary = overlay_trajectory.get("completion_steps") or {}
+        if completed_agents:
+            soc = numeric(overlay_trajectory.get("observed_soc"))
+            completion_mean = numeric(completion_summary.get("mean"))
+            completion_p50 = numeric(completion_summary.get("p50"))
+            completion_p90 = numeric(completion_summary.get("p90"))
+            completion_p99 = numeric(completion_summary.get("p99"))
+            completion_max = numeric(completion_summary.get("max"))
+
     resource = record.get("resource") or {}
     telemetry = record.get("telemetry") or {}
     steps = numeric(result.get("steps")) or span
     event_count = numeric(nested(telemetry, "communication", "event_count"))
+    common_comm = overlay.get("communication") or {}
+    common_comm_counts = common_comm.get("event_count_by_type") or {}
+    common_comm_payload = common_comm.get("payload_by_type") or {}
+    local_comm_events = event_count if algorithm == "lima" else 0.0
+    if algorithm == "lima":
+        agent_rows = read_csv(lima_metrics_dir(campaign, record) / "agents.csv")
+        route_waypoints = sum(
+            max(0, int(float(row.get("initial_route_len", 0))) - 1)
+            for row in agent_rows
+        )
+        common_comm_counts = {
+            "agent_agent_direct": 0,
+            "agent_global_solver_task_upload": agents,
+            "agent_global_solver_state_upload": 0,
+            "global_solver_agent_route_delivery": agents,
+            "global_solver_agent_action_delivery": 0,
+            "agent_intersection_acquisition": int(nested(
+                telemetry, "communication", "event_count_by_type", "acquisition") or 0),
+            "intersection_agent_broadcast": int(nested(
+                telemetry, "communication", "event_count_by_type", "broadcast") or 0),
+            "intersection_intersection_gate_signal": int(nested(
+                telemetry, "communication", "event_count_by_type", "gate_signal") or 0),
+        }
+        common_comm_payload = {
+            "task_records": agents,
+            "state_records": common_comm_counts["agent_intersection_acquisition"],
+            "route_waypoints": route_waypoints,
+            "actions_or_local_decisions": common_comm_counts["intersection_agent_broadcast"],
+            "gate_records": common_comm_counts["intersection_intersection_gate_signal"],
+        }
+        common_comm = {
+            "scope": "local+global-initialization",
+            "event_count": sum(common_comm_counts.values()),
+            "payload_units": sum(common_comm_payload.values()),
+            "joint_participants": {"mean": agents, "max": agents},
+        }
+    elif not common_comm and record.get("command") is not None:
+        # Exact scalar-only communication accounting.  Path backfill later adds
+        # completion tails, moves/waits, and per-step PIBT participant tails.
+        if algorithm in ("cbs", "lacam"):
+            deliveries = agents if is_solved else 0
+            route_waypoints = int(soc) if soc is not None else 0
+            common_comm_counts = {
+                "agent_agent_direct": 0,
+                "agent_global_solver_task_upload": agents,
+                "agent_global_solver_state_upload": 0,
+                "global_solver_agent_route_delivery": deliveries,
+                "global_solver_agent_action_delivery": 0,
+            }
+            common_comm_payload = {
+                "task_records": agents, "state_records": 0,
+                "route_waypoints": route_waypoints, "actions": 0,
+            }
+            common_comm = {
+                "scope": "global", "event_count": sum(common_comm_counts.values()),
+                "payload_units": sum(common_comm_payload.values()),
+                "joint_participants": {"mean": agents, "max": agents},
+            }
+        elif algorithm == "pibt" and soc is not None:
+            common_comm_counts = {
+                "agent_agent_direct": 0,
+                "agent_global_solver_task_upload": agents,
+                "agent_global_solver_state_upload": 0,
+                "global_solver_agent_route_delivery": agents,
+                "global_solver_agent_action_delivery": 0,
+            }
+            common_comm_payload = {
+                "task_records": agents, "state_records": 0,
+                "route_waypoints": int(soc), "actions": 0,
+            }
+            common_comm = {
+                "scope": "global", "event_count": sum(common_comm_counts.values()),
+                "payload_units": sum(common_comm_payload.values()),
+                "joint_participants": {"mean": None, "max": agents},
+            }
+        elif algorithm == "primal2":
+            # The current scalar-only adapter proves the message count for a
+            # batch trajectory install, but does not retain SOC/waypoint tails.
+            deliveries = agents if is_solved else 0
+            common_comm_counts = {
+                "agent_agent_direct": 0,
+                "agent_global_solver_task_upload": agents,
+                "agent_global_solver_state_upload": 0,
+                "global_solver_agent_route_delivery": deliveries,
+                "global_solver_agent_action_delivery": 0,
+            }
+            common_comm = {
+                "scope": "global",
+                "event_count": sum(common_comm_counts.values()),
+                "payload_units": None,
+                "joint_participants": {"mean": agents, "max": agents},
+                "payload_gap": "scalar adapter did not retain route waypoint count",
+            }
+    common_event_count = numeric(common_comm.get("event_count"))
+    common_payload_units = numeric(common_comm.get("payload_units"))
+    overlay_detour = overlay.get("detour") or {}
+    overlay_path = overlay_trajectory.get("path_conformity") or {}
     return {
         "algorithm": algorithm,
         "map": record["map"], "target": record["target"],
@@ -198,9 +326,23 @@ def record_metrics(
             completed_agents / agents if completed_agents is not None and agents else None),
         "cpu_seconds": (numeric(resource.get("user_seconds")) or 0.0) + (numeric(resource.get("system_seconds")) or 0.0),
         "max_rss_kb": numeric(resource.get("max_rss_kb")),
-        "comm_events": event_count,
+        "comm_events": common_event_count,
+        "comm_local_events": local_comm_events,
+        "comm_global_or_server_events": (
+            common_event_count - local_comm_events
+            if common_event_count is not None and local_comm_events is not None else None),
+        "comm_payload_units": common_payload_units,
+        "comm_scope": common_comm.get("scope"),
+        "comm_joint_participants_mean": numeric(nested(common_comm, "joint_participants", "mean")),
+        "comm_joint_participants_max": numeric(nested(common_comm, "joint_participants", "max")),
+        "comm_agent_agent_direct": numeric(common_comm_counts.get("agent_agent_direct")),
+        "comm_agent_solver_task_upload": numeric(common_comm_counts.get("agent_global_solver_task_upload")),
+        "comm_agent_solver_state_upload": numeric(common_comm_counts.get("agent_global_solver_state_upload")),
+        "comm_solver_agent_route_delivery": numeric(common_comm_counts.get("global_solver_agent_route_delivery")),
+        "comm_solver_agent_action_delivery": numeric(common_comm_counts.get("global_solver_agent_action_delivery")),
         "comm_events_per_agent_step": (
-            event_count / (agents * steps) if event_count is not None and agents and steps else None),
+            common_event_count / (agents * steps)
+            if common_event_count is not None and agents and steps else None),
         "comm_distance_min": numeric(nested(telemetry, "communication", "distance_cells", "min")),
         "comm_distance_mean": numeric(nested(telemetry, "communication", "distance_cells", "mean")),
         "comm_distance_max": numeric(nested(telemetry, "communication", "distance_cells", "max")),
@@ -214,13 +356,28 @@ def record_metrics(
         "execution_over_reference_mean": numeric(nested(telemetry, "detour", "all_agents", "execution_over_reference", "mean")),
         "execution_over_reference_p90": numeric(nested(telemetry, "detour", "all_agents", "execution_over_reference", "p90")),
         "extra_moves_mean": numeric(nested(telemetry, "detour", "all_agents", "extra_moves", "mean")),
+        "common_moves_total": numeric(overlay_trajectory.get("moves_total")),
+        "common_waits_total": numeric(overlay_trajectory.get("waits_total")),
+        "shortest_path_moves_sum": numeric(overlay_detour.get("shortest_path_moves_sum")),
+        "shortest_path_extra_moves_sum": numeric(overlay_detour.get("extra_moves_sum")),
+        "shortest_path_movement_stretch": numeric(overlay_detour.get("movement_stretch_aggregate")),
         "recirculation_events": numeric(nested(telemetry, "detour", "recirculation_loop_cells", "count")),
-        "vertex_conflicts": numeric(nested(telemetry, "path_conformity", "vertex_conflicts")),
-        "edge_conflicts": numeric(nested(telemetry, "path_conformity", "edge_conflicts")),
-        "invalid_moves": numeric(nested(telemetry, "path_conformity", "invalid_moves")),
+        "vertex_conflicts": numeric(
+            overlay_path.get("vertex_conflicts")
+            if overlay_path else nested(telemetry, "path_conformity", "vertex_conflicts")),
+        "edge_conflicts": numeric(
+            overlay_path.get("edge_conflicts")
+            if overlay_path else nested(telemetry, "path_conformity", "edge_conflicts")),
+        "invalid_moves": numeric(
+            overlay_path.get("invalid_moves")
+            if overlay_path else nested(telemetry, "path_conformity", "invalid_moves")),
         "rejoin_failures": numeric(nested(telemetry, "path_conformity", "rejoin_failures")),
         "goal_preservation_failures": numeric(nested(telemetry, "path_conformity", "goal_preservation_failures")),
-        "online_validation_ok": nested(telemetry, "path_conformity", "online_validation_ok"),
+        "online_validation_ok": (
+            overlay_path.get("online_validation_ok")
+            if overlay_path else nested(telemetry, "path_conformity", "online_validation_ok")),
+        "trajectory_backfill": bool(overlay_trajectory.get("trajectory_observed")),
+        "trajectory_scalar_equivalence": nested(overlay, "scalar_equivalence", "all_match"),
     }
 
 
@@ -237,6 +394,9 @@ def main() -> int:
     parser.add_argument(
         "--output-dir", default="results/revision_final/paper_metrics_v1")
     parser.add_argument(
+        "--telemetry", action="append", default=[], metavar="NAME=PATH",
+        help="repeatable compact telemetry overlay (for example lacam=PATH)")
+    parser.add_argument(
         "--primary-execution-horizon", type=int, default=5000,
         help="common synchronous-step horizon for direct comparisons")
     args = parser.parse_args()
@@ -248,6 +408,12 @@ def main() -> int:
             parser.error("--campaign must be NAME=PATH")
         name, path = value.split("=", 1)
         campaigns[name] = Path(path).resolve()
+    telemetry_roots = dict(DEFAULT_TELEMETRY)
+    for value in args.telemetry:
+        if "=" not in value:
+            parser.error("--telemetry must be NAME=PATH")
+        name, path = value.split("=", 1)
+        telemetry_roots[name] = Path(path).resolve()
     output = (ROOT / args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
 
@@ -261,7 +427,8 @@ def main() -> int:
         record_counts[algorithm] = len(records)
         rows.extend(
             record_metrics(
-                algorithm, campaign, record, args.primary_execution_horizon
+                algorithm, campaign, record, args.primary_execution_horizon,
+                overlay_record(telemetry_roots.get(algorithm), record, algorithm),
             )
             for record in records
         )
@@ -374,6 +541,29 @@ def main() -> int:
         {key: row.get(key) for key in architecture_fields} for row in lima_rows
     ], architecture_fields)
 
+    common_fields = [
+        "algorithm", "map", "target", "scenario", "agents", "solved",
+        "completed_agents", "agent_completion_ratio", "makespan", "soc",
+        "completion_mean", "completion_p50", "completion_p90", "completion_p99",
+        "completion_max", "common_moves_total", "common_waits_total",
+        "shortest_path_moves_sum", "shortest_path_extra_moves_sum",
+        "shortest_path_movement_stretch", "comm_events", "comm_local_events",
+        "comm_global_or_server_events", "comm_payload_units", "comm_scope",
+        "comm_joint_participants_mean", "comm_joint_participants_max",
+        "comm_agent_agent_direct", "comm_agent_solver_task_upload",
+        "comm_agent_solver_state_upload", "comm_solver_agent_route_delivery",
+        "comm_solver_agent_action_delivery", "comm_events_per_agent_step",
+        "comm_distance_min", "comm_distance_mean", "comm_distance_max",
+        "comm_distance_variance", "comm_distance_p99", "comm_hops_min",
+        "comm_hops_mean", "comm_hops_max", "comm_hops_variance", "comm_hops_p99",
+        "vertex_conflicts", "edge_conflicts", "invalid_moves", "online_validation_ok",
+        "cpu_seconds", "max_rss_kb", "trajectory_backfill",
+        "trajectory_scalar_equivalence",
+    ]
+    write_csv(output / "all_methods_common_metrics.csv", [
+        {key: row.get(key) for key in common_fields} for row in rows
+    ], common_fields)
+
     all_algorithms = sorted(campaigns)
     all_common = []
     lima_cells = [key[1:] for key in by_method_cell if key[0] == "lima"]
@@ -394,8 +584,9 @@ def main() -> int:
         "- Agent completion ratio is completed/total at the execution budget and is reported only when the executable method records that count. Early-stopped cells and conflict-bearing CBS/LaCAM search nodes are not imputed as zero.",
         "- An all-method common-success table is meaningful only where every method solved the same instance; "
         f"the current partial data contain {len(all_common)} such instances.",
-        "- LIMA completion p50/p90/p99 comes from per-agent completion traces. CBS, LaCAM, and PIBT expose SOC, so their mean completion time is available; their current scalar outputs do not expose completion tails. PRIMAL2 currently exposes makespan only.",
-        "- Communication locality, count, detour, recirculation, path conformance, CPU, and RSS are exported separately and are not mixed into the primary success claim.",
+        "- Completion tails, moves/waits, shortest-path movement stretch, and path validation are loaded from provenance-linked trajectory backfills when present; scalar-only records are never imputed.",
+        "- Communication includes both robot-peer traffic and data exchanged with a server/solver/controller. Message events and payload units are separate; an off-map global server is reported as global scope rather than assigned a fabricated grid distance.",
+        "- Common communication, detour, path conformance, CPU, and RSS are exported for every method where observed. LIMA-only reference-route mutation, rejoin, recirculation, and local-module telemetry remain architecture-specific.",
         "",
     ]
     (output / "REPORT.md").write_text("\n".join(lines), encoding="utf-8")

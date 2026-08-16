@@ -323,7 +323,12 @@ def main() -> int:
                 "adapter": str(replan_adapter),
                 "policy": "replan from observed positions before the next step after any execution divergence",
                 "safe_executor": "iterative dependency cancellation; vertex/edge conflict free",
-                "communication_accounting": "one state upload and one plan delivery per active agent per planning call",
+                "communication_accounting": (
+                    "initial task upload plus initial route installation; each replan "
+                    "counts active-agent state uploads, while route delivery is counted "
+                    "only for agents whose executable suffix changes; cached route "
+                    "execution counts zero communication"
+                ),
                 "planner_search_limit": (
                     args.lacam_max_iterations
                     if args.algorithm == "lacam-replan" else None

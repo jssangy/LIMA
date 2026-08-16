@@ -273,6 +273,9 @@ bool dump_paths(const GridMap& map,
                 const std::vector<std::shared_ptr<const Path>>& paths) {
     const char* const dump = std::getenv("CBS_DUMP");
     if (!dump || *dump == '\0') return false;
+    const char* const timed_dump = std::getenv("CBS_TIMED_DUMP");
+    const bool preserve_waits = timed_dump && *timed_dump != '\0'
+                                && std::string_view(timed_dump) != "0";
 
     std::vector<Path> spatial_paths;
     spatial_paths.reserve(paths.size());
@@ -282,14 +285,16 @@ bool dump_paths(const GridMap& map,
         spatial.reserve(path_ptr->size());
         for (const CellId cell : *path_ptr) {
             if (!map.traversable(cell)) return false;
-            if (spatial.empty() || spatial.back() != cell) spatial.push_back(cell);
+            if (preserve_waits || spatial.empty() || spatial.back() != cell) {
+                spatial.push_back(cell);
+            }
         }
         for (std::size_t i = 1; i < spatial.size(); ++i) {
             const lima::Coord previous = map.coord(spatial[i - 1]);
             const lima::Coord current = map.coord(spatial[i]);
             const int distance = std::abs(previous.x - current.x)
                                  + std::abs(previous.y - current.y);
-            if (distance != 1) return false;
+            if (distance != 1 && !(preserve_waits && distance == 0)) return false;
         }
         spatial_paths.push_back(std::move(spatial));
     }

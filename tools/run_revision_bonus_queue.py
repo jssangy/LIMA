@@ -22,6 +22,9 @@ REQUIRED = {
     "oneshot_cbs_certified_step_v3": 280,
     "oneshot_lacam_certified_step_v3": 280,
     "oneshot_pibt_certified_step_v3": 280,
+    "oneshot_cbs_telemetry_backfill_v1": 280,
+    "oneshot_lacam_telemetry_backfill_v2": 280,
+    "oneshot_pibt_telemetry_backfill_v2": 280,
     "stochastic_lima_step_v7_pgrid5_d10_30": 360,
     "stochastic_pibt_replan_step_v1_pgrid5_d10_30": 360,
     "stochastic_lacam_replan_step_v1_pgrid5_d10_30": 360,
@@ -66,10 +69,18 @@ def campaign_audit() -> dict[str, dict]:
                 validation_errors += 1
             telemetry = record.get("telemetry") or {}
             conformity = telemetry.get("path_conformity") or {}
+            backfill_conformity = (
+                (record.get("trajectory") or {}).get("path_conformity") or {}
+            )
             result = record.get("result") or {}
             if conformity.get("online_validation_ok") is False:
                 validation_errors += 1
-            for source in (conformity, result):
+            if backfill_conformity.get("online_validation_ok") is False:
+                validation_errors += 1
+            equivalence = record.get("scalar_equivalence") or {}
+            if equivalence and equivalence.get("all_match") is not True:
+                validation_errors += 1
+            for source in (conformity, backfill_conformity, result):
                 for key in ("vertex_conflicts", "edge_conflicts", "invalid_moves"):
                     value = source.get(key)
                     if value not in (None, 0, "0"):
