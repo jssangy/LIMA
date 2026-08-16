@@ -73,13 +73,13 @@ def commands() -> list[list[tuple[str, list[str]]]]:
     return [
         [
             ("oneshot_lima", [
-                python, oneshot, "--algorithm", "lima", "--jobs", "10",
+                python, oneshot, "--algorithm", "lima", "--jobs", "11",
                 "--input-manifest", certified, "--freeze-manifest", freeze,
                 "--lima-binary", lima,
                 "--output-dir", str(ROOT / "results/revision_final/oneshot_lima_certified_step_v4_optimized"),
             ]),
             ("oneshot_primal2", [
-                python, oneshot, "--algorithm", "primal2", "--jobs", "4",
+                python, oneshot, "--algorithm", "primal2", "--jobs", "5",
                 "--input-manifest", certified, "--freeze-manifest", freeze,
                 "--lima-binary", lima,
                 "--primal-python", primal_python,
@@ -90,12 +90,12 @@ def commands() -> list[list[tuple[str, list[str]]]]:
         ],
         [
             ("stochastic_lima", [
-                python, stochastic, "--algorithm", "lima", "--jobs", "10",
+                python, stochastic, "--algorithm", "lima", "--jobs", "11",
                 "--input-manifest", certified, "--lima", lima,
                 "--output-dir", str(ROOT / "results/revision_final/stochastic_lima_step_v4_optimized"),
             ]),
             ("stochastic_primal2", [
-                python, stochastic, "--algorithm", "primal2", "--jobs", "4",
+                python, stochastic, "--algorithm", "primal2", "--jobs", "5",
                 "--input-manifest", certified, "--lima", lima,
                 "--primal-python", primal_python,
                 "--primal-script", primal_script,
@@ -105,7 +105,7 @@ def commands() -> list[list[tuple[str, list[str]]]]:
         ],
         [
             ("lifelong", [
-                python, str(ROOT / "tools/run_final_lifelong.py"), "--jobs", "10",
+                python, str(ROOT / "tools/run_final_lifelong.py"), "--jobs", "12",
                 "--input-manifest", lifelong_inputs, "--binary", lima,
                 "--output-dir", str(ROOT / "results/revision_final/lifelong_lima_step_v4_optimized"),
             ]),
