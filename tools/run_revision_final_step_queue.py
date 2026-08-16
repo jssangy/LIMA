@@ -95,19 +95,28 @@ def commands() -> list[list[tuple[str, list[str]]]]:
         ],
         [
             ("stochastic_lima", [
-                python, stochastic, "--algorithm", "lima", "--jobs", "12",
+                python, stochastic, "--algorithm", "lima", "--jobs", "10",
                 "--input-manifest", certified, "--lima", lima,
-                "--output-dir", str(ROOT / "results/revision_final/stochastic_lima_step_v4_optimized"),
+                "--max-steps", "5000", "--densities", "10,20,30",
+                "--probabilities", "0.05,0.10,0.15,0.20",
+                "--output-dir", str(ROOT / "results/revision_final/stochastic_lima_step_v7_pgrid5_d10_30"),
             ]),
-            ("stochastic_primal2", [
-                python, stochastic, "--algorithm", "primal2", "--jobs", "5",
+            ("stochastic_pibt", [
+                python, stochastic, "--algorithm", "pibt", "--jobs", "5",
                 "--input-manifest", certified, "--lima", lima,
-                "--primal-python", primal_python,
-                "--primal-script", primal_script,
-                "--primal-model", primal_model,
-                "--max-steps", "5000",
-                "--primal-stall-steps", "256",
-                "--output-dir", str(ROOT / "results/revision_final/stochastic_primal2_step_v6_common5000_stall256"),
+                "--max-steps", "5000", "--densities", "10,20,30",
+                "--probabilities", "0.05,0.10,0.15,0.20",
+                "--pibt-binary", str(ROOT / "results/revision_final/frozen_artifacts_step_v2/pibt"),
+                "--output-dir", str(ROOT / "results/revision_final/stochastic_pibt_replan_step_v1_pgrid5_d10_30"),
+            ]),
+            ("stochastic_lacam_replan", [
+                python, stochastic, "--algorithm", "lacam-replan", "--jobs", "5",
+                "--input-manifest", certified, "--lima", lima,
+                "--max-steps", "5000", "--densities", "10,20,30",
+                "--probabilities", "0.05,0.10,0.15,0.20",
+                "--lacam-binary", str(ROOT / "results/revision_final/frozen_artifacts_step_v2/lacam"),
+                "--lacam-max-iterations", "100000",
+                "--output-dir", str(ROOT / "results/revision_final/stochastic_lacam_replan_step_v1_pgrid5_d10_30"),
             ]),
         ],
         [

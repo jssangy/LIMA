@@ -12,6 +12,7 @@ import platform
 import re
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -22,8 +23,8 @@ from summarize_telemetry import summarize_metrics
 
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DENSITIES = (10, 30, 50)
-DEFAULT_PROBABILITIES = (0.01, 0.05, 0.10, 0.20)
+DEFAULT_DENSITIES = (10, 20, 30)
+DEFAULT_PROBABILITIES = (0.05, 0.10, 0.15, 0.20)
 TRACE_SPEC = {
     "name": "counter-hash-v1",
     "key": ["instance_seed", "zero_based_agent_id", "one_based_timestep"],
@@ -117,7 +118,9 @@ def probability_tag(probability: float) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--algorithm", required=True, choices=("lima", "primal2"))
+    parser.add_argument(
+        "--algorithm", required=True,
+        choices=("lima", "pibt", "lacam-replan", "primal2"))
     parser.add_argument(
         "--input-manifest",
         default="results/revision_final/certified_inputs_v3/MANIFEST.json",
@@ -145,9 +148,24 @@ def main() -> int:
     parser.add_argument(
         "--primal-stall-steps", type=int, default=0,
         help="PRIMAL2-only consecutive no-completion step cutoff (0 = disabled)")
+    parser.add_argument(
+        "--pibt-repo", default=str(Path.home() / "mapf-baselines/pibt2"))
+    parser.add_argument(
+        "--pibt-binary",
+        default="results/revision_final/frozen_artifacts_step_v2/pibt")
+    parser.add_argument(
+        "--lacam-repo", default=str(Path.home() / "mapf-baselines/lacam"))
+    parser.add_argument(
+        "--lacam-binary",
+        default="results/revision_final/frozen_artifacts_step_v2/lacam")
+    parser.add_argument("--lacam-max-iterations", type=int, default=100000)
+    parser.add_argument(
+        "--replan-adapter",
+        default=str(Path(__file__).resolve().with_name("stochastic_replan_adapter.py")))
     args = parser.parse_args()
     concurrency = args.jobs or (8 if args.algorithm == "lima" else 2)
-    if concurrency < 1 or args.max_steps < 1 or args.primal_stall_steps < 0:
+    if (concurrency < 1 or args.max_steps < 1 or args.primal_stall_steps < 0
+            or args.lacam_max_iterations < 1):
         parser.error("jobs and max-steps must be positive")
     maps = [item.strip() for item in args.maps.split(",") if item.strip()]
     if not maps or not set(maps).issubset(INSTANCES):
@@ -165,7 +183,17 @@ def main() -> int:
     primal_script = Path(args.primal_script).resolve()
     primal_model = Path(args.primal_model).resolve()
     primal_module_roots = [primal_script.parent, primal_model.parent]
-    executables = [lima] if args.algorithm == "lima" else [primal_python, primal_script]
+    pibt_repo = Path(args.pibt_repo).resolve()
+    lacam_repo = Path(args.lacam_repo).resolve()
+    pibt_binary = (ROOT / args.pibt_binary).resolve()
+    lacam_binary = (ROOT / args.lacam_binary).resolve()
+    replan_adapter = Path(args.replan_adapter).resolve()
+    executables = {
+        "lima": [lima],
+        "pibt": [Path(sys.executable), replan_adapter, pibt_binary],
+        "lacam-replan": [Path(sys.executable), replan_adapter, lacam_binary],
+        "primal2": [primal_python, primal_script],
+    }[args.algorithm]
     for path in executables:
         if not path.is_file():
             parser.error(f"missing executable or adapter: {path}")
@@ -290,6 +318,19 @@ def main() -> int:
             }
             if args.algorithm == "primal2" else None
         ),
+        "stochastic_replanning": (
+            {
+                "adapter": str(replan_adapter),
+                "policy": "replan from observed positions before the next step after any execution divergence",
+                "safe_executor": "iterative dependency cancellation; vertex/edge conflict free",
+                "communication_accounting": "one state upload and one plan delivery per active agent per planning call",
+                "planner_search_limit": (
+                    args.lacam_max_iterations
+                    if args.algorithm == "lacam-replan" else None
+                ),
+            }
+            if args.algorithm in ("pibt", "lacam-replan") else None
+        ),
         "lima_version": lima_version.stdout.strip(), "runner_sha256": sha256(runner),
         "maps": maps, "densities": densities, "scenarios": scenarios,
         "probabilities": probabilities,
@@ -297,11 +338,16 @@ def main() -> int:
             "fixed synchronous execution horizon; PRIMAL2 additionally uses "
             "a step-based no-completion stagnation rule; no wall-clock cutoff"
             if args.algorithm == "primal2"
-            else "fixed synchronous execution horizon; no wall-clock cutoff"
+            else (
+                "fixed synchronous execution horizon; event-triggered global "
+                "replanning after execution divergence; no wall-clock cutoff"
+                if args.algorithm in ("pibt", "lacam-replan")
+                else "fixed synchronous execution horizon; no wall-clock cutoff"
+            )
         ),
         "max_steps": args.max_steps, "inputs": inputs,
         "early_stop_policy": (
-            "none for LIMA; for PRIMAL2, higher densities skipped after "
+            "none for LIMA; for non-LIMA methods, higher densities skipped after "
             "0 successes at a map/probability/density"
             if not args.no_early_stop else "disabled"
         ),
@@ -354,7 +400,7 @@ def main() -> int:
                 "--goal-behavior", "disappear", "--no-trace",
                 "--metrics", str(metrics / tag),
             ]
-        else:
+        elif args.algorithm == "primal2":
             solver = [
                 str(primal_python), str(primal_script),
                 "--map", str((ROOT / job["map_file"]).resolve()),
@@ -368,6 +414,24 @@ def main() -> int:
             ]
             if args.primal_stall_steps:
                 solver.extend(["--stall-steps", str(args.primal_stall_steps)])
+        else:
+            planner_name = "pibt" if args.algorithm == "pibt" else "lacam"
+            solver = [
+                str(Path(sys.executable).resolve()), str(replan_adapter),
+                "--algorithm", planner_name,
+                "--map", str((ROOT / job["map_file"]).resolve()),
+                "--scen", str((ROOT / job["scenario_file"]).resolve()),
+                "--agents", str(job["agents"]),
+                "--seed", str(job["scenario"]),
+                "--max-steps", str(effective_max_steps),
+                "--delay-prob", str(job["probability"]),
+                "--delay-seed", str(job["scenario"]),
+                "--pibt-repo", str(pibt_repo),
+                "--pibt-binary", str(pibt_binary),
+                "--lacam-repo", str(lacam_repo),
+                "--lacam-binary", str(lacam_binary),
+                "--lacam-max-iterations", str(args.lacam_max_iterations),
+            ]
         command = [
             "/usr/bin/time", "-f",
             "max_rss_kb=%M\nuser_seconds=%U\nsystem_seconds=%S\nelapsed_seconds=%e",
@@ -398,6 +462,13 @@ def main() -> int:
             solved = (
                 returncode == 0 and solved
                 and telemetry["path_conformity"]["online_validation_ok"]
+            )
+        elif args.algorithm in ("pibt", "lacam-replan"):
+            telemetry = None
+            solved = (
+                returncode == 0 and solved
+                and result.get("vertex_conflicts") == "0"
+                and result.get("edge_conflicts") == "0"
             )
         log_path.write_text(stdout + ("\n[stderr]\n" + stderr if stderr else ""), encoding="utf-8")
         atomic_json(record_path, {
