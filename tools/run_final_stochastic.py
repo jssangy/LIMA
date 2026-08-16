@@ -139,6 +139,9 @@ def main() -> int:
         "--primal-python", default=str(Path.home() / "miniconda3/envs/primal2/bin/python"))
     parser.add_argument(
         "--primal-script", default=str(Path.home() / "mapf-baselines/PRIMAL2/run_our_instances.py"))
+    parser.add_argument(
+        "--primal-model",
+        default=str(Path.home() / "mapf-baselines/PRIMAL2/model_primal2_oneshot"))
     args = parser.parse_args()
     concurrency = args.jobs or (8 if args.algorithm == "lima" else 2)
     if concurrency < 1 or args.max_steps < 1:
@@ -157,10 +160,24 @@ def main() -> int:
     lima = (ROOT / args.lima).resolve()
     primal_python = Path(args.primal_python).resolve()
     primal_script = Path(args.primal_script).resolve()
+    primal_model = Path(args.primal_model).resolve()
     executables = [lima] if args.algorithm == "lima" else [primal_python, primal_script]
     for path in executables:
         if not path.is_file():
             parser.error(f"missing executable or adapter: {path}")
+    primal_model_files = None
+    if args.algorithm == "primal2":
+        if not primal_model.is_dir():
+            parser.error(f"missing PRIMAL2 checkpoint directory: {primal_model}")
+        checkpoint_files = sorted(
+            path for path in primal_model.iterdir()
+            if path.name == "checkpoint" or path.name.startswith("model-97500.cptk")
+        )
+        if not checkpoint_files:
+            parser.error(f"missing PRIMAL2 checkpoint files: {primal_model}")
+        primal_model_files = {
+            path.name: sha256(path) for path in checkpoint_files if path.is_file()
+        }
     lima_version = subprocess.run(
         [str(lima), "--version"], cwd=ROOT, capture_output=True, text=True, check=False)
     if lima_version.returncode != 0 or "profile=lima-default" not in lima_version.stdout:
@@ -258,6 +275,15 @@ def main() -> int:
         "trace_spec": TRACE_SPEC,
         "p0_source": "matching deterministic certified step campaign",
         "executables": {str(path): sha256(path) for path in executables},
+        "primal2_inference": (
+            {
+                "mode": "batch",
+                "device": "cpu",
+                "model": str(primal_model),
+                "model_files": primal_model_files,
+            }
+            if args.algorithm == "primal2" else None
+        ),
         "lima_version": lima_version.stdout.strip(), "runner_sha256": sha256(runner),
         "maps": maps, "densities": densities, "scenarios": scenarios,
         "probabilities": probabilities,
@@ -318,6 +344,8 @@ def main() -> int:
                 "--max-steps", str(args.max_steps), "--progress-every", "0",
                 "--delay-prob", str(job["probability"]),
                 "--delay-seed", str(job["scenario"]),
+                "--model", str(primal_model),
+                "--inference", "batch", "--device", "cpu",
             ]
         command = [
             "/usr/bin/time", "-f",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the frozen, step-bounded LIMA revision experiment queue."""
+"""Run the optimized, step-bounded LIMA revision experiment continuation."""
 
 from __future__ import annotations
 
@@ -15,8 +15,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-ARTIFACT_MANIFEST = ROOT / "results/revision_final/frozen_artifacts_step_v3/MANIFEST.json"
-QUEUE_ROOT = ROOT / "results/revision_final/queue_step_v3"
+ARTIFACT_MANIFEST = (
+    ROOT / "results/revision_final/frozen_artifacts_step_v4_optimized/MANIFEST.json"
+)
+QUEUE_ROOT = ROOT / "results/revision_final/queue_step_v4_optimized"
 
 
 def sha256(path: Path) -> str:
@@ -61,25 +63,63 @@ def commands() -> list[list[tuple[str, list[str]]]]:
     python = sys.executable
     oneshot = str(ROOT / "tools/run_final_certified_oneshot.py")
     stochastic = str(ROOT / "tools/run_final_stochastic.py")
+    freeze = str(ARTIFACT_MANIFEST)
+    certified = str(ROOT / "results/revision_final/certified_inputs_v3/MANIFEST.json")
+    lifelong_inputs = str(ROOT / "results/revision_final/lifelong_inputs_v2/MANIFEST.json")
+    lima = str(ROOT / "results/revision_final/frozen_artifacts_step_v4_optimized/lima")
+    primal_python = str(Path.home() / "miniconda3/envs/primal2/bin/python")
+    primal_script = str(Path.home() / "mapf-baselines/PRIMAL2-opt/run_our_instances.py")
+    primal_model = str(Path.home() / "mapf-baselines/PRIMAL2/model_primal2_oneshot")
     return [
         [
-            ("oneshot_lima", [python, oneshot, "--algorithm", "lima", "--jobs", "8"]),
-            ("oneshot_cbs", [python, oneshot, "--algorithm", "cbs", "--jobs", "2"]),
-            ("oneshot_lacam", [python, oneshot, "--algorithm", "lacam", "--jobs", "2"]),
-            ("oneshot_pibt", [python, oneshot, "--algorithm", "pibt", "--jobs", "2"]),
-            ("oneshot_primal2", [python, oneshot, "--algorithm", "primal2", "--jobs", "2"]),
+            ("oneshot_lima", [
+                python, oneshot, "--algorithm", "lima", "--jobs", "10",
+                "--input-manifest", certified, "--freeze-manifest", freeze,
+                "--lima-binary", lima,
+                "--output-dir", str(ROOT / "results/revision_final/oneshot_lima_certified_step_v4_optimized"),
+            ]),
+            ("oneshot_primal2", [
+                python, oneshot, "--algorithm", "primal2", "--jobs", "4",
+                "--input-manifest", certified, "--freeze-manifest", freeze,
+                "--lima-binary", lima,
+                "--primal-python", primal_python,
+                "--primal-script", primal_script,
+                "--primal-model", primal_model,
+                "--output-dir", str(ROOT / "results/revision_final/oneshot_primal2_certified_step_v4_optimized"),
+            ]),
         ],
         [
-            ("stochastic_lima", [python, stochastic, "--algorithm", "lima", "--jobs", "8"]),
+            ("stochastic_lima", [
+                python, stochastic, "--algorithm", "lima", "--jobs", "10",
+                "--input-manifest", certified, "--lima", lima,
+                "--output-dir", str(ROOT / "results/revision_final/stochastic_lima_step_v4_optimized"),
+            ]),
             ("stochastic_primal2", [
-                python, stochastic, "--algorithm", "primal2", "--jobs", "2"]),
+                python, stochastic, "--algorithm", "primal2", "--jobs", "4",
+                "--input-manifest", certified, "--lima", lima,
+                "--primal-python", primal_python,
+                "--primal-script", primal_script,
+                "--primal-model", primal_model,
+                "--output-dir", str(ROOT / "results/revision_final/stochastic_primal2_step_v4_optimized"),
+            ]),
         ],
         [
             ("lifelong", [
-                python, str(ROOT / "tools/run_final_lifelong.py"), "--jobs", "8"]),
+                python, str(ROOT / "tools/run_final_lifelong.py"), "--jobs", "10",
+                "--input-manifest", lifelong_inputs, "--binary", lima,
+                "--output-dir", str(ROOT / "results/revision_final/lifelong_lima_step_v4_optimized"),
+            ]),
             ("admission", [
-                python, str(ROOT / "tools/run_final_admission_ablation.py"), "--jobs", "4"]),
-            ("local_solver", [python, str(ROOT / "tools/run_final_local_solver.py")]),
+                python, str(ROOT / "tools/run_final_admission_ablation.py"), "--jobs", "6",
+                "--freeze-manifest", freeze, "--certified-manifest", certified,
+                "--binary", lima,
+                "--output-dir", str(ROOT / "results/revision_final/admission_ablation_step_v4_optimized"),
+            ]),
+            ("local_solver", [
+                python, str(ROOT / "tools/run_final_local_solver.py"),
+                "--freeze-manifest", freeze,
+                "--output-dir", str(ROOT / "results/revision_final/local_solver_reference_step_v4_optimized"),
+            ]),
         ],
     ]
 
