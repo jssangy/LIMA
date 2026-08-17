@@ -23,7 +23,7 @@
 
 namespace {
 
-constexpr int kLimaDefaultProfileVersion = 4;
+constexpr int kLimaDefaultProfileVersion = 5;
 
 enum class RunMode { Realtime, Solve, Replay, Debug, Bench };
 
@@ -87,9 +87,9 @@ void apply_profile(Options& options, const std::string_view name) {
     options.sim.solver.beam_width = 2'048;
     options.sim.solver.beam_score = "tt";
 
-    // Recirculation Controller: Gate D winner.
+    // Recirculation Controller: hop-aware widest-ratio winner.
     options.sim.discharge = lima::DischargeConfig{};
-    options.sim.discharge.policy = lima::DischargePolicy::Composite;
+    options.sim.discharge.policy = lima::DischargePolicy::WidestRatioShortest;
     options.sim.discharge_enabled = true;
 }
 
@@ -206,6 +206,7 @@ Options parse(const int argc, char** argv) {
             else if (name == "backpressure") options.sim.discharge.policy = lima::DischargePolicy::Backpressure;
             else if (name == "balanced") options.sim.discharge.policy = lima::DischargePolicy::Balanced;
             else if (name == "demand") options.sim.discharge.policy = lima::DischargePolicy::Demand;
+            else if (name == "widest-ratio-shortest") options.sim.discharge.policy = lima::DischargePolicy::WidestRatioShortest;
             else throw std::invalid_argument("unknown discharge policy: " + std::string(name));
         }
         else if (arg == "--discharge-weight") {
@@ -425,6 +426,7 @@ std::string_view discharge_policy_name(const lima::DischargePolicy policy) {
     case lima::DischargePolicy::Backpressure: return "backpressure";
     case lima::DischargePolicy::Balanced: return "balanced";
     case lima::DischargePolicy::Demand: return "demand";
+    case lima::DischargePolicy::WidestRatioShortest: return "widest-ratio-shortest";
     }
     return "unknown";
 }

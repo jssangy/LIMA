@@ -4,6 +4,8 @@
 #include <array>
 #include <functional>
 #include <limits>
+#include <queue>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace lima {
@@ -29,6 +31,54 @@ std::vector<RecirculationDischarge::Event> RecirculationDischarge::run(const Con
     };
     std::vector<Event> events;
     const auto& intersections = context.topology.intersections();
+    std::unordered_map<std::uint64_t, std::size_t> center_hop_cache;
+    std::unordered_map<std::uint64_t, std::size_t> intersection_hop_cache;
+    const auto pair_key = [](const IntersectionId lhs, const IntersectionId rhs) {
+        const auto lo = static_cast<std::uint32_t>(std::min(lhs, rhs));
+        const auto hi = static_cast<std::uint32_t>(std::max(lhs, rhs));
+        return (static_cast<std::uint64_t>(lo) << 32U) | hi;
+    };
+    const auto center_hops = [&](const IntersectionId lhs, const IntersectionId rhs) {
+        const std::uint64_t key = pair_key(lhs, rhs);
+        if (const auto found = center_hop_cache.find(key); found != center_hop_cache.end())
+            return found->second;
+        const CellId from = intersections[static_cast<std::size_t>(lhs)].center;
+        const CellId to = intersections[static_cast<std::size_t>(rhs)].center;
+        const auto segment = context.planner.plan(from, to);
+        const std::size_t hops = segment.empty()
+            ? std::numeric_limits<std::size_t>::max() / 4
+            : segment.size() - 1;
+        center_hop_cache.emplace(key, hops);
+        return hops;
+    };
+    const auto intersection_hops = [&](const IntersectionId lhs, const IntersectionId rhs) {
+        if (lhs == rhs) return std::size_t{0};
+        const std::uint64_t key = pair_key(lhs, rhs);
+        if (const auto found = intersection_hop_cache.find(key);
+            found != intersection_hop_cache.end()) return found->second;
+        const std::size_t unreachable = intersections.size() + 1;
+        std::vector<std::size_t> distance(intersections.size(), unreachable);
+        std::queue<IntersectionId> frontier;
+        distance[static_cast<std::size_t>(lhs)] = 0;
+        frontier.push(lhs);
+        while (!frontier.empty()) {
+            const IntersectionId current = frontier.front();
+            frontier.pop();
+            const std::size_t next_distance = distance[static_cast<std::size_t>(current)] + 1;
+            for (const IntersectionId neighbor :
+                 intersections[static_cast<std::size_t>(current)].neighbors) {
+                if (neighbor < 0) continue;
+                auto& value = distance[static_cast<std::size_t>(neighbor)];
+                if (value <= next_distance) continue;
+                value = next_distance;
+                if (neighbor == rhs) break;
+                frontier.push(neighbor);
+            }
+        }
+        const std::size_t hops = distance[static_cast<std::size_t>(rhs)];
+        intersection_hop_cache.emplace(key, hops);
+        return hops;
+    };
     std::vector<IntersectionId> sources;
     sources.reserve(intersections.size());
     for (const Intersection& intersection : intersections)
@@ -191,6 +241,34 @@ std::vector<RecirculationDischarge::Event> RecirculationDischarge::run(const Con
                 load += node_load(node);
             return load;
         };
+        const auto node_capacity = [&](const IntersectionId iid) {
+            std::size_t total = 0;
+            std::size_t longest = 0;
+            for (const auto& arm : intersections[static_cast<std::size_t>(iid)].arms) {
+                total += arm.size();
+                longest = std::max(longest, arm.size());
+            }
+            return std::max<std::size_t>(1, total - longest);
+        };
+        const auto stale_slack = [&](const IntersectionId iid) {
+            const std::size_t capacity = node_capacity(iid);
+            const std::size_t load = node_load(iid);
+            return load < capacity ? capacity - load : std::size_t{0};
+        };
+        const auto cycle_hops = [&](const FlatChoice& choice) {
+            const auto& cycle = candidates[choice.candidate].cycles[choice.cycle];
+            std::size_t hops = 0;
+            for (std::size_t i = 1; i <= cycle.size(); ++i)
+                hops += center_hops(cycle[i - 1], cycle[i % cycle.size()]);
+            return hops;
+        };
+        const auto cycle_bottleneck_ratio = [&](const FlatChoice& choice) {
+            double ratio = std::numeric_limits<double>::infinity();
+            for (const IntersectionId node : candidates[choice.candidate].cycles[choice.cycle])
+                ratio = std::min(ratio, static_cast<double>(stale_slack(node))
+                    / static_cast<double>(node_capacity(node)));
+            return ratio;
+        };
         const auto select_choice = [&](const FlatChoice& choice) {
             candidate_index = choice.candidate;
             cycle_index = choice.cycle;
@@ -219,6 +297,23 @@ std::vector<RecirculationDischarge::Event> RecirculationDischarge::run(const Con
                         best_load = load;
                         cycle_index = ki;
                     }
+                }
+            }
+        } else if (policy == DischargePolicy::WidestRatioShortest) {
+            double best_ratio = -std::numeric_limits<double>::infinity();
+            std::size_t best_hops = std::numeric_limits<std::size_t>::max();
+            std::size_t best_load = std::numeric_limits<std::size_t>::max();
+            for (const FlatChoice& choice : flat) {
+                const double ratio = cycle_bottleneck_ratio(choice);
+                const std::size_t hops = cycle_hops(choice);
+                const std::size_t load = cycle_load(choice);
+                if (ratio > best_ratio
+                    || (ratio == best_ratio && hops < best_hops)
+                    || (ratio == best_ratio && hops == best_hops && load < best_load)) {
+                    best_ratio = ratio;
+                    best_hops = hops;
+                    best_load = load;
+                    select_choice(choice);
                 }
             }
         } else if (policy == DischargePolicy::LeastLoaded) {
@@ -343,6 +438,21 @@ std::vector<RecirculationDischarge::Event> RecirculationDischarge::run(const Con
         if (reversed && cycle.size() > 2)
             std::reverse(cycle.begin() + 1, cycle.end());
         const std::size_t source_direction = selected.direction;
+
+        if (policy == DischargePolicy::WidestRatioShortest && context.stale_loads) {
+            // Occupancy summaries travel only between adjacent intersection
+            // agents. Count every relay while retaining the end-to-end radius
+            // and age of the scalar used by the widest-loop comparison.
+            for (const IntersectionId node : cycle) {
+                if (node == source.id) continue;
+                const std::size_t distance = intersection_hops(node, source.id);
+                if (distance == 0 || distance > std::numeric_limits<std::uint16_t>::max()) continue;
+                const auto hops = static_cast<std::uint16_t>(distance);
+                information_events_.push_back({
+                    "R4", "occupancy_relay", node, source.id, hops,
+                    static_cast<std::uint32_t>(sizeof(std::uint16_t)), hops, hops});
+            }
+        }
 
         if (config_.exclusive != RecirculationExclusiveMode::Off)
             information_events_.push_back({"R2", "advertise", source.id,

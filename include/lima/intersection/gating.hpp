@@ -34,6 +34,8 @@ enum class DischargePolicy : std::uint8_t {
     Backpressure,
     Balanced,
     Demand,
+    // Maximize bottleneck free-capacity ratio, breaking ties by route hops.
+    WidestRatioShortest,
 };
 
 enum class RecirculationExclusiveMode : std::uint8_t { Off, IntersectionId, StallAge, ReserveCells };
@@ -50,10 +52,7 @@ struct IsolationConfig {
 struct DischargeConfig {
     bool all_arms{false};              // reroute members on every arm, not just the escape arm
     bool allow_stalled_neighbor{false};// permit loops that start at a stalled neighbor (jam erosion)
-    // Defaults since 2026-08-13 (tournament winner "dcombo"): escape toward the
-    // 1-hop neighbor with the most admission slack, and within that direction
-    // prefer the loop over the least-loaded intersections (one-cycle-stale
-    // relayed counts).  Fully deterministic; -19.6% makespan on the hard cells.
+    // Legacy-policy compatibility flags. Named profiles set policy explicitly.
     bool deterministic_cycle{true};
     bool avail_weighted{true};
     double partial_stall{1.0};         // waiting-member fraction that marks an intersection stalled
@@ -82,9 +81,8 @@ public:
         Planner& planner;
         std::mt19937_64& rng;
         const std::vector<int>* available{nullptr};  // per-intersection admission slack (1-hop knowledge)
-        // Previous-cycle occupancy counts: models load aggregates relayed over
-        // the existing adjacent-module exchange (one cycle stale), keeping
-        // load-aware cycle choice within the limited-communication rule.
+        // Last reported occupancy counts. Hop-aware selection accounts for
+        // their adjacent-intersection relay cost in information telemetry.
         const std::vector<std::size_t>* stale_loads{nullptr};
         const std::vector<std::uint32_t>* stall_ages{nullptr};
         const std::vector<std::vector<IntersectionId>>* detected_cycles{nullptr};

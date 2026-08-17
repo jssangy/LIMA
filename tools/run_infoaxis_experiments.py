@@ -189,6 +189,15 @@ def quick_variants() -> list[Variant]:
     ]
 
 
+def hop_aware_variants() -> list[Variant]:
+    """Recheck the selected hop-aware policy against the former default."""
+    return [
+        Variant("base", "base"),
+        Variant("former_composite", "hop", (
+            "--discharge-policy", "composite")),
+    ]
+
+
 def load_summary(root: Path, stage: int) -> dict:
     path = root / f"stage{stage}" / "summary/summary.json"
     if not path.is_file():
@@ -620,7 +629,18 @@ def run_stage(args: argparse.Namespace) -> int:
         if not path.is_file():
             raise FileNotFoundError(path)
 
-    variants = quick_variants() if args.quick else stage_variants(output_root, args.stage)
+    variants = (hop_aware_variants() if args.hop_aware
+                else quick_variants() if args.quick
+                else stage_variants(output_root, args.stage))
+    if args.variants:
+        requested = set(args.variants.split(","))
+        known = {variant.name for variant in variants}
+        unknown = sorted(requested - known)
+        if unknown:
+            raise ValueError(f"unknown variants: {', '.join(unknown)}")
+        variants = [variant for variant in variants if variant.name in requested]
+        if not variants:
+            raise ValueError("--variants selected no candidates")
     max_steps, specs = stage_specs(args.stage)
     cells = [cell_from_certificate(input_root, *spec) for spec in specs]
     stage_root = output_root / f"stage{args.stage}"
@@ -633,6 +653,7 @@ def run_stage(args: argparse.Namespace) -> int:
         "runner_sha256": sha256(runner), "binary_sha256": binary_sha,
         "binary_version": version, "input_manifest_sha256": sha256(input_manifest),
         "max_steps": max_steps, "quick": args.quick,
+        "hop_aware": args.hop_aware, "variant_filter": args.variants,
         "baseline_alpha": args.baseline_alpha, "variants": [
             {"name": variant.name, "family": variant.family, "flags": list(variant.flags)}
             for variant in variants],
@@ -797,9 +818,15 @@ def main() -> int:
     parser.add_argument("--baseline-alpha", type=float, default=0.25)
     parser.add_argument("--quick", action="store_true",
                         help="run the compact representative screen for the selected stage specs")
+    parser.add_argument("--hop-aware", action="store_true",
+                        help="run the compact hop/congestion recirculation screen")
+    parser.add_argument("--variants", default="",
+                        help="optional comma-separated candidate names from the selected set")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--rerun", action="store_true")
     args = parser.parse_args()
+    if args.quick and args.hop_aware:
+        parser.error("--quick and --hop-aware are mutually exclusive")
     if not 1 <= args.jobs <= (os.cpu_count() or 1):
         parser.error("--jobs must be in [1, available CPU count]")
     return run_stage(args)
