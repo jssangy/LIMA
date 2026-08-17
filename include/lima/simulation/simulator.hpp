@@ -23,6 +23,12 @@
 
 namespace lima {
 
+enum class GlobalRoutingPolicy : std::uint8_t {
+    Swr,
+    Bfs,
+    StaticGuidance,
+};
+
 struct SimulationStats {
     std::uint64_t timestep{};
     std::uint64_t completed{};
@@ -118,7 +124,7 @@ struct SimulatorConfig {
     // Optional per-agent cyclic lifelong goal sequences. The first entry
     // must equal the initial task goal; later entries are activated in order.
     std::vector<std::vector<Coord>> lifelong_goal_sequences;
-    bool direct_routing{false};   // skip Structured Waypoint Routing (SWR)
+    GlobalRoutingPolicy routing{GlobalRoutingPolicy::Swr};
     std::string metrics_dir;      // W1 instrumentation output; empty = disabled
     std::string trace_path;       // JSONL step trace for the debug harness; empty = disabled
     std::string map_file;         // recorded in the trace header

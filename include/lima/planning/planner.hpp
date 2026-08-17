@@ -38,7 +38,28 @@ private:
     const GridMap& map_;
 };
 
+// A deterministic fleet-wide guidance graph: every undirected grid edge has
+// one preferred direction fixed by the experiment seed. Traversing against
+// the guide remains legal but carries a small static cost penalty.
+class StaticGuidancePlanner final : public Planner {
+public:
+    StaticGuidancePlanner(const GridMap& map, std::uint64_t seed, double penalty = 0.20)
+        : map_(map), seed_(seed), penalty_(penalty) {}
+    [[nodiscard]] std::vector<CellId> plan(CellId start, CellId goal) override;
+
+private:
+    [[nodiscard]] double edge_cost(CellId source, CellId destination) const;
+
+    const GridMap& map_;
+    std::uint64_t seed_{};
+    double penalty_{0.20};
+    std::unordered_map<CellId, std::vector<double>> fields_;
+    std::deque<CellId> field_order_;
+};
+
 std::unique_ptr<Planner> make_planner(PlannerKind kind, const GridMap& map, std::mt19937_64& rng);
+std::unique_ptr<Planner> make_static_guidance_planner(
+    const GridMap& map, std::uint64_t seed, double penalty = 0.20);
 
 struct SuffixRepair {
     // Executable route beginning at the agent's current cell and ending at the

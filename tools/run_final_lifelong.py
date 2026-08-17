@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run fixed-sequence lifelong LIMA experiments with SWR and direct routing."""
+"""Run the three fixed-sequence lifelong LIMA Route Planner arms."""
 
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ def main() -> int:
         "--input-manifest", default="results/revision_final/lifelong_inputs_v2/MANIFEST.json")
     parser.add_argument(
         "--binary", default="results/revision_final/frozen_artifacts_step_v2/lima")
-    parser.add_argument("--variants", default="swr,direct")
+    parser.add_argument("--variants", default="bfs,swr,static-guidance")
     parser.add_argument("--maps", help="optional comma-separated map filter")
     parser.add_argument("--densities", help="optional comma-separated density filter")
     parser.add_argument("--scenarios", help="optional comma-separated scenario filter")
@@ -72,8 +72,9 @@ def main() -> int:
     parser.add_argument("--rerun", action="store_true")
     args = parser.parse_args()
     variants = [item.strip() for item in args.variants.split(",") if item.strip()]
-    if not variants or not set(variants).issubset({"swr", "direct"}):
-        parser.error("variants must be swr and/or direct")
+    if not variants or not set(variants).issubset(
+            {"bfs", "swr", "static-guidance", "direct"}):
+        parser.error("variants must be bfs, swr, and/or static-guidance")
     if args.jobs < 1 or args.horizon < 1 or args.warmup < 0 or args.warmup >= args.horizon:
         parser.error("invalid jobs, horizon, or warmup")
     map_filter = set(args.maps.split(",")) if args.maps else None
@@ -176,6 +177,10 @@ def main() -> int:
         resource_path = resources / f"{tag}.txt"
         log_path = logs / f"{tag}.log"
         resource_path.unlink(missing_ok=True)
+        routing = {
+            "bfs": "bfs", "direct": "bfs", "swr": "swr",
+            "static-guidance": "static-guidance",
+        }[cell["variant"]]
         solver = [
             str(binary), "--profile", "lima-default", "--mode", "solve",
             "--map", cell["map_file"], "--scenario", cell["scenario_file"],
@@ -184,7 +189,7 @@ def main() -> int:
             "--stall-threshold", str(args.horizon + 1),
             "--goal-behavior", "lifelong",
             "--goal-sequences", cell["sequence_file"],
-            "--routing", cell["variant"], "--no-trace", "--metrics", str(metrics / tag),
+            "--routing", routing, "--no-trace", "--metrics", str(metrics / tag),
         ]
         command = [
             "/usr/bin/time", "-f",

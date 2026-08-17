@@ -7,7 +7,6 @@ cd "$root"
 freeze="results/revision_final/frozen_artifacts_profile_v5_widest_ratio/MANIFEST.json"
 binary="results/revision_final/frozen_artifacts_profile_v5_widest_ratio/lima"
 certified="results/revision_final/certified_inputs_v3/MANIFEST.json"
-lifelong_inputs="results/revision_final/lifelong_inputs_v2/MANIFEST.json"
 queue_root="results/revision_final/queue_lima_profile_v5_widest_ratio"
 mkdir -p "$queue_root/logs"
 
@@ -39,19 +38,6 @@ python3 tools/run_final_stochastic.py \
   >"$queue_root/logs/stochastic.log" 2>&1 &
 stochastic_pid=$!
 
-python3 tools/run_final_lifelong.py \
-  --input-manifest "$lifelong_inputs" \
-  --binary "$binary" \
-  --variants swr,direct \
-  --densities 10,30,50 \
-  --scenarios 0,1,2,3,4 \
-  --horizon 10000 \
-  --warmup 1000 \
-  --jobs 4 \
-  --output-dir results/revision_final/lifelong_lima_profile_v5_widest_ratio \
-  >"$queue_root/logs/lifelong.log" 2>&1 &
-lifelong_pid=$!
-
 python3 tools/run_final_admission_ablation.py \
   --freeze-manifest "$freeze" \
   --certified-manifest "$certified" \
@@ -66,7 +52,6 @@ status=0
 for entry in \
   "oneshot:$oneshot_pid" \
   "stochastic:$stochastic_pid" \
-  "lifelong:$lifelong_pid" \
   "admission:$admission_pid"; do
   name="${entry%%:*}"
   pid="${entry##*:}"

@@ -63,7 +63,7 @@ void apply_profile(Options& options, const std::string_view name) {
     // --planner/--routing/--routes may replace this provider after the profile
     // has been applied.
     options.planner = lima::PlannerKind::Bfs;
-    options.sim.direct_routing = false;
+    options.sim.routing = lima::GlobalRoutingPolicy::Swr;
     // Local PIBT displacement may temporarily move a robot away from its
     // active route. The Route Planner reconnects it to the first unfinished
     // task-level reference waypoint while preserving the remaining suffix.
@@ -118,7 +118,7 @@ void usage() {
                  "            [--solver ida|astar|wastar|gbfs|ucs|greedy|beam|beam-complete|hybrid] [--solver-iterations N]\n"
                  "            [--bound-step N] [--no-fastpath] [--lb-mode legacy|bf|tt] [--dominance]\n"
                  "            [--solver-nodes N] [--beam-width N] [--beam-score disorder|bf|tt] [--search-weight F]\n"
-                 "            [--routing swr|direct] [--capacity-formula operational|plus-one] [--isolation-cap N]\n"
+                 "            [--routing swr|bfs|direct|static-guidance] [--capacity-formula operational|plus-one] [--isolation-cap N]\n"
                  "            [--gate-policy NAME] [--gate-param F] [--gate-param2 F] [--gate-param3 F]\n"
                  "            [--admit-lookahead off|hard|thresh|ratio|diff] [--admit-lookahead-param F]\n"
                  "            [--aimd-signal local|nbmax|nbmean|trend] [--aimd-signal-param F]\n"
@@ -342,9 +342,13 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--bench-instances") options.bench.instances = std::stoi(std::string(value()));
         else if (arg == "--routing") {
             const auto name = value();
-            if (name == "swr" || name == "dor") options.sim.direct_routing = false;
-            else if (name == "direct") options.sim.direct_routing = true;
-            else throw std::invalid_argument("routing must be swr or direct");
+            if (name == "swr" || name == "dor")
+                options.sim.routing = lima::GlobalRoutingPolicy::Swr;
+            else if (name == "bfs" || name == "direct")
+                options.sim.routing = lima::GlobalRoutingPolicy::Bfs;
+            else if (name == "static-guidance")
+                options.sim.routing = lima::GlobalRoutingPolicy::StaticGuidance;
+            else throw std::invalid_argument("routing must be swr, bfs, or static-guidance");
         }
         else if (arg == "--capacity-formula") {
             const auto name = value();
@@ -539,7 +543,7 @@ bool has_non_default_config(const Options& options) {
         || options.sim.failure_probability != 0.0
         || options.sim.goal_behavior != lima::GoalBehavior::Disappear
         || !options.sim.discharge_enabled
-        || options.sim.direct_routing
+        || options.sim.routing != lima::GlobalRoutingPolicy::Swr
         || !options.sim.metrics_dir.empty()
         || !options.sim.trace_path.empty()
         || options.no_trace;
@@ -558,7 +562,9 @@ void print_provenance(const Options& options) {
         std::cout << planner_name(options.planner);
     }
     std::cout << " solver=" << options.sim.solver.kind
-              << " routing=" << (options.sim.direct_routing ? "direct" : "swr")
+              << " routing=" << (options.sim.routing == lima::GlobalRoutingPolicy::Swr
+                  ? "swr" : options.sim.routing == lima::GlobalRoutingPolicy::Bfs
+                  ? "bfs" : "static-guidance")
               << " capacity=" << (options.sim.isolation.formula == lima::CapacityFormula::SumMinusMax
                   ? "operational" : "plus-one");
     if (options.profile != "legacy"

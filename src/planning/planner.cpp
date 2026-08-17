@@ -9,6 +9,20 @@
 namespace lima {
 namespace {
 
+std::uint64_t splitmix64(std::uint64_t value) {
+    value += 0x9e3779b97f4a7c15ULL;
+    value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+    value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
+    return value ^ (value >> 31U);
+}
+
+std::uint64_t guidance_seed(
+    const std::uint64_t seed, const CellId low, const CellId high) {
+    std::uint64_t state = splitmix64(seed ^ static_cast<std::uint64_t>(low));
+    state = splitmix64(state ^ static_cast<std::uint64_t>(high));
+    return splitmix64(state ^ 0x47554944ULL);
+}
+
 std::vector<CellId> reconstruct(const CellId start, const CellId goal, const std::vector<CellId>& parent) {
     if (start == goal) return {start};
     if (goal < 0 || static_cast<std::size_t>(goal) >= parent.size() || parent[static_cast<std::size_t>(goal)] < 0) return {};
@@ -117,10 +131,89 @@ std::vector<CellId> AStarPlanner::plan(const CellId start, const CellId goal) {
     return {};
 }
 
+double StaticGuidancePlanner::edge_cost(
+    const CellId source, const CellId destination) const {
+    const CellId low = std::min(source, destination);
+    const CellId high = std::max(source, destination);
+    const bool preferred_low_to_high = (guidance_seed(seed_, low, high) & 1ULL) != 0;
+    const bool low_to_high = source == low;
+    return 1.0 + (preferred_low_to_high == low_to_high ? 0.0 : penalty_);
+}
+
+std::vector<CellId> StaticGuidancePlanner::plan(const CellId start, const CellId goal) {
+    if (!map_.traversable(start) || !map_.traversable(goal)) return {};
+    if (start == goal) return {start};
+    constexpr std::size_t kMaxCachedFields = 512;
+    if (!fields_.contains(goal)) {
+        if (fields_.size() >= kMaxCachedFields) {
+            fields_.erase(field_order_.front());
+            field_order_.pop_front();
+        }
+        field_order_.push_back(goal);
+    }
+    auto [it, inserted] = fields_.try_emplace(goal);
+    auto& distance = it->second;
+    if (inserted) {
+        constexpr double infinity = std::numeric_limits<double>::infinity();
+        struct Node {
+            double cost;
+            CellId cell;
+            bool operator>(const Node& rhs) const noexcept {
+                if (cost != rhs.cost) return cost > rhs.cost;
+                return cell > rhs.cell;
+            }
+        };
+        distance.assign(static_cast<std::size_t>(map_.cell_count()), infinity);
+        std::priority_queue<Node, std::vector<Node>, std::greater<>> open;
+        distance[static_cast<std::size_t>(goal)] = 0.0;
+        open.push({0.0, goal});
+        while (!open.empty()) {
+            const Node node = open.top();
+            open.pop();
+            if (node.cost > distance[static_cast<std::size_t>(node.cell)] + 1e-12) continue;
+            for (const CellId predecessor : map_.neighbors(node.cell)) {
+                const double candidate = node.cost + edge_cost(predecessor, node.cell);
+                auto& value = distance[static_cast<std::size_t>(predecessor)];
+                if (candidate + 1e-12 >= value) continue;
+                value = candidate;
+                open.push({candidate, predecessor});
+            }
+        }
+    }
+    if (!std::isfinite(distance[static_cast<std::size_t>(start)])) return {};
+
+    std::vector<CellId> route{start};
+    CellId current = start;
+    while (current != goal) {
+        CellId best = kInvalidCell;
+        double best_cost = std::numeric_limits<double>::infinity();
+        for (const CellId next : map_.neighbors(current)) {
+            const double candidate = edge_cost(current, next)
+                + distance[static_cast<std::size_t>(next)];
+            if (candidate + 1e-12 < best_cost
+                || (std::abs(candidate - best_cost) <= 1e-12 && next < best)) {
+                best = next;
+                best_cost = candidate;
+            }
+        }
+        if (best == kInvalidCell
+            || best_cost > distance[static_cast<std::size_t>(current)] + 1e-9) return {};
+        current = best;
+        route.push_back(current);
+    }
+    return route;
+}
+
 std::unique_ptr<Planner> make_planner(const PlannerKind kind, const GridMap& map, std::mt19937_64& rng) {
     if (kind == PlannerKind::Bfs) return std::make_unique<BfsPlanner>(map, rng);
     if (kind == PlannerKind::AStar) return std::make_unique<AStarPlanner>(map);
     throw std::invalid_argument("unsupported planner");
+}
+
+std::unique_ptr<Planner> make_static_guidance_planner(
+    const GridMap& map, const std::uint64_t seed, const double penalty) {
+    if (penalty < 0.0) throw std::invalid_argument("guidance penalty must be non-negative");
+    return std::make_unique<StaticGuidancePlanner>(map, seed, penalty);
 }
 
 std::optional<SuffixRepair> repair_to_reference_suffix(

@@ -91,7 +91,9 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
       shuffle_rng_(config_.shuffle_order >= 0
           ? static_cast<std::uint64_t>(config_.shuffle_order) ^ 0xd1b54a32d192ed03ULL : 0ULL),
       failure_seed_(seed ^ 0xa0761d6478bd642fULL),
-      planner_(make_planner(planner_kind, map_, rng_)),
+      planner_(config_.routing == GlobalRoutingPolicy::StaticGuidance
+          ? make_static_guidance_planner(map_, seed)
+          : make_planner(planner_kind, map_, rng_)),
       topology_(IntersectionTopology::build(map_)),
       solver_(make_solver(config_.solver)), coordinator_(*solver_, config_.pibt_corridor),
       discharge_(config_.discharge),
@@ -1993,7 +1995,7 @@ std::vector<CellId> Simulator::plan_global(const CellId start, const CellId goal
             return route;
         }
     }
-    if (config_.direct_routing) return planner_->plan(start, goal);
+    if (config_.routing != GlobalRoutingPolicy::Swr) return planner_->plan(start, goal);
     const Coord source = map_.coord(start);
     const Coord destination = map_.coord(goal);
     std::vector<int> center_xs;

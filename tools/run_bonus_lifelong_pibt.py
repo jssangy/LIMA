@@ -20,6 +20,19 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
+COMM_KEYS = (
+    "pibt_comm_active_agent_steps",
+    "pibt_comm_root_invocations",
+    "pibt_comm_inheritance_requests",
+    "pibt_comm_backtracking_responses",
+    "pibt_comm_backtracking_valid",
+    "pibt_comm_backtracking_invalid",
+    "pibt_comm_max_propagation_depth",
+    "pibt_comm_state_priority_announcements",
+    "pibt_comm_decision_announcements",
+    "pibt_comm_propagation_events",
+    "pibt_comm_distributed_logical_events",
+)
 
 
 def sha256(path: Path) -> str:
@@ -274,6 +287,19 @@ def main() -> int:
         started = time.time()
         process = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
         fields = parse_fields(process.stdout)
+        communication_counts = {
+            key.removeprefix("pibt_comm_"): int(match.group(1))
+            for key in COMM_KEYS
+            if (match := re.search(
+                rf"(?:^|\s){re.escape(key)}=(-?\d+)(?:\s|$)",
+                process.stdout, re.MULTILINE))
+        }
+        if len(communication_counts) != len(COMM_KEYS):
+            missing = sorted(
+                key.removeprefix("pibt_comm_")
+                for key in COMM_KEYS
+                if key.removeprefix("pibt_comm_") not in communication_counts)
+            raise RuntimeError(f"missing PIBT communication counters: {missing}")
         normal = (
             process.returncode == 0 and fields.get("status") == "step_limit"
             and fields.get("steps") == str(args.horizon)
@@ -296,6 +322,17 @@ def main() -> int:
                 "online_validation_ok": normal, "vertex_conflicts": 0 if normal else None,
                 "edge_conflicts": 0 if normal else None,
             }},
+            "communication": {
+                "model": "PIBT native decentralized logical broadcast-event lower bound",
+                "scope": "robot-to-robot; direct communication within two graph hops",
+                "counts": communication_counts,
+                "maximum_direct_radius_hops": 2,
+                "recipient_weighted_transmissions": None,
+                "recipient_weighted_reason": (
+                    "PIBT bounds direct communication by two-hop proximity but does not "
+                    "specify a MAC or broadcast-recipient accounting model"
+                ),
+            },
             "task_event_rows": len(event_rows),
             "metrics": str(metric_dir.relative_to(ROOT)),
             "instance": str(instance_path.relative_to(ROOT)),
