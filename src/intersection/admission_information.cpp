@@ -156,7 +156,7 @@ void AdmissionInformationAxis::prepare_credits(
         }
         for (std::size_t d = 0; d < 4; ++d) if (advertised[d] > 0) {
             events_.push_back({"A3", "advertised", static_cast<IntersectionId>(iid),
-                              static_cast<IntersectionId>(iid), advertised[d],
+                              static_cast<IntersectionId>(iid), 1,
                               static_cast<std::uint32_t>(sizeof(std::uint16_t)), 1, 1});
         }
     }

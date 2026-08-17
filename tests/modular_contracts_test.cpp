@@ -1,9 +1,11 @@
 #include "lima/intersection/admission.hpp"
+#include "lima/intersection/admission_information.hpp"
 #include "lima/intersection/gating.hpp"
 #include "lima/planning/planner.hpp"
 
 #include <cassert>
 #include <cmath>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -83,11 +85,39 @@ void test_acknowledged_aimd() {
     assert(std::abs(controller.windows()[0] - 2.5) < 1e-12);
 }
 
+void test_directional_credit_advertisement() {
+    lima::AdmissionInformationAxis axis({
+        .credit = lima::AdmitCreditMode::Equal,
+    });
+    axis.resize(1, 3);
+    const std::vector<lima::AdmissionCreditRequest> requests{
+        {0, 0, 0, 3}, {1, 0, 0, 2}, {2, 0, 1, 1},
+    };
+    const std::vector<int> availability{3};
+    const std::vector<int> reserve{0};
+    axis.prepare_credits(requests, availability, reserve);
+
+    assert(axis.credit_allows(0, 0));
+    assert(axis.credit_allows(1, 0));
+    assert(axis.credit_allows(2, 0));
+
+    std::uint64_t issued = 0;
+    std::uint64_t advertised = 0;
+    for (const auto& event : axis.take_events()) {
+        if (std::string_view(event.event) == "issued") issued += event.count;
+        if (std::string_view(event.event) == "advertised") advertised += event.count;
+    }
+    assert(issued == 3);
+    // A3 sends one scalar per active direction, not one message per credit.
+    assert(advertised == 2);
+}
+
 }  // namespace
 
 int main() {
     test_operational_capacity();
     test_suffix_repair();
     test_acknowledged_aimd();
+    test_directional_credit_advertisement();
     return 0;
 }
