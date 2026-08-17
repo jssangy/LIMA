@@ -35,6 +35,7 @@ python3 tools/run_bonus_lifelong_pibt.py \
   --input-manifest "$inputs" \
   --binary "$pibt" \
   --adapter-source "$frozen/pibt_lifelong.cpp" \
+  --upstream-repo /home/shlee/mapf-baselines/pibt2 \
   --densities 10,30,50 \
   --scenarios 0,1,2,3,4 \
   --horizon 10000 \

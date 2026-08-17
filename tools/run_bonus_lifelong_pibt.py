@@ -146,6 +146,8 @@ def main() -> int:
         "--binary", default=str(Path.home() / "mapf-baselines/pibt2/build_bonus/lifelong_fixed"))
     parser.add_argument(
         "--adapter-source", default=str(Path.home() / "mapf-baselines/pibt2/lifelong_fixed.cpp"))
+    parser.add_argument(
+        "--upstream-repo", default=str(Path.home() / "mapf-baselines/pibt2"))
     parser.add_argument("--maps", help="optional comma-separated map filter")
     parser.add_argument("--densities", help="optional comma-separated density filter")
     parser.add_argument("--scenarios", help="optional comma-separated scenario filter")
@@ -160,7 +162,8 @@ def main() -> int:
         parser.error("invalid jobs, horizon, or warmup")
     binary = Path(args.binary).resolve()
     source = Path(args.adapter_source).resolve()
-    if not binary.is_file() or not source.is_file():
+    upstream = Path(args.upstream_repo).resolve()
+    if not binary.is_file() or not source.is_file() or not (upstream / "map").is_dir():
         parser.error("missing PIBT lifelong adapter binary or source")
     input_manifest_path = (ROOT / args.input_manifest).resolve()
     inputs = json.loads(input_manifest_path.read_text(encoding="utf-8"))
@@ -216,7 +219,6 @@ def main() -> int:
         solver_map = adapted_maps / f"{map_name}.map"
         write_pibt_map(source_map, solver_map)
         solver_maps[map_name] = solver_map
-    upstream = binary.parents[1]
     upstream_commit = subprocess.check_output(
         ["git", "-C", str(upstream), "rev-parse", "HEAD"], text=True).strip()
     runner = Path(__file__).resolve()
