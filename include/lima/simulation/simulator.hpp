@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lima/core/agent.hpp"
+#include "lima/intersection/admission.hpp"
 #include "lima/intersection/topology.hpp"
 #include "lima/intersection/coordinator.hpp"
 #include "lima/intersection/gating.hpp"
@@ -34,45 +35,6 @@ enum class GoalBehavior : std::uint8_t {
     Disappear,  // paper default: exit process, agent leaves the system
     Stay,       // agent parks on its goal and becomes an obstacle (E8)
     Lifelong,   // agent immediately receives a fresh goal (E9 task stream)
-};
-
-// Gate C admission policies.  Every non-static policy is deliberately
-// implementable by one intersection controller: it uses its own occupancy,
-// requests and waiting ages, plus at most the one-cycle-stale occupancy of
-// directly adjacent intersections.  No global traffic state is exposed.
-enum class AdmissionPolicy : std::uint8_t {
-    Static,
-    FractionalReserve,
-    RequestProportional,
-    Backpressure,
-    NeighborPressure,
-    Aimd,
-    Red,
-    Blue,
-    Rem,
-    Avq,
-    Codel,
-    Pi,
-    Pie,
-    TokenBucket,
-    Sotl,
-    Choke,
-    QueueCsma,
-    StochasticFairBlue,
-    FqCodel,
-    LongestQueue,
-    OldestRequest,
-    RoundRobin,
-    DeficitRoundRobin,
-};
-
-struct AdmissionConfig {
-    AdmissionPolicy policy{AdmissionPolicy::Static};
-    // Policy-specific knobs.  Their interpretation is recorded by the CLI
-    // manifest; zero selects the policy default.
-    double parameter{0.0};
-    double secondary{0.0};
-    double tertiary{0.0};
 };
 
 // Composition of the pluggable pieces.  Defaults reproduce the shipped
@@ -135,11 +97,10 @@ struct SimulatorConfig {
     // Age-rate asymmetry: agents accrue priority age at distinct per-agent
     // rates so frozen equal-age relative orders eventually rotate.
     bool pibt_age_rate{false};
-    // Off-route replan: an unscheduled agent displaced from its route
-    // (position != route[cursor]) that has waited this many steps recomputes
-    // its global route from its current cell (0 = disabled).  Rescues agents
-    // parked in a Manhattan local minimum of the waypoint pull.  Must be
-    // smaller than stall_threshold to fire before the run is declared stalled.
+    // Suffix-preserving route repair: an unscheduled agent displaced from its
+    // active route reconnects to the first unfinished task-level reference
+    // waypoint after this many waits (0 = disabled). The Route Planner owns
+    // the bridge; Intersection Agents never replace the preserved suffix.
     std::uint32_t pibt_replan{0};
     // W7 no-prior-priority check: when >= 0, the per-cycle intersection
     // scheduling order (normally least-loaded first, id tie-break) is replaced
@@ -242,13 +203,9 @@ private:
     std::vector<std::size_t> admission_requests_;
     std::vector<std::array<std::size_t, 4>> admission_arm_requests_;
     std::vector<std::array<std::uint32_t, 4>> admission_arm_max_wait_;
-    // AIMD controls acknowledged admission work in flight, independently of
-    // the physical intersection capacity.  Grants persist across execution
-    // delays until entry is acknowledged or the request is withdrawn.
-    std::vector<IntersectionId> admission_grant_target_;
-    std::vector<std::vector<AgentId>> admission_request_agents_;
-    std::vector<std::size_t> admission_outstanding_;
-    std::vector<std::size_t> admission_acked_;
+    AcknowledgedAimdAdmission aimd_admission_;
+    std::vector<AimdAdmissionRequest> aimd_requests_;
+    std::vector<AimdIntersectionObservation> aimd_observations_;
     std::vector<std::array<double, 4>> admission_deficit_;
     std::vector<std::uint32_t> admission_rr_cursor_;
     std::vector<std::uint32_t> admission_congestion_age_;
@@ -289,6 +246,7 @@ private:
     void update_available_on_move(AgentId agent, CellId current, CellId next);
     void insert_scheduled_path(Agent& agent, const ScheduledPath& scheduled, IntersectionId intersection);
     void move_agent(Agent& agent);
+    void advance_reference_progress(Agent& agent);
     void count_zone_entries(AgentId agent, CellId current, CellId next);
     void rotate_blocked_cycles();
     void assign_lifelong_goals();

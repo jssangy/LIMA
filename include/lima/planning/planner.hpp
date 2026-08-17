@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <deque>
+#include <optional>
 #include <random>
 #include <span>
 #include <unordered_map>
@@ -38,6 +39,22 @@ private:
 };
 
 std::unique_ptr<Planner> make_planner(PlannerKind kind, const GridMap& map, std::mt19937_64& rng);
+
+struct SuffixRepair {
+    // Executable route beginning at the agent's current cell and ending at the
+    // unchanged reference goal.
+    std::vector<CellId> route;
+    CellId rejoin{kInvalidCell};
+    std::size_t reference_rejoin_index{};
+    std::size_t bridge_edges{};
+};
+
+// Reconnect a displaced agent to the first unfinished reference waypoint and
+// preserve the entire suffix after it. This is the Route Planner's recovery
+// contract; local coordination never replaces an unfinished reference suffix.
+std::optional<SuffixRepair> repair_to_reference_suffix(
+    Planner& planner, CellId current, std::span<const CellId> reference_route,
+    std::size_t reference_cursor);
 
 // Local recovery route. A non-zero blocked entry excludes that cell, except start and goal.
 std::vector<CellId> plan_avoiding(const GridMap& map, CellId start, CellId goal,

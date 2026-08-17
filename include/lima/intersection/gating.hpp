@@ -11,9 +11,11 @@
 
 namespace lima {
 
-// Which local-solvability capacity bound an intersection advertises.
-// SumMinusMax is the frozen operational envelope. SumMinusMaxPlusOne is kept
-// only as a sensitivity/legacy-manuscript audit variant.
+// Which local capacity-admissibility bound an intersection advertises.
+// SumMinusMax reserves enough arm slots to hold the longest possible blocking
+// prefix. It is a capacity contract, not a certificate that every labelled
+// local arrangement is rearrangeable. SumMinusMaxPlusOne is retained only as
+// a sensitivity/legacy-manuscript audit variant.
 enum class CapacityFormula : std::uint8_t { SumMinusMax, SumMinusMaxPlusOne };
 
 // Local recirculation-loop selection policies.  Every dynamic policy consumes

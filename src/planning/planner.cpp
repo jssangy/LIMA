@@ -123,6 +123,27 @@ std::unique_ptr<Planner> make_planner(const PlannerKind kind, const GridMap& map
     throw std::invalid_argument("unsupported planner");
 }
 
+std::optional<SuffixRepair> repair_to_reference_suffix(
+    Planner& planner, const CellId current, const std::span<const CellId> reference_route,
+    const std::size_t reference_cursor) {
+    if (reference_route.empty() || reference_cursor >= reference_route.size()) return std::nullopt;
+    const std::size_t rejoin_index = std::min(reference_cursor + 1, reference_route.size() - 1);
+    const CellId rejoin = reference_route[rejoin_index];
+    auto bridge = planner.plan(current, rejoin);
+    if (bridge.empty() || bridge.front() != current || bridge.back() != rejoin) return std::nullopt;
+
+    SuffixRepair repair;
+    repair.rejoin = rejoin;
+    repair.reference_rejoin_index = rejoin_index;
+    repair.bridge_edges = bridge.size() - 1;
+    repair.route.reserve(bridge.size() + reference_route.size() - rejoin_index - 1);
+    repair.route = std::move(bridge);
+    repair.route.insert(repair.route.end(),
+        reference_route.begin() + static_cast<std::ptrdiff_t>(rejoin_index + 1),
+        reference_route.end());
+    return repair;
+}
+
 std::vector<CellId> plan_avoiding(const GridMap& map, const CellId start, const CellId goal,
                                   const std::span<const std::uint8_t> blocked) {
     if (blocked.size() != static_cast<std::size_t>(map.cell_count())) {
