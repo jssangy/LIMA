@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <limits>
+#include <unordered_set>
 
 namespace lima {
 
@@ -21,18 +23,33 @@ int scheduling_capacity(const Intersection& intersection, const IsolationConfig&
 }
 
 std::vector<RecirculationDischarge::Event> RecirculationDischarge::run(const Context& context) const {
+    information_events_.clear();
     const auto active = [&](const IntersectionId iid) {
         return context.deadlock_active[static_cast<std::size_t>(iid)] != 0;
     };
     std::vector<Event> events;
     const auto& intersections = context.topology.intersections();
-    for (const Intersection& source : intersections) {
+    std::vector<IntersectionId> sources;
+    sources.reserve(intersections.size());
+    for (const Intersection& intersection : intersections)
+        sources.push_back(intersection.id);
+    if (config_.exclusive == RecirculationExclusiveMode::StallAge && context.stall_ages) {
+        std::sort(sources.begin(), sources.end(), [&](const IntersectionId lhs, const IntersectionId rhs) {
+            const auto l = (*context.stall_ages)[static_cast<std::size_t>(lhs)];
+            const auto r = (*context.stall_ages)[static_cast<std::size_t>(rhs)];
+            return l != r ? l > r : lhs < rhs;
+        });
+    }
+    std::unordered_set<IntersectionId> claimed_nodes;
+    std::unordered_set<CellId> reserved_cells;
+    for (const IntersectionId source_id : sources) {
+        const Intersection& source = intersections[static_cast<std::size_t>(source_id)];
         const std::size_t source_index = static_cast<std::size_t>(source.id);
         if (!context.stalled[source_index] || active(source.id)) continue;
 
         struct CycleCandidate {
             std::size_t direction{};
-            std::vector<std::array<IntersectionId, 4>> cycles;
+            std::vector<std::vector<IntersectionId>> cycles;
         };
         std::vector<CycleCandidate> candidates;
         for (std::size_t d = 0; d < 4; ++d) {
@@ -45,6 +62,8 @@ std::vector<RecirculationDischarge::Event> RecirculationDischarge::run(const Con
                 if (neighbor >= 0 && neighbor != source.id) around_b.push_back(neighbor);
             CycleCandidate candidate;
             candidate.direction = d;
+            // Preserve the shipped four-cycle enumeration and ordering
+            // exactly when cycle_max=4.
             for (std::size_t i = 0; i < around_b.size(); ++i) {
                 for (std::size_t j = i + 1; j < around_b.size(); ++j) {
                     const IntersectionId c = around_b[i];
@@ -58,7 +77,92 @@ std::vector<RecirculationDischarge::Event> RecirculationDischarge::run(const Con
                     }
                 }
             }
+            if (config_.cycle_max > 4) {
+                std::vector<IntersectionId> path{b};
+                std::unordered_set<IntersectionId> seen{b, source.id};
+                std::function<void(IntersectionId)> search = [&](const IntersectionId current) {
+                    for (const IntersectionId neighbor
+                         : intersections[static_cast<std::size_t>(current)].neighbors) {
+                        if (neighbor < 0 || neighbor == source.id) continue;
+                        if (neighbor == b) {
+                            if (path.size() <= 4 || path.size() > config_.cycle_max) continue;
+                            const auto duplicate = std::find(candidate.cycles.begin(), candidate.cycles.end(), path);
+                            if (duplicate == candidate.cycles.end()) candidate.cycles.push_back(path);
+                            continue;
+                        }
+                        if (path.size() >= config_.cycle_max || seen.contains(neighbor)) continue;
+                        seen.insert(neighbor);
+                        path.push_back(neighbor);
+                        search(neighbor);
+                        path.pop_back();
+                        seen.erase(neighbor);
+                    }
+                };
+                search(b);
+            }
             if (!candidate.cycles.empty()) candidates.push_back(std::move(candidate));
+        }
+        bool source_has_four_cycle = false;
+        bool source_has_long_cycle = false;
+        for (const auto& candidate : candidates) {
+            for (const auto& cycle : candidate.cycles) {
+                source_has_four_cycle = source_has_four_cycle || cycle.size() == 4;
+                source_has_long_cycle = source_has_long_cycle || cycle.size() > 4;
+            }
+        }
+        if (!source_has_four_cycle && source_has_long_cycle)
+            information_events_.push_back({"R3", "candidate_rescue", source.id, -1,
+                                           1, 0, 0, 0});
+        if (config_.probe.mode != RecirculationProbeMode::Off && context.detected_cycles
+            && source_index < context.detected_cycles->size()) {
+            const auto& detected = (*context.detected_cycles)[source_index];
+            if (!detected.empty()) {
+                std::vector<IntersectionId> preferred = detected;
+                if (config_.probe.mode == RecirculationProbeMode::BreakAtSlack) {
+                    const auto best = std::max_element(preferred.begin(), preferred.end(),
+                        [&](const IntersectionId lhs, const IntersectionId rhs) {
+                            const int l = context.available
+                                ? (*context.available)[static_cast<std::size_t>(lhs)] : 0;
+                            const int r = context.available
+                                ? (*context.available)[static_cast<std::size_t>(rhs)] : 0;
+                            return l != r ? l < r : lhs > rhs;
+                        });
+                    if (best != preferred.end()) preferred = {*best};
+                } else if (config_.probe.mode == RecirculationProbeMode::BreakAtLongArm) {
+                    const auto longest = [&](const IntersectionId iid) {
+                        std::size_t value = 0;
+                        for (const auto& arm : intersections[static_cast<std::size_t>(iid)].arms)
+                            value = std::max(value, arm.size());
+                        return value;
+                    };
+                    const auto best = std::max_element(preferred.begin(), preferred.end(),
+                        [&](const IntersectionId lhs, const IntersectionId rhs) {
+                            const auto l = longest(lhs);
+                            const auto r = longest(rhs);
+                            return l != r ? l < r : lhs > rhs;
+                        });
+                    if (best != preferred.end()) preferred = {*best};
+                }
+                bool intersects = false;
+                for (const auto& candidate : candidates)
+                    for (const auto& cycle : candidate.cycles)
+                        intersects = intersects || std::any_of(cycle.begin(), cycle.end(),
+                            [&](const IntersectionId node) {
+                                return std::find(preferred.begin(), preferred.end(), node) != preferred.end();
+                            });
+                if (intersects) {
+                    for (auto& candidate : candidates) {
+                        std::erase_if(candidate.cycles, [&](const auto& cycle) {
+                            return std::none_of(cycle.begin(), cycle.end(), [&](const IntersectionId node) {
+                                return std::find(preferred.begin(), preferred.end(), node) != preferred.end();
+                            });
+                        });
+                    }
+                    std::erase_if(candidates, [](const auto& candidate) { return candidate.cycles.empty(); });
+                    information_events_.push_back({"R1", "loop_matched", source.id, source.id,
+                                                   1, 0, 0, 0});
+                }
+            }
         }
         if (candidates.empty()) continue;
         std::size_t candidate_index = 0;
@@ -148,12 +252,13 @@ std::vector<RecirculationDischarge::Event> RecirculationDischarge::run(const Con
             std::size_t best_length = std::numeric_limits<std::size_t>::max();
             for (const FlatChoice& choice : flat) {
                 const auto& cycle = candidates[choice.candidate].cycles[choice.cycle];
-                const std::array<IntersectionId, 5> nodes{{cycle[0], cycle[1], cycle[2], cycle[3], cycle[0]}};
                 std::size_t length = 0;
                 bool valid = true;
-                for (std::size_t ni = 1; ni < nodes.size(); ++ni) {
-                    const CellId from = intersections[static_cast<std::size_t>(nodes[ni - 1])].center;
-                    const CellId to = intersections[static_cast<std::size_t>(nodes[ni])].center;
+                for (std::size_t ni = 1; ni <= cycle.size(); ++ni) {
+                    const IntersectionId previous = cycle[ni - 1];
+                    const IntersectionId next = cycle[ni % cycle.size()];
+                    const CellId from = intersections[static_cast<std::size_t>(previous)].center;
+                    const CellId to = intersections[static_cast<std::size_t>(next)].center;
                     const auto segment = context.planner.plan(from, to);
                     if (segment.empty()) {
                         valid = false;
@@ -234,13 +339,33 @@ std::vector<RecirculationDischarge::Event> RecirculationDischarge::run(const Con
             reversed = reverse_cycle(context.rng);
         }
         CycleCandidate& selected = candidates[candidate_index];
-        std::array<IntersectionId, 4> cycle = selected.cycles[cycle_index];
-        if (reversed) std::swap(cycle[1], cycle[3]);
+        std::vector<IntersectionId> cycle = selected.cycles[cycle_index];
+        if (reversed && cycle.size() > 2)
+            std::reverse(cycle.begin() + 1, cycle.end());
         const std::size_t source_direction = selected.direction;
+
+        if (config_.exclusive != RecirculationExclusiveMode::Off)
+            information_events_.push_back({"R2", "advertise", source.id,
+                                           source.neighbors[source_direction], 1,
+                                           static_cast<std::uint32_t>(sizeof(std::uint16_t)), 1, 1});
+
+        if (config_.exclusive == RecirculationExclusiveMode::IntersectionId
+            || config_.exclusive == RecirculationExclusiveMode::StallAge) {
+            const bool overlap = std::any_of(cycle.begin(), cycle.end(),
+                [&](const IntersectionId node) { return claimed_nodes.contains(node); });
+            if (overlap) {
+                information_events_.push_back({"R2", "yield", source.id, -1, 1,
+                                               0, 0, 0});
+                continue;
+            }
+        }
 
         Event event;
         event.intersection = source.id;
+        event.cycle_length = cycle.size();
+        event.long_cycle_rescue = cycle.size() > 4 && !source_has_four_cycle;
         const auto& escape_arm = source.arms[source_direction];
+        std::unordered_set<CellId> proposed_cells;
         for (const AgentId id : context.members[source_index]) {
             Agent& agent = context.agents[static_cast<std::size_t>(id)];
             if (!agent.active || agent.scheduled()) continue;
@@ -253,13 +378,12 @@ std::vector<RecirculationDischarge::Event> RecirculationDischarge::run(const Con
             std::vector<CellId> detour{agent.position};
             CellId cursor = agent.position;
             bool valid = true;
-            const std::array<CellId, 6> waypoints{{
-                intersections[static_cast<std::size_t>(cycle[0])].center,
-                intersections[static_cast<std::size_t>(cycle[1])].center,
-                intersections[static_cast<std::size_t>(cycle[2])].center,
-                intersections[static_cast<std::size_t>(cycle[3])].center,
-                intersections[static_cast<std::size_t>(cycle[0])].center,
-                agent.position}};
+            std::vector<CellId> waypoints;
+            waypoints.reserve(cycle.size() + 2);
+            for (const IntersectionId node : cycle)
+                waypoints.push_back(intersections[static_cast<std::size_t>(node)].center);
+            waypoints.push_back(intersections[static_cast<std::size_t>(cycle.front())].center);
+            waypoints.push_back(agent.position);
             for (const CellId waypoint : waypoints) {
                 auto segment = context.planner.plan(cursor, waypoint);
                 if (segment.empty()) {
@@ -270,6 +394,13 @@ std::vector<RecirculationDischarge::Event> RecirculationDischarge::run(const Con
                 cursor = waypoint;
             }
             if (!valid) continue;
+            if (config_.exclusive == RecirculationExclusiveMode::ReserveCells
+                && std::any_of(detour.begin(), detour.end(),
+                    [&](const CellId cell) { return reserved_cells.contains(cell); })) {
+                information_events_.push_back({"R2", "yield", source.id, -1, 1,
+                                               0, 0, 0});
+                continue;
+            }
             std::vector<CellId> inserted;
             inserted.reserve(agent.route.size() + detour.size());
             inserted.insert(inserted.end(), agent.route.begin(),
@@ -284,9 +415,27 @@ std::vector<RecirculationDischarge::Event> RecirculationDischarge::run(const Con
             event.agent_loop_cells.push_back(detour.size());
             event.agent_loop_closed.push_back(
                 detour.size() > 1 && detour.front() == detour.back() ? 1 : 0);
+            if (config_.exclusive == RecirculationExclusiveMode::ReserveCells)
+                proposed_cells.insert(detour.begin(), detour.end());
         }
-        if (event.rerouted > 0) events.push_back(event);
+        if (event.rerouted > 0) {
+            if (config_.exclusive == RecirculationExclusiveMode::IntersectionId
+                || config_.exclusive == RecirculationExclusiveMode::StallAge)
+                claimed_nodes.insert(cycle.begin(), cycle.end());
+            if (config_.exclusive == RecirculationExclusiveMode::ReserveCells)
+                reserved_cells.insert(proposed_cells.begin(), proposed_cells.end());
+            if (event.long_cycle_rescue)
+                information_events_.push_back({"R3", "long_cycle_rescue", source.id, -1,
+                                               1, 0, 0, 0});
+            events.push_back(event);
+        }
     }
+    return events;
+}
+
+std::vector<AdmissionInformationEvent> RecirculationDischarge::take_information_events() const {
+    auto events = std::move(information_events_);
+    information_events_.clear();
     return events;
 }
 

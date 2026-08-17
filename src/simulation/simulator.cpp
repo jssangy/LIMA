@@ -94,7 +94,9 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
       planner_(make_planner(planner_kind, map_, rng_)),
       topology_(IntersectionTopology::build(map_)),
       solver_(make_solver(config_.solver)), coordinator_(*solver_, config_.pibt_corridor),
-      discharge_(config_.discharge) {
+      discharge_(config_.discharge),
+      recirculation_probe_(config_.discharge.probe),
+      admission_information_(config_.admission_information) {
     admission_seed_ = seed ^ 0xe7037ed1a0b428dbULL;
     agents_.reserve(tasks.size());
     std::unordered_set<CellId> occupied;
@@ -165,10 +167,12 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
     intersection_available_.resize(topology_.intersections().size());
     intersection_capacity_.resize(topology_.intersections().size());
     admission_reserve_.resize(topology_.intersections().size(), config_.isolation.hysteresis);
+    admission_credit_available_.resize(topology_.intersections().size());
     admission_arm_mask_.resize(topology_.intersections().size(), 0x0fU);
     admission_requests_.resize(topology_.intersections().size());
     admission_arm_requests_.resize(topology_.intersections().size());
     admission_arm_max_wait_.resize(topology_.intersections().size());
+    admission_credit_requests_.reserve(agents_.size());
     admission_deficit_.resize(topology_.intersections().size());
     admission_rr_cursor_.resize(topology_.intersections().size());
     admission_congestion_age_.resize(topology_.intersections().size());
@@ -184,6 +188,8 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
     deadlock_waiting_.resize(topology_.intersections().size(), false);
     deadlock_active_.resize(topology_.intersections().size(), 0);
     deadlock_priority_.resize(topology_.intersections().size(), 0);
+    intersection_stall_age_.resize(topology_.intersections().size());
+    intersection_wait_for_.resize(topology_.intersections().size(), -1);
     for (const Intersection& intersection : topology_.intersections()) {
         const auto iid = static_cast<std::size_t>(intersection.id);
         intersection_capacity_[iid] = scheduling_capacity(intersection, config_.isolation);
@@ -197,6 +203,8 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
     }
 
     const std::size_t intersection_count = topology_.intersections().size();
+    admission_information_.resize(intersection_count, agents_.size());
+    recirculation_probe_.resize(intersection_count);
     inside_counts_.resize(intersection_count);
     members_.resize(intersection_count);
     intents_.resize(intersection_count);
@@ -278,6 +286,22 @@ IntersectionId Simulator::entering_intersection(const CellId current, const Cell
     return -1;
 }
 
+IntersectionId Simulator::downstream_intersection(const Agent& agent,
+                                                  const IntersectionId entering) const {
+    if (entering < 0 || agent.route.empty() || agent.route_cursor >= agent.route.size()) return -1;
+    const Intersection& intersection = topology_.intersections()[static_cast<std::size_t>(entering)];
+    auto cursor = agent.route.begin() + static_cast<std::ptrdiff_t>(agent.route_cursor);
+    const auto center = std::find(cursor, agent.route.end(), intersection.center);
+    if (center == agent.route.end()) return -1;
+    for (auto cell = center + 1; cell != agent.route.end(); ++cell) {
+        const Direction direction = intersection.direction_of(*cell);
+        const auto d = static_cast<std::size_t>(direction);
+        if (d < 4) return intersection.neighbors[d];
+        if (topology_.memberships(*cell).empty()) break;
+    }
+    return -1;
+}
+
 void Simulator::update_admission_policy() {
     std::fill(admission_requests_.begin(), admission_requests_.end(), 0);
     std::fill(admission_arm_requests_.begin(), admission_arm_requests_.end(),
@@ -285,6 +309,7 @@ void Simulator::update_admission_policy() {
     std::fill(admission_arm_max_wait_.begin(), admission_arm_max_wait_.end(),
               std::array<std::uint32_t, 4>{});
     std::fill(admission_arm_mask_.begin(), admission_arm_mask_.end(), 0x0fU);
+    admission_credit_requests_.clear();
 
     for (const Agent& agent : agents_) if (agent.active && !agent.scheduled()) {
         const CellId next = agent.intended_cell();
@@ -297,6 +322,7 @@ void Simulator::update_admission_policy() {
         ++admission_requests_[iid];
         ++admission_arm_requests_[iid][d];
         admission_arm_max_wait_[iid][d] = std::max(admission_arm_max_wait_[iid][d], agent.wait_steps);
+        admission_credit_requests_.push_back({agent.id, entering, d, agent.wait_steps});
     }
 
     const auto policy = config_.admission.policy;
@@ -356,7 +382,10 @@ void Simulator::update_admission_policy() {
                 ? config_.admission.parameter : 0.5;
             const double increase = config_.admission.secondary > 0.0
                 ? config_.admission.secondary : 0.25;
-            if (stalled_[iid] || ratio >= 0.95)
+            const bool congested = admission_information_.aimd_congested(
+                static_cast<IntersectionId>(iid), stalled_[iid] || ratio >= 0.95,
+                topology_, prev_inside_counts_, intersection_capacity_);
+            if (congested)
                 admission_window_[iid] = std::max(1.0, beta * admission_window_[iid]);
             else admission_window_[iid] = std::min(static_cast<double>(capacity),
                                                    admission_window_[iid] + increase);
@@ -629,6 +658,13 @@ void Simulator::update_admission_policy() {
         }
         admission_reserve_[iid] = std::clamp(reserve, 0, capacity);
     }
+    if (config_.admission_information.credit != AdmitCreditMode::Off) {
+        for (std::size_t iid = 0; iid < admission_credit_available_.size(); ++iid)
+            admission_credit_available_[iid] = intersection_capacity_[iid]
+                - static_cast<int>(inside_counts_[iid]);
+        admission_information_.prepare_credits(
+            admission_credit_requests_, admission_credit_available_, admission_reserve_);
+    }
 }
 
 bool Simulator::admission_policy_blocks(const CellId current, const IntersectionId entering,
@@ -676,7 +712,8 @@ bool Simulator::admission_policy_blocks(const CellId current, const Intersection
     return sample < probability;
 }
 
-bool Simulator::block_intersection(const CellId current, const CellId next, const bool normal_only) const {
+bool Simulator::block_intersection(const Agent& agent, const CellId next, const bool normal_only) {
+    const CellId current = agent.position;
     const auto& current_memberships = topology_.memberships(current);
     const bool current_outside = current_memberships.empty();
     const bool current_center = topology_.is_center(current);
@@ -687,6 +724,11 @@ bool Simulator::block_intersection(const CellId current, const CellId next, cons
     const auto iid = static_cast<std::size_t>(entering);
     if (normal_only) {
         if (intersection_available_[iid] <= admission_reserve_[iid]) return true;
+        if (!admission_information_.credit_allows(agent.id, entering)) return true;
+        const IntersectionId downstream = downstream_intersection(agent, entering);
+        if (admission_information_.lookahead_blocks(
+                entering, downstream, prev_inside_counts_, intersection_capacity_,
+                intersection_available_)) return true;
         const auto direction = static_cast<std::size_t>(topology_.intersections()[iid].direction_of(next));
         if (direction < 4 && (admission_arm_mask_[iid] & (1U << direction)) == 0) return true;
         if (config_.admission.policy == AdmissionPolicy::TokenBucket && admission_tokens_[iid] < 1.0)
@@ -728,12 +770,71 @@ void Simulator::update_available_on_move(const CellId current, const CellId next
 }
 
 void Simulator::count_zone_entries(const AgentId agent, const CellId current, const CellId next) {
-    if (!metrics_ || current == next) return;
+    if (current == next) return;
     const auto& from = topology_.memberships(current);
     for (const IntersectionId iid : topology_.memberships(next)) {
         if (std::find(from.begin(), from.end(), iid) != from.end()) continue;
-        const CellId center = topology_.intersections()[static_cast<std::size_t>(iid)].center;
-        metrics_->on_acquisition(stats_.timestep, agent, iid, cell_distance(map_, next, center));
+        admission_information_.note_credit_consumed(agent, iid);
+        if (metrics_) {
+            const CellId center = topology_.intersections()[static_cast<std::size_t>(iid)].center;
+            metrics_->on_acquisition(stats_.timestep, agent, iid, cell_distance(map_, next, center));
+        }
+    }
+}
+
+void Simulator::flush_admission_information_events() {
+    auto events = admission_information_.take_events();
+    if (!metrics_) return;
+    for (const AdmissionInformationEvent& event : events) {
+        metrics_->on_controller_information(
+            stats_.timestep, event.mechanism, event.event, event.source, event.target,
+            event.count, event.bytes, event.hops, event.delay);
+    }
+}
+
+void Simulator::update_recirculation_wait_for() {
+    std::fill(intersection_wait_for_.begin(), intersection_wait_for_.end(), -1);
+    for (const Intersection& source : topology_.intersections()) {
+        const auto source_index = static_cast<std::size_t>(source.id);
+        if (stalled_[source_index]) ++intersection_stall_age_[source_index];
+        else intersection_stall_age_[source_index] = 0;
+        if (!stalled_[source_index]) continue;
+        std::array<std::size_t, 4> demand{};
+        for (const AgentId id : members_[source_index]) {
+            const Agent& agent = agents_[static_cast<std::size_t>(id)];
+            if (!agent.active || agent.route_cursor >= agent.route.size()) continue;
+            bool found = false;
+            for (std::size_t cursor = agent.route_cursor + 1;
+                 cursor < agent.route.size() && !found; ++cursor) {
+                for (const IntersectionId candidate : topology_.memberships(agent.route[cursor])) {
+                    if (candidate == source.id) continue;
+                    const auto neighbor = std::find(source.neighbors.begin(), source.neighbors.end(), candidate);
+                    if (neighbor == source.neighbors.end()) continue;
+                    ++demand[static_cast<std::size_t>(neighbor - source.neighbors.begin())];
+                    found = true;
+                    break;
+                }
+            }
+        }
+        std::size_t best = 0;
+        for (std::size_t d = 1; d < 4; ++d)
+            if (demand[d] > demand[best]) best = d;
+        if (demand[best] > 0) intersection_wait_for_[source_index] = source.neighbors[best];
+    }
+    recirculation_probe_.step(topology_, stalled_, intersection_wait_for_);
+}
+
+void Simulator::flush_recirculation_information_events() {
+    auto probe_events = recirculation_probe_.take_events();
+    auto discharge_events = discharge_.take_information_events();
+    if (!metrics_) return;
+    probe_events.insert(probe_events.end(),
+                        std::make_move_iterator(discharge_events.begin()),
+                        std::make_move_iterator(discharge_events.end()));
+    for (const AdmissionInformationEvent& event : probe_events) {
+        metrics_->on_controller_information(
+            stats_.timestep, event.mechanism, event.event, event.source, event.target,
+            event.count, event.bytes, event.hops, event.delay);
     }
 }
 
@@ -840,6 +941,7 @@ bool Simulator::step() {
         }
         check_[iid] = check_[iid] || stalled_[iid] || deadlock_waiting_[iid];
     }
+    update_recirculation_wait_for();
     update_admission_policy();
     if (config_.gate_resync) {
         // Ground-truth admission budget.  Quota reservations made below will
@@ -1045,7 +1147,8 @@ bool Simulator::step() {
 
     if (config_.discharge_enabled) {
         auto discharge_events = discharge_.run({topology_, agents_, members_, stalled_, deadlock_active_, *planner_, rng_,
-                                                &intersection_available_, &prev_inside_counts_});
+                                                &intersection_available_, &prev_inside_counts_,
+                                                &intersection_stall_age_, &recirculation_probe_.cycles()});
         for (auto& event : discharge_events) {
             if (metrics_) {
                 metrics_->on_discharge(stats_.timestep, event.intersection, event.agent_ids,
@@ -1078,7 +1181,7 @@ bool Simulator::step() {
     for (Agent& agent : agents_) {
         if (!agent.active || agent.scheduled()) continue;
         const CellId next = agent.intended_cell();
-        if (block_intersection(agent.position, next, true)) {
+        if (block_intersection(agent, next, true)) {
             ++agent.wait_steps;
             ++stats_.waits;
             agent.wait_reason = WaitReason::IntersectionCapacity;
@@ -1116,7 +1219,7 @@ bool Simulator::step() {
         for (const AgentId id : scheduled_members_[iid]) {
             const Agent& agent = agents_[static_cast<std::size_t>(id)];
             if (!agent.active) continue;
-            if (block_intersection(agent.position, agent.intended_cell(), false)
+            if (block_intersection(agent, agent.intended_cell(), false)
                 || normal_occupied_[static_cast<std::size_t>(agent.intended_cell())]) {
                 blocked_[iid] = true;
                 break;
@@ -1191,6 +1294,8 @@ bool Simulator::step() {
         }
     }
     if (goal_allocator_) assign_lifelong_goals();
+    flush_admission_information_events();
+    flush_recirculation_information_events();
     if (metrics_) {
         metrics_->observe_step(stats_.timestep, agents_);
         metrics_->flush_step(stats_.timestep);
@@ -1313,7 +1418,7 @@ void Simulator::compute_rescue_groups() {
             const Agent& agent = agents_[static_cast<std::size_t>(id)];
             if (!agent.active) continue;
             const CellId next = agent.intended_cell();
-            if (block_intersection(agent.position, next, false)) {
+            if (block_intersection(agent, next, false)) {
                 blocked_[iid] = true;
                 break;
             }
@@ -1381,7 +1486,7 @@ void Simulator::compute_rescue_groups() {
             if (blocked_[iid]) break;
             const Agent& agent = agents_[static_cast<std::size_t>(id)];
             const CellId next = next_for(agent);
-            if (block_intersection(agent.position, next, false)
+            if (block_intersection(agent, next, false)
                 || scheduled_reserved_[static_cast<std::size_t>(next)] != 0
                 || std::find(destinations.begin(), destinations.end(), next) != destinations.end()) {
                 blocked_[iid] = true;
@@ -1563,7 +1668,7 @@ void Simulator::run_pibt_movement() {
             agent.wait_reason = WaitReason::IntersectionReserved;
             continue;
         }
-        if (block_intersection(agent.position, next, true)) {
+        if (block_intersection(agent, next, true)) {
             ++agent.wait_steps;
             ++stats_.waits;
             agent.wait_reason = WaitReason::IntersectionCapacity;
@@ -1622,7 +1727,7 @@ void Simulator::run_pibt_movement() {
                 for (const IntersectionId iid : topology_.memberships(candidate))
                     if (deadlock_active_[static_cast<std::size_t>(iid)] != 0) return false;
             }
-            return !block_intersection(agent.position, candidate, true);
+            return !block_intersection(agent, candidate, true);
         }, pibt_next_);
 
     if (config_.failure_probability > 0.0) {

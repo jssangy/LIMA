@@ -2,6 +2,7 @@
 
 #include "lima/core/agent.hpp"
 #include "lima/intersection/topology.hpp"
+#include "lima/intersection/admission_information.hpp"
 #include "lima/intersection/coordinator.hpp"
 #include "lima/intersection/gating.hpp"
 #include "lima/planning/planner.hpp"
@@ -82,6 +83,7 @@ struct SimulatorConfig {
     IsolationConfig isolation{};
     DischargeConfig discharge{};
     AdmissionConfig admission{};
+    AdmissionInformationConfig admission_information{};
     std::uint32_t stall_threshold{10};  // all-active-waiting steps before the run is declared stalled
     bool discharge_enabled{true};
     // Gridlock rotation: when blocked agents form a closed mutual-wait cycle
@@ -214,6 +216,8 @@ private:
     std::unique_ptr<StackSolver> solver_;
     IntersectionCoordinator coordinator_;
     RecirculationDischarge discharge_;
+    RecirculationProbeDetector recirculation_probe_;
+    AdmissionInformationAxis admission_information_;
     std::unique_ptr<MetricsCollector> metrics_;
     std::unique_ptr<StepTracer> tracer_;
     std::unique_ptr<GoalAllocator> goal_allocator_;  // lifelong mode only
@@ -238,10 +242,12 @@ private:
     std::vector<int> intersection_capacity_;
     std::uint64_t admission_seed_{};
     std::vector<int> admission_reserve_;
+    std::vector<int> admission_credit_available_;
     std::vector<std::uint8_t> admission_arm_mask_;
     std::vector<std::size_t> admission_requests_;
     std::vector<std::array<std::size_t, 4>> admission_arm_requests_;
     std::vector<std::array<std::uint32_t, 4>> admission_arm_max_wait_;
+    std::vector<AdmissionCreditRequest> admission_credit_requests_;
     std::vector<std::array<double, 4>> admission_deficit_;
     std::vector<std::uint32_t> admission_rr_cursor_;
     std::vector<std::uint32_t> admission_congestion_age_;
@@ -255,6 +261,8 @@ private:
     std::vector<std::array<double, 4>> admission_arm_counter_;
     std::vector<std::uint8_t> deadlock_active_;
     std::vector<std::size_t> deadlock_priority_;
+    std::vector<std::uint32_t> intersection_stall_age_;
+    std::vector<IntersectionId> intersection_wait_for_;
 
     [[nodiscard]] bool sample_command_failure(AgentId agent);
 
@@ -275,10 +283,15 @@ private:
     bool has_active_neighbor(IntersectionId intersection) const;
     void rebuild_deadlock_priorities();
     [[nodiscard]] IntersectionId entering_intersection(CellId current, CellId next) const;
+    [[nodiscard]] IntersectionId downstream_intersection(const Agent& agent,
+                                                         IntersectionId entering) const;
     void update_admission_policy();
     [[nodiscard]] bool admission_policy_blocks(CellId current, IntersectionId entering,
                                                 std::size_t direction) const;
-    bool block_intersection(CellId current, CellId next, bool normal_only) const;
+    bool block_intersection(const Agent& agent, CellId next, bool normal_only);
+    void flush_admission_information_events();
+    void update_recirculation_wait_for();
+    void flush_recirculation_information_events();
     void update_available_on_move(CellId current, CellId next);
     void insert_scheduled_path(Agent& agent, const ScheduledPath& scheduled, IntersectionId intersection);
     void move_agent(Agent& agent);

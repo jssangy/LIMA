@@ -2,6 +2,7 @@
 
 #include "lima/core/agent.hpp"
 #include "lima/intersection/topology.hpp"
+#include "lima/intersection/recirculation_probe.hpp"
 #include "lima/planning/planner.hpp"
 
 #include <cstdint>
@@ -33,6 +34,8 @@ enum class DischargePolicy : std::uint8_t {
     Demand,
 };
 
+enum class RecirculationExclusiveMode : std::uint8_t { Off, IntersectionId, StallAge, ReserveCells };
+
 struct IsolationConfig {
     CapacityFormula formula{CapacityFormula::SumMinusMax};
     int cap{-1};       // operational ceiling on the bound; -1 disables (experiment E11)
@@ -54,6 +57,9 @@ struct DischargeConfig {
     double partial_stall{1.0};         // waiting-member fraction that marks an intersection stalled
     DischargePolicy policy{DischargePolicy::Legacy};
     double weight{1.0};                // neighbor backlog weight for the balanced policy
+    RecirculationProbeConfig probe{};
+    RecirculationExclusiveMode exclusive{RecirculationExclusiveMode::Off};
+    std::uint8_t cycle_max{4};
 };
 
 [[nodiscard]] int scheduling_capacity(const Intersection& intersection, const IsolationConfig& config);
@@ -78,6 +84,8 @@ public:
         // the existing adjacent-module exchange (one cycle stale), keeping
         // load-aware cycle choice within the limited-communication rule.
         const std::vector<std::size_t>* stale_loads{nullptr};
+        const std::vector<std::uint32_t>* stall_ages{nullptr};
+        const std::vector<std::vector<IntersectionId>>* detected_cycles{nullptr};
     };
     struct Event {
         IntersectionId intersection{-1};
@@ -86,13 +94,17 @@ public:
         std::vector<AgentId> agent_ids;
         std::vector<std::size_t> agent_loop_cells;
         std::vector<std::uint8_t> agent_loop_closed;
+        std::size_t cycle_length{};
+        bool long_cycle_rescue{};
     };
 
     [[nodiscard]] std::vector<Event> run(const Context& context) const;
+    [[nodiscard]] std::vector<AdmissionInformationEvent> take_information_events() const;
 
 private:
     DischargeConfig config_{};
     mutable std::vector<std::size_t> rotor_cursor_;
+    mutable std::vector<AdmissionInformationEvent> information_events_;
 };
 
 }  // namespace lima

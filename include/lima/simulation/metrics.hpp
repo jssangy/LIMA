@@ -36,6 +36,11 @@ public:
     void on_route_mutation(std::uint64_t timestep, AgentId agent, std::string_view kind,
                            std::size_t inserted_cells, CellId rejoin, bool rejoin_ok,
                            bool goal_preserved);
+    void on_controller_information(std::uint64_t timestep, std::string_view mechanism,
+                                   std::string_view event, IntersectionId source,
+                                   IntersectionId target, std::uint64_t count,
+                                   std::uint32_t bytes, std::uint16_t hops,
+                                   std::uint16_t delay_steps);
     void observe_step(std::uint64_t timestep, std::span<const Agent> agents);
     void flush_step(std::uint64_t timestep);
 
@@ -54,6 +59,7 @@ private:
     std::ofstream recirculation_csv_;
     std::ofstream route_mutations_csv_;
     std::ofstream path_validation_csv_;
+    std::ofstream controller_information_csv_;
     const GridMap& map_;
     std::vector<std::uint32_t> discharge_counts_;
     std::vector<CellId> previous_positions_;

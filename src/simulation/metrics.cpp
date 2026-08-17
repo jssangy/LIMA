@@ -30,6 +30,8 @@ MetricsCollector::MetricsCollector(const std::filesystem::path& directory, const
          "t,agent,type,inserted_cells,rejoin,rejoin_ok,goal_preserved");
     open(path_validation_csv_, "path_validation.csv",
          "steps_observed,invalid_moves,vertex_conflicts,edge_conflicts,completed_goal_mismatches,ok");
+    open(controller_information_csv_, "controller_information_events.csv",
+         "t,mechanism,event,source,target,count,bytes,hops,delay_steps");
     previous_positions_.reserve(agents.size());
     previous_active_.reserve(agents.size());
     for (const Agent& agent : agents) {
@@ -100,6 +102,17 @@ void MetricsCollector::on_route_mutation(const std::uint64_t timestep, const Age
                          << (goal_preserved ? 1 : 0) << '\n';
 }
 
+void MetricsCollector::on_controller_information(
+    const std::uint64_t timestep, const std::string_view mechanism,
+    const std::string_view event, const IntersectionId source,
+    const IntersectionId target, const std::uint64_t count,
+    const std::uint32_t bytes, const std::uint16_t hops,
+    const std::uint16_t delay_steps) {
+    controller_information_csv_ << timestep << ',' << mechanism << ',' << event << ','
+                                << source << ',' << target << ',' << count << ',' << bytes
+                                << ',' << hops << ',' << delay_steps << '\n';
+}
+
 void MetricsCollector::observe_step(const std::uint64_t, const std::span<const Agent> agents) {
     if (agents.size() != previous_positions_.size())
         throw std::logic_error("metrics agent count changed");
@@ -159,6 +172,7 @@ void MetricsCollector::flush_step(const std::uint64_t timestep) {
         task_csv_.flush();
         recirculation_csv_.flush();
         route_mutations_csv_.flush();
+        controller_information_csv_.flush();
     }
     step_acquisitions_ = 0;
     step_broadcasts_ = 0;
@@ -202,9 +216,11 @@ void MetricsCollector::finalize(const std::span<const Agent> agents,
     recirculation_csv_.flush();
     route_mutations_csv_.flush();
     path_validation_csv_.flush();
+    controller_information_csv_.flush();
     for (const std::ofstream* stream : {
              &solver_csv_, &discharge_csv_, &comm_csv_, &comm_events_csv_, &agents_csv_,
-             &task_csv_, &recirculation_csv_, &route_mutations_csv_, &path_validation_csv_}) {
+             &task_csv_, &recirculation_csv_, &route_mutations_csv_, &path_validation_csv_,
+             &controller_information_csv_}) {
         if (!stream->good()) throw std::runtime_error("metrics write failed (disk full?)");
     }
 }

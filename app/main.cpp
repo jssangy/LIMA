@@ -114,8 +114,13 @@ void usage() {
                  "            [--solver-nodes N] [--beam-width N] [--beam-score disorder|bf|tt] [--search-weight F]\n"
                  "            [--routing swr|direct] [--capacity-formula operational|plus-one] [--isolation-cap N]\n"
                  "            [--gate-policy NAME] [--gate-param F] [--gate-param2 F] [--gate-param3 F]\n"
+                 "            [--admit-lookahead off|hard|thresh|ratio|diff] [--admit-lookahead-param F]\n"
+                 "            [--aimd-signal local|nbmax|nbmean|trend] [--aimd-signal-param F]\n"
+                 "            [--admit-credit off|equal|demand|drr] [--admit-credit-param F]\n"
                  "            [--discharge-policy NAME] [--discharge-unweighted|--discharge-random]\n"
                  "            [--discharge-partial F] [--discharge-weight F]\n"
+                 "            [--recirc-probe off|detect|break-slack|break-longarm] [--recirc-probe-ttl N] [--recirc-probe-age N]\n"
+                 "            [--recirc-exclusive off|id|age|reserve] [--recirc-cycle-max 4|6|8]\n"
                  "            [--no-pibt-corridor] [--pibt-sink-yield] [--pibt-arm-retreat[-last]]\n"
                  "            [--pibt-age-rate] [--pibt-replan N] [--shuffle-order SEED] [--failure-prob P]\n"
                  "            [--goal-behavior disappear|stay|lifelong] [--goal-sequences FILE]\n"
@@ -202,6 +207,32 @@ Options parse(const int argc, char** argv) {
             if (options.sim.discharge.weight < 0.0)
                 throw std::invalid_argument("discharge-weight must be non-negative");
         }
+        else if (arg == "--recirc-probe") {
+            const auto name = value();
+            if (name == "off") options.sim.discharge.probe.mode = lima::RecirculationProbeMode::Off;
+            else if (name == "detect") options.sim.discharge.probe.mode = lima::RecirculationProbeMode::Detect;
+            else if (name == "break-slack") options.sim.discharge.probe.mode = lima::RecirculationProbeMode::BreakAtSlack;
+            else if (name == "break-longarm") options.sim.discharge.probe.mode = lima::RecirculationProbeMode::BreakAtLongArm;
+            else throw std::invalid_argument("unknown recirc-probe: " + std::string(name));
+        }
+        else if (arg == "--recirc-probe-ttl")
+            options.sim.discharge.probe.ttl = static_cast<std::uint16_t>(std::stoul(std::string(value())));
+        else if (arg == "--recirc-probe-age")
+            options.sim.discharge.probe.activation_age = static_cast<std::uint16_t>(std::stoul(std::string(value())));
+        else if (arg == "--recirc-exclusive") {
+            const auto name = value();
+            if (name == "off") options.sim.discharge.exclusive = lima::RecirculationExclusiveMode::Off;
+            else if (name == "id") options.sim.discharge.exclusive = lima::RecirculationExclusiveMode::IntersectionId;
+            else if (name == "age") options.sim.discharge.exclusive = lima::RecirculationExclusiveMode::StallAge;
+            else if (name == "reserve") options.sim.discharge.exclusive = lima::RecirculationExclusiveMode::ReserveCells;
+            else throw std::invalid_argument("unknown recirc-exclusive: " + std::string(name));
+        }
+        else if (arg == "--recirc-cycle-max") {
+            const auto maximum = std::stoul(std::string(value()));
+            if (maximum != 4 && maximum != 6 && maximum != 8)
+                throw std::invalid_argument("recirc-cycle-max must be 4, 6, or 8");
+            options.sim.discharge.cycle_max = static_cast<std::uint8_t>(maximum);
+        }
         else if (arg == "--admit-hysteresis") options.sim.isolation.hysteresis = std::stoi(std::string(value()));
         else if (arg == "--gate-policy") {
             const auto name = value();
@@ -233,6 +264,37 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--gate-param") options.sim.admission.parameter = std::stod(std::string(value()));
         else if (arg == "--gate-param2") options.sim.admission.secondary = std::stod(std::string(value()));
         else if (arg == "--gate-param3") options.sim.admission.tertiary = std::stod(std::string(value()));
+        else if (arg == "--admit-lookahead") {
+            const auto name = value();
+            if (name == "off") options.sim.admission_information.lookahead = lima::AdmitLookaheadMode::Off;
+            else if (name == "hard") options.sim.admission_information.lookahead = lima::AdmitLookaheadMode::Hard;
+            else if (name == "thresh") options.sim.admission_information.lookahead = lima::AdmitLookaheadMode::Threshold;
+            else if (name == "ratio") options.sim.admission_information.lookahead = lima::AdmitLookaheadMode::Ratio;
+            else if (name == "diff") options.sim.admission_information.lookahead = lima::AdmitLookaheadMode::Differential;
+            else throw std::invalid_argument("unknown admit-lookahead: " + std::string(name));
+        }
+        else if (arg == "--admit-lookahead-param")
+            options.sim.admission_information.lookahead_parameter = std::stod(std::string(value()));
+        else if (arg == "--aimd-signal") {
+            const auto name = value();
+            if (name == "local") options.sim.admission_information.aimd_signal = lima::AimdSignalMode::Local;
+            else if (name == "nbmax") options.sim.admission_information.aimd_signal = lima::AimdSignalMode::NeighborMax;
+            else if (name == "nbmean") options.sim.admission_information.aimd_signal = lima::AimdSignalMode::NeighborMean;
+            else if (name == "trend") options.sim.admission_information.aimd_signal = lima::AimdSignalMode::Trend;
+            else throw std::invalid_argument("unknown aimd-signal: " + std::string(name));
+        }
+        else if (arg == "--aimd-signal-param")
+            options.sim.admission_information.aimd_signal_parameter = std::stod(std::string(value()));
+        else if (arg == "--admit-credit") {
+            const auto name = value();
+            if (name == "off") options.sim.admission_information.credit = lima::AdmitCreditMode::Off;
+            else if (name == "equal") options.sim.admission_information.credit = lima::AdmitCreditMode::Equal;
+            else if (name == "demand") options.sim.admission_information.credit = lima::AdmitCreditMode::Demand;
+            else if (name == "drr") options.sim.admission_information.credit = lima::AdmitCreditMode::DeficitRoundRobin;
+            else throw std::invalid_argument("unknown admit-credit: " + std::string(name));
+        }
+        else if (arg == "--admit-credit-param")
+            options.sim.admission_information.credit_parameter = std::stod(std::string(value()));
         else if (arg == "--no-discharge") options.sim.discharge_enabled = false;
         else if (arg == "--rotation") options.sim.rotation_enabled = true;
         else if (arg == "--gate-resync") options.sim.gate_resync = true;
@@ -361,6 +423,57 @@ std::string_view discharge_policy_name(const lima::DischargePolicy policy) {
     return "unknown";
 }
 
+std::string_view admit_lookahead_name(const lima::AdmitLookaheadMode mode) {
+    switch (mode) {
+    case lima::AdmitLookaheadMode::Off: return "off";
+    case lima::AdmitLookaheadMode::Hard: return "hard";
+    case lima::AdmitLookaheadMode::Threshold: return "thresh";
+    case lima::AdmitLookaheadMode::Ratio: return "ratio";
+    case lima::AdmitLookaheadMode::Differential: return "diff";
+    }
+    return "unknown";
+}
+
+std::string_view aimd_signal_name(const lima::AimdSignalMode mode) {
+    switch (mode) {
+    case lima::AimdSignalMode::Local: return "local";
+    case lima::AimdSignalMode::NeighborMax: return "nbmax";
+    case lima::AimdSignalMode::NeighborMean: return "nbmean";
+    case lima::AimdSignalMode::Trend: return "trend";
+    }
+    return "unknown";
+}
+
+std::string_view admit_credit_name(const lima::AdmitCreditMode mode) {
+    switch (mode) {
+    case lima::AdmitCreditMode::Off: return "off";
+    case lima::AdmitCreditMode::Equal: return "equal";
+    case lima::AdmitCreditMode::Demand: return "demand";
+    case lima::AdmitCreditMode::DeficitRoundRobin: return "drr";
+    }
+    return "unknown";
+}
+
+std::string_view recirc_probe_name(const lima::RecirculationProbeMode mode) {
+    switch (mode) {
+    case lima::RecirculationProbeMode::Off: return "off";
+    case lima::RecirculationProbeMode::Detect: return "detect";
+    case lima::RecirculationProbeMode::BreakAtSlack: return "break-slack";
+    case lima::RecirculationProbeMode::BreakAtLongArm: return "break-longarm";
+    }
+    return "unknown";
+}
+
+std::string_view recirc_exclusive_name(const lima::RecirculationExclusiveMode mode) {
+    switch (mode) {
+    case lima::RecirculationExclusiveMode::Off: return "off";
+    case lima::RecirculationExclusiveMode::IntersectionId: return "id";
+    case lima::RecirculationExclusiveMode::StallAge: return "age";
+    case lima::RecirculationExclusiveMode::ReserveCells: return "reserve";
+    }
+    return "unknown";
+}
+
 std::string_view planner_name(const lima::PlannerKind planner) {
     switch (planner) {
     case lima::PlannerKind::Bfs: return "bfs";
@@ -397,8 +510,14 @@ bool has_non_default_config(const Options& options) {
         || options.sim.discharge.partial_stall != 1.0
         || options.sim.discharge.policy != lima::DischargePolicy::Legacy
         || options.sim.discharge.weight != 1.0
+        || options.sim.discharge.probe.mode != lima::RecirculationProbeMode::Off
+        || options.sim.discharge.exclusive != lima::RecirculationExclusiveMode::Off
+        || options.sim.discharge.cycle_max != 4
         || options.sim.isolation.hysteresis != 0
         || options.sim.admission.policy != lima::AdmissionPolicy::Static
+        || options.sim.admission_information.lookahead != lima::AdmitLookaheadMode::Off
+        || options.sim.admission_information.aimd_signal != lima::AimdSignalMode::Local
+        || options.sim.admission_information.credit != lima::AdmitCreditMode::Off
         || options.sim.rotation_enabled
         || !options.sim.gate_resync
         || options.sim.subset_scheduling
@@ -462,6 +581,25 @@ void print_provenance(const Options& options) {
     }
     if (options.profile != "legacy" || !options.sim.gate_resync)
         std::cout << " gate_resync=" << (options.sim.gate_resync ? "on" : "off");
+    if (options.sim.admission_information.lookahead != lima::AdmitLookaheadMode::Off) {
+        std::cout << " admit_lookahead="
+                  << admit_lookahead_name(options.sim.admission_information.lookahead)
+                  << " admit_lookahead_param="
+                  << options.sim.admission_information.lookahead_parameter;
+    }
+    if (options.sim.admission_information.aimd_signal != lima::AimdSignalMode::Local) {
+        std::cout << " aimd_signal="
+                  << aimd_signal_name(options.sim.admission_information.aimd_signal)
+                  << " aimd_signal_param="
+                  << options.sim.admission_information.aimd_signal_parameter;
+    }
+    if (options.sim.admission_information.credit != lima::AdmitCreditMode::Off) {
+        std::cout << " admit_credit="
+                  << admit_credit_name(options.sim.admission_information.credit);
+        if (options.sim.admission_information.credit == lima::AdmitCreditMode::DeficitRoundRobin)
+            std::cout << " admit_credit_param="
+                      << options.sim.admission_information.credit_parameter;
+    }
     if (options.sim.subset_scheduling) std::cout << " subset=on";
     if (!options.sim.pibt_corridor) std::cout << " pibt=off";
     if (options.sim.pibt_sink_yield) std::cout << " sink_yield=on";
@@ -485,6 +623,15 @@ void print_provenance(const Options& options) {
     if (options.sim.discharge.allow_stalled_neighbor) std::cout << " discharge_stalled_neighbor=on";
     if (options.sim.discharge.partial_stall != 1.0)
         std::cout << " discharge_partial=" << options.sim.discharge.partial_stall;
+    if (options.sim.discharge.probe.mode != lima::RecirculationProbeMode::Off)
+        std::cout << " recirc_probe=" << recirc_probe_name(options.sim.discharge.probe.mode)
+                  << " recirc_probe_ttl=" << options.sim.discharge.probe.ttl
+                  << " recirc_probe_age=" << options.sim.discharge.probe.activation_age;
+    if (options.sim.discharge.exclusive != lima::RecirculationExclusiveMode::Off)
+        std::cout << " recirc_exclusive="
+                  << recirc_exclusive_name(options.sim.discharge.exclusive);
+    if (options.sim.discharge.cycle_max != 4)
+        std::cout << " recirc_cycle_max=" << static_cast<int>(options.sim.discharge.cycle_max);
     if (options.profile != "legacy" && options.sim.goal_behavior == lima::GoalBehavior::Disappear)
         std::cout << " goal_behavior=disappear";
     else if (options.sim.goal_behavior == lima::GoalBehavior::Stay)
