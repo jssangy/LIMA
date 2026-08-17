@@ -477,8 +477,8 @@ def main() -> int:
             "sha256": sha256(Path(__file__).resolve()),
         },
         "reference_config": {
-            "path": "config/reference_instantiation_v1.json",
-            "sha256": sha256(ROOT / "config/reference_instantiation_v1.json"),
+            "path": "config/reference_instantiation_v2.json",
+            "sha256": sha256(ROOT / "config/reference_instantiation_v2.json"),
         },
     }
     fingerprint_payload = {

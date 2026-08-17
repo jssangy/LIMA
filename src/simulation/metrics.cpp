@@ -22,7 +22,8 @@ MetricsCollector::MetricsCollector(const std::filesystem::path& directory, const
     open(comm_events_csv_, "communication_events.csv",
          "t,type,source,target,distance_cells,intersection_hops");
     open(agents_csv_, "agents.csv",
-         "id,initial_route_len,moves,extra_moves,completion_step,discharges,completed,tasks_completed");
+         "id,initial_route_len,moves,extra_moves,completion_step,discharges,completed,tasks_completed,"
+         "final_x,final_y,goal_x,goal_y,route_cursor,route_size,wait_steps");
     open(task_csv_, "task_completions.csv", "t,agent,task_index,service_steps");
     open(recirculation_csv_, "recirculation_segments.csv",
          "t,intersection,agent,loop_cells,closed");
@@ -198,9 +199,13 @@ void MetricsCollector::finalize(const std::span<const Agent> agents,
         const std::uint64_t completion = i < completion_steps.size() ? completion_steps[i] : 0;
         const std::uint32_t discharges = static_cast<std::size_t>(agent.id) < discharge_counts_.size()
             ? discharge_counts_[static_cast<std::size_t>(agent.id)] : 0;
+        const Coord position = map_.coord(agent.position);
+        const Coord goal = map_.coord(agent.goal);
         agents_csv_ << agent.id << ',' << initial << ',' << agent.moves << ',' << extra << ','
                     << completion << ',' << discharges << ',' << (agent.active ? 0 : 1) << ','
-                    << agent.tasks_completed << '\n';
+                    << agent.tasks_completed << ',' << position.x << ',' << position.y << ','
+                    << goal.x << ',' << goal.y << ',' << agent.route_cursor << ','
+                    << agent.route.size() << ',' << agent.wait_steps << '\n';
     }
     solver_csv_.flush();
     discharge_csv_.flush();

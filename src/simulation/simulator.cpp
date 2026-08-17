@@ -138,6 +138,7 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
         agent.position = start;
         agent.goal = goal;
         agent.route = std::move(route);
+        agent.reference_route = agent.route;
         agents_.push_back(std::move(agent));
     }
     for (Agent& agent : agents_) {
@@ -197,6 +198,14 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
         admission_window_[iid] = static_cast<double>(intersection_capacity_[iid]);
         admission_tokens_[iid] = static_cast<double>(intersection_capacity_[iid]);
     }
+    aimd_admission_.reset(
+        agents_.size(), intersection_capacity_,
+        {.multiplicative_decrease = config_.admission.parameter > 0.0
+             ? config_.admission.parameter : 0.5,
+         .additive_increase = config_.admission.secondary > 0.0
+             ? config_.admission.secondary : 0.25});
+    aimd_requests_.reserve(agents_.size());
+    aimd_observations_.resize(topology_.intersections().size());
     for (const Agent& agent : agents_) if (agent.active) {
         for (const IntersectionId iid : topology_.memberships(agent.position))
             --intersection_available_[static_cast<std::size_t>(iid)];
@@ -308,6 +317,7 @@ void Simulator::update_admission_policy() {
               std::array<std::size_t, 4>{});
     std::fill(admission_arm_max_wait_.begin(), admission_arm_max_wait_.end(),
               std::array<std::uint32_t, 4>{});
+    aimd_requests_.clear();
     std::fill(admission_arm_mask_.begin(), admission_arm_mask_.end(), 0x0fU);
     admission_credit_requests_.clear();
 
@@ -323,9 +333,30 @@ void Simulator::update_admission_policy() {
         ++admission_arm_requests_[iid][d];
         admission_arm_max_wait_[iid][d] = std::max(admission_arm_max_wait_[iid][d], agent.wait_steps);
         admission_credit_requests_.push_back({agent.id, entering, d, agent.wait_steps});
+        aimd_requests_.push_back({agent.id, entering, agent.wait_steps});
     }
 
     const auto policy = config_.admission.policy;
+    if (policy == AdmissionPolicy::Aimd) {
+        for (std::size_t iid = 0; iid < topology_.intersections().size(); ++iid) {
+            const bool execution_delayed = std::any_of(
+                members_[iid].begin(), members_[iid].end(), [&](const AgentId id) {
+                    return agents_[static_cast<std::size_t>(id)].wait_reason
+                        == WaitReason::ExecutionFailure;
+                });
+            const bool local_structural_congestion =
+                (stalled_[iid] && !execution_delayed)
+                || inside_counts_[iid] >= static_cast<std::size_t>(
+                    std::max(1, intersection_capacity_[iid]));
+            const bool information_congested = admission_information_.aimd_congested(
+                static_cast<IntersectionId>(iid), local_structural_congestion,
+                topology_, prev_inside_counts_, intersection_capacity_);
+            aimd_observations_[iid] = {
+                intersection_capacity_[iid], static_cast<int>(inside_counts_[iid]),
+                stalled_[iid], execution_delayed, information_congested};
+        }
+        aimd_admission_.update(aimd_observations_, aimd_requests_);
+    }
     for (std::size_t iid = 0; iid < topology_.intersections().size(); ++iid) {
         const int capacity = std::max(1, intersection_capacity_[iid]);
         const int occupied = static_cast<int>(inside_counts_[iid]);
@@ -378,18 +409,10 @@ void Simulator::update_admission_policy() {
             break;
         }
         case AdmissionPolicy::Aimd: {
-            const double beta = config_.admission.parameter > 0.0
-                ? config_.admission.parameter : 0.5;
-            const double increase = config_.admission.secondary > 0.0
-                ? config_.admission.secondary : 0.25;
-            const bool congested = admission_information_.aimd_congested(
-                static_cast<IntersectionId>(iid), stalled_[iid] || ratio >= 0.95,
-                topology_, prev_inside_counts_, intersection_capacity_);
-            if (congested)
-                admission_window_[iid] = std::max(1.0, beta * admission_window_[iid]);
-            else admission_window_[iid] = std::min(static_cast<double>(capacity),
-                                                   admission_window_[iid] + increase);
-            reserve = std::max(reserve, capacity - static_cast<int>(std::floor(admission_window_[iid])));
+            // The reference controller owns acknowledged in-flight grants in
+            // AcknowledgedAimdAdmission.  A2 can add a one-hop structural
+            // congestion signal, while physical capacity remains governed by
+            // intersection_available_ at movement commit time.
             break;
         }
         case AdmissionPolicy::Red:
@@ -656,6 +679,7 @@ void Simulator::update_admission_policy() {
             break;
         }
         }
+
         admission_reserve_[iid] = std::clamp(reserve, 0, capacity);
     }
     if (config_.admission_information.credit != AdmitCreditMode::Off) {
@@ -723,17 +747,22 @@ bool Simulator::block_intersection(const Agent& agent, const CellId next, const 
     if (entering < 0) return false;
     const auto iid = static_cast<std::size_t>(entering);
     if (normal_only) {
-        if (intersection_available_[iid] <= admission_reserve_[iid]) return true;
+        if (intersection_available_[iid] <= 0) return true;
+        const bool aimd = config_.admission.policy == AdmissionPolicy::Aimd;
+        if (aimd && !aimd_admission_.granted(agent.id, entering)) return true;
         if (!admission_information_.credit_allows(agent.id, entering)) return true;
         const IntersectionId downstream = downstream_intersection(agent, entering);
         if (admission_information_.lookahead_blocks(
                 entering, downstream, prev_inside_counts_, intersection_capacity_,
                 intersection_available_)) return true;
-        const auto direction = static_cast<std::size_t>(topology_.intersections()[iid].direction_of(next));
-        if (direction < 4 && (admission_arm_mask_[iid] & (1U << direction)) == 0) return true;
-        if (config_.admission.policy == AdmissionPolicy::TokenBucket && admission_tokens_[iid] < 1.0)
-            return true;
-        if (admission_policy_blocks(current, entering, direction)) return true;
+        if (!aimd) {
+            if (intersection_available_[iid] <= admission_reserve_[iid]) return true;
+            const auto direction = static_cast<std::size_t>(topology_.intersections()[iid].direction_of(next));
+            if (direction < 4 && (admission_arm_mask_[iid] & (1U << direction)) == 0) return true;
+            if (config_.admission.policy == AdmissionPolicy::TokenBucket && admission_tokens_[iid] < 1.0)
+                return true;
+            if (admission_policy_blocks(current, entering, direction)) return true;
+        }
     }
 
     const auto priority = [&](const IntersectionId iid) {
@@ -745,7 +774,7 @@ bool Simulator::block_intersection(const Agent& agent, const CellId next, const 
     return priority(entering) < current_priority;
 }
 
-void Simulator::update_available_on_move(const CellId current, const CellId next) {
+void Simulator::update_available_on_move(const AgentId agent, const CellId current, const CellId next) {
     const auto& from = topology_.memberships(current);
     const auto& to = topology_.memberships(next);
     for (const IntersectionId iid : from) {
@@ -758,6 +787,8 @@ void Simulator::update_available_on_move(const CellId current, const CellId next
         if (std::find(from.begin(), from.end(), iid) != from.end()) continue;
         const auto index = static_cast<std::size_t>(iid);
         intersection_available_[index] = std::max(0, intersection_available_[index] - 1);
+        if (config_.admission.policy == AdmissionPolicy::Aimd)
+            aimd_admission_.acknowledge_entry(agent, iid);
         if (config_.admission.policy == AdmissionPolicy::TokenBucket)
             admission_tokens_[index] = std::max(0.0, admission_tokens_[index] - 1.0);
         if (config_.admission.policy == AdmissionPolicy::DeficitRoundRobin
@@ -889,6 +920,10 @@ void Simulator::move_agent(Agent& agent) {
         agent.position = agent.route[agent.route_cursor];
     }
     if (agent.scheduling_remaining > 0) --agent.scheduling_remaining;
+    // Reference progress is task-level state, not an alias of the mutable
+    // active-route cursor. Update it for every consumed route waypoint so
+    // externally supplied routes with explicit waits remain well-defined.
+    advance_reference_progress(agent);
     if (previous != agent.position) {
         ++agent.moves;
         ++stats_.committed_moves;
@@ -1195,7 +1230,7 @@ bool Simulator::step() {
                 continue;
             }
             occupancy_[static_cast<std::size_t>(agent.position)] = kNoAgent;
-            update_available_on_move(agent.position, next);
+            update_available_on_move(agent.id, agent.position, next);
             count_zone_entries(agent.id, agent.position, next);
             move_agent(agent);
             occupancy_[static_cast<std::size_t>(agent.position)] = agent.id;
@@ -1334,6 +1369,10 @@ void Simulator::assign_lifelong_goals() {
             agent.route = std::move(suffix);
             agent.route_cursor = 0;
         }
+        agent.reference_route.assign(
+            agent.route.begin() + static_cast<std::ptrdiff_t>(agent.route_cursor),
+            agent.route.end());
+        agent.reference_cursor = 0;
         agent.wait_steps = 0;
         agent.wait_reason = WaitReason::None;
         agent.awaiting_goal = false;
@@ -1354,9 +1393,30 @@ void Simulator::move_agent_to(Agent& agent, const CellId next) {
         agent.position = next;
         ++agent.moves;
         ++stats_.committed_moves;
+        advance_reference_progress(agent);
     }
     agent.wait_steps = 0;
     agent.wait_reason = WaitReason::None;
+}
+
+void Simulator::advance_reference_progress(Agent& agent) {
+    if (agent.reference_route.empty() || agent.reference_cursor >= agent.reference_route.size()) return;
+    if (agent.reference_route[agent.reference_cursor] == agent.position) {
+        // Consume only consecutive explicit waits. A later revisit to the same
+        // cell must not skip the intervening reference segment.
+        while (agent.reference_cursor + 1 < agent.reference_route.size()
+               && agent.reference_route[agent.reference_cursor + 1] == agent.position) {
+            ++agent.reference_cursor;
+        }
+        return;
+    }
+    const auto begin = agent.reference_route.begin()
+        + static_cast<std::ptrdiff_t>(agent.reference_cursor + 1);
+    const auto found = std::find(begin, agent.reference_route.end(), agent.position);
+    if (found != agent.reference_route.end()) {
+        agent.reference_cursor = static_cast<std::size_t>(
+            std::distance(agent.reference_route.begin(), found));
+    }
 }
 
 bool Simulator::adjacent_or_equal(const CellId current, const CellId next) const {
@@ -1539,10 +1599,11 @@ void Simulator::compute_rescue_groups() {
             if (!agent.scheduled() && agent.wait_steps > 0 && stats_.waits > 0) --stats_.waits;
             const CellId previous = agent.position;
             if (agent.scheduled() || forced == kInvalidCell) {
-                if (!agent.scheduled()) update_available_on_move(agent.position, agent.intended_cell());
+                if (!agent.scheduled()) update_available_on_move(
+                    agent.id, agent.position, agent.intended_cell());
                 move_agent(agent);
             } else {
-                update_available_on_move(agent.position, forced);
+                update_available_on_move(agent.id, agent.position, forced);
                 move_agent_to(agent, forced);
             }
             count_zone_entries(agent.id, previous, agent.position);
@@ -1555,10 +1616,9 @@ void Simulator::compute_rescue_groups() {
 // move via priority-inheritance backtracking; agents inside keep the original
 // single-route semantics except for constrained boundary-exit roots.
 void Simulator::run_pibt_movement() {
-    // Off-route replan (opt-in straggler fix): an unscheduled agent that PIBT
-    // displaced from its route and that has been waiting recomputes its global
-    // route from its current cell, escaping Manhattan local minima of the
-    // waypoint pull.  Uses only the agent's own state and the static map.
+    // Route-Planner recovery: reconnect a displaced agent to its first
+    // unfinished task-level reference waypoint. The bridge may change, but
+    // the reference suffix and its monotone completion rank never do.
     if (config_.pibt_replan > 0) {
         for (Agent& agent : agents_) {
             if (!agent.active || agent.scheduled()) continue;
@@ -1568,9 +1628,16 @@ void Simulator::run_pibt_movement() {
                 || agent.route[agent.route_cursor] != agent.position;
             if (!off_route) continue;
             if (active_discharge_target(agent) != kInvalidCell) continue;
-            auto route = plan_global(agent.position, agent.goal);
-            if (route.empty() || route.front() != agent.position || route.back() != agent.goal) continue;
-            agent.route = std::move(route);
+            auto repair = repair_to_reference_suffix(
+                *planner_, agent.position, agent.reference_route, agent.reference_cursor);
+            if (!repair || repair->route.empty() || repair->route.back() != agent.goal) continue;
+            if (metrics_) {
+                metrics_->on_route_mutation(
+                    stats_.timestep, agent.id, "route_repair",
+                    repair->bridge_edges, repair->rejoin, true,
+                    repair->route.back() == agent.goal);
+            }
+            agent.route = std::move(repair->route);
             agent.route_cursor = 0;
         }
     }
@@ -1682,7 +1749,7 @@ void Simulator::run_pibt_movement() {
                 continue;
             }
             occupancy_[static_cast<std::size_t>(agent.position)] = kNoAgent;
-            update_available_on_move(agent.position, next);
+            update_available_on_move(agent.id, agent.position, next);
             count_zone_entries(agent.id, agent.position, next);
             move_agent(agent);
             occupancy_[static_cast<std::size_t>(agent.position)] = agent.id;
@@ -1792,7 +1859,7 @@ void Simulator::run_pibt_movement() {
             if (insertion == agent.route.end() || *insertion != agent.position)
                 agent.route.insert(insertion, agent.position);
         }
-        update_available_on_move(agent.position, next);
+        update_available_on_move(agent.id, agent.position, next);
         count_zone_entries(agent.id, agent.position, next);
         move_agent_to(agent, next);
     }
@@ -1839,7 +1906,7 @@ void Simulator::rotate_blocked_cycles() {
         for (std::size_t k = cycle_start; k < chain.size(); ++k) {
             Agent& agent = agents_[static_cast<std::size_t>(chain[k])];
             const CellId previous = agent.position;
-            update_available_on_move(previous, agent.intended_cell());
+            update_available_on_move(agent.id, previous, agent.intended_cell());
             count_zone_entries(agent.id, previous, agent.intended_cell());
             occupancy_[static_cast<std::size_t>(previous)] = kNoAgent;
             move_agent(agent);
@@ -1870,6 +1937,12 @@ std::string Simulator::check_invariants() const {
         }
         if (agent.route_cursor >= agent.route.size() || agent.route[agent.route_cursor] != agent.position) {
             problem << "agent " << agent.id << " desynchronized from its route cursor";
+            return problem.str();
+        }
+        if (agent.reference_route.empty()
+            || agent.reference_cursor >= agent.reference_route.size()
+            || agent.reference_route.back() != agent.goal) {
+            problem << "agent " << agent.id << " has an invalid task-level reference suffix";
             return problem.str();
         }
     }

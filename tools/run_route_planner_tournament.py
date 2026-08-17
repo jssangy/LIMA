@@ -791,7 +791,7 @@ def main() -> int:
         "generator": file_description(generator),
         "lima_main_source": file_description(ROOT / "app/main.cpp"),
         "cbs_source": file_description(ROOT / "app/cbs_baseline.cpp"),
-        "reference_config": file_description(ROOT / "config/reference_instantiation_v1.json"),
+        "reference_config": file_description(ROOT / "config/reference_instantiation_v2.json"),
     }
     input_files: dict[str, dict[str, Any]] = {}
     for job in jobs:

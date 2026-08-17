@@ -23,7 +23,6 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parent.parent
-CONFIG = ROOT / "config/reference_instantiation_v1.json"
 DETERMINISTIC_FIELDS = (
     "status",
     "steps",
@@ -85,17 +84,21 @@ def solve_command(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", default="build_frozen/lima")
-    parser.add_argument("--output", default="results/reference_instantiation_freeze_v1")
+    parser.add_argument("--config", default="config/reference_instantiation_v4.json")
+    parser.add_argument("--output", default="results/reference_instantiation_freeze_v4")
     parser.add_argument("--allow-dirty", action="store_true", help="allow a dirty pre-commit build")
     args = parser.parse_args()
 
     binary = (ROOT / args.binary).resolve()
+    config_path = (ROOT / args.config).resolve()
     output = (ROOT / args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     if not binary.is_file():
         parser.error(f"binary does not exist: {binary}")
+    if not config_path.is_file():
+        parser.error(f"config does not exist: {config_path}")
 
-    config = json.loads(CONFIG.read_text(encoding="utf-8"))
+    config = json.loads(config_path.read_text(encoding="utf-8"))
     expected = config["expected_provenance"]
     git_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     git_short = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, text=True).strip()
@@ -184,8 +187,8 @@ def main() -> int:
     report = {
         "schema_version": 1,
         "created_utc": datetime.now(timezone.utc).isoformat(),
-        "config": str(CONFIG.relative_to(ROOT)),
-        "config_sha256": sha256(CONFIG),
+        "config": str(config_path.relative_to(ROOT)),
+        "config_sha256": sha256(config_path),
         "git_head": git_head,
         "git_status_tracked": git_status,
         "binary": str(binary),

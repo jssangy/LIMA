@@ -23,6 +23,10 @@ struct Agent {
     AgentId id{kNoAgent};
     CellId position{kInvalidCell};
     CellId goal{kInvalidCell};
+    // Immutable task-level reference used by the completion rank. Runtime
+    // schedules and detours may rewrite `route`, but never this suffix ledger.
+    std::vector<CellId> reference_route;
+    std::size_t reference_cursor{};
     std::vector<CellId> route;
     std::size_t route_cursor{};
     std::size_t scheduling_remaining{};

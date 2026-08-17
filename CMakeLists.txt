@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(lima LANGUAGES CXX)
 
+include(CTest)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -23,6 +25,7 @@ add_library(lima_core
     src/io/scenario_loader.cpp
     src/io/solution_trace.cpp
     src/planning/planner.cpp
+    src/intersection/admission.cpp
     src/intersection/topology.cpp
     src/intersection/deadlock_detector.cpp
     src/intersection/coordinator.cpp
@@ -90,4 +93,11 @@ if(LIMA_BUILD_GUI)
     else()
         message(WARNING "SDL2 was not found; the lima executable will be headless only")
     endif()
+endif()
+
+if(BUILD_TESTING)
+    add_executable(lima_contract_tests tests/modular_contracts_test.cpp)
+    target_link_libraries(lima_contract_tests PRIVATE lima_core)
+    target_compile_options(lima_contract_tests PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME lima_contract_tests COMMAND lima_contract_tests)
 endif()

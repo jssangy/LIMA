@@ -209,7 +209,9 @@ def main() -> int:
             str(binary), "--profile", "lima-default", "--mode", "solve",
             "--map", cell["map_file"], "--scenario", cell["scenario_file"],
             "--agents", str(cell["agents"]), "--seed", str(cell["scenario"]),
-            "--max-steps", str(args.max_steps), "--goal-behavior", "disappear",
+            "--max-steps", str(args.max_steps),
+            "--stall-threshold", str(args.max_steps + 1),
+            "--goal-behavior", "disappear",
             "--no-trace", "--metrics", str(metric_path),
             *VARIANTS[variant],
         ]
