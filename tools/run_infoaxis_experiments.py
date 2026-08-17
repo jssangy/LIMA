@@ -192,6 +192,11 @@ def combine(name: str, family: str, variants: list[Variant]) -> Variant:
 
 
 def stage_variants(output_root: Path, stage: int) -> list[Variant]:
+    if stage == -1:
+        return [
+            Variant("ack_alpha25", "baseline", ("--gate-param2", "0.25")),
+            Variant("ack_alpha50", "baseline", ("--gate-param2", "0.50")),
+        ]
     if stage == 0:
         return full_variants()
     if stage == 1:
@@ -251,6 +256,12 @@ def stage_variants(output_root: Path, stage: int) -> list[Variant]:
 
 
 def stage_specs(stage: int) -> tuple[int, list[tuple[str, str, int]]]:
+    if stage == -1:
+        return 7000, [
+            ("cross_3030", "d50", 0), ("cross_3030", "d50", 1),
+            ("warehouse_10_20", "d50", 0), ("warehouse_10_20", "d50", 1),
+            ("warehouse_20_40", "d30", 0), ("warehouse_20_40", "d30", 1),
+        ]
     if stage == 0:
         return 1000, [("warehouse_10_20", "d10", 0)]
     if stage == 1:
@@ -748,7 +759,8 @@ def run_stage(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--stage", type=int, choices=range(6), required=True)
+    parser.add_argument("--stage", type=int, choices=range(-1, 6), required=True,
+                        help="-1 calibrates acknowledged AIMD alpha; 0-5 run the staged screen")
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--input-manifest", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--binary", type=Path, default=DEFAULT_BINARY)
