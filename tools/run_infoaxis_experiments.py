@@ -163,6 +163,32 @@ def full_variants() -> list[Variant]:
     return variants
 
 
+def quick_variants() -> list[Variant]:
+    """Small boundary screen after the full single-cell sweep.
+
+    Keep one representative per implemented information family plus the
+    combinations that can reveal the most important interaction.  R3 is
+    omitted because the prerequisite audit found a four-cycle at every
+    managed intersection on all three paper maps.
+    """
+    a1 = Variant("a1_ratio95", "A1", (
+        "--admit-lookahead", "ratio", "--admit-lookahead-param", "0.95"))
+    a2 = Variant("a2_trend3", "A2", (
+        "--aimd-signal", "trend", "--aimd-signal-param", "3"))
+    a3 = Variant("a3_drr05", "A3", (
+        "--admit-credit", "drr", "--admit-credit-param", "0.5"))
+    r1 = Variant("r1_slack_t4_a1", "R1", (
+        "--recirc-probe", "break-slack", "--recirc-probe-ttl", "4",
+        "--recirc-probe-age", "1"))
+    r2 = Variant("r2_age", "R2", ("--recirc-exclusive", "age"))
+    return [
+        Variant("base", "base"), a1, a2, a3, r1, r2,
+        combine("admission_stack", "stack", [a1, a2, a3]),
+        combine("cross_best", "stack", [a1, r1]),
+        combine("full_info_stack", "stack", [a1, a2, a3, r1, r2]),
+    ]
+
+
 def load_summary(root: Path, stage: int) -> dict:
     path = root / f"stage{stage}" / "summary/summary.json"
     if not path.is_file():
@@ -529,7 +555,7 @@ def update_root_report(output_root: Path) -> None:
     lines = [
         "# LIMA controller information-axis evaluation", "",
         "The reference is `lima-default` profile v4: acknowledged AIMD "
-        "(beta=0.25, additive ACK recovery=0.50), beam-complete Marshalling Solver, "
+        "(beta=0.25, additive ACK recovery=0.25), beam-complete Marshalling Solver, "
         "SWR Route Planner, and composite Recirculation Controller.", "",
         "## Locality contract", "",
         "| Mechanism | Dynamic information | Radius | Delay |",
@@ -594,7 +620,7 @@ def run_stage(args: argparse.Namespace) -> int:
         if not path.is_file():
             raise FileNotFoundError(path)
 
-    variants = stage_variants(output_root, args.stage)
+    variants = quick_variants() if args.quick else stage_variants(output_root, args.stage)
     max_steps, specs = stage_specs(args.stage)
     cells = [cell_from_certificate(input_root, *spec) for spec in specs]
     stage_root = output_root / f"stage{args.stage}"
@@ -606,7 +632,8 @@ def run_stage(args: argparse.Namespace) -> int:
         "schema_version": 1, "stage": args.stage,
         "runner_sha256": sha256(runner), "binary_sha256": binary_sha,
         "binary_version": version, "input_manifest_sha256": sha256(input_manifest),
-        "max_steps": max_steps, "variants": [
+        "max_steps": max_steps, "quick": args.quick,
+        "baseline_alpha": args.baseline_alpha, "variants": [
             {"name": variant.name, "family": variant.family, "flags": list(variant.flags)}
             for variant in variants],
         "cells": cells,
@@ -683,7 +710,8 @@ def run_stage(args: argparse.Namespace) -> int:
             "--agents", str(cell["agents"]), "--seed", str(cell["scenario"]),
             "--max-steps", str(max_steps), "--stall-threshold", str(max_steps + 1),
             "--goal-behavior", "disappear", "--no-trace",
-            "--metrics", str(metrics_path), *variant.flags,
+            "--metrics", str(metrics_path),
+            "--gate-param2", str(args.baseline_alpha), *variant.flags,
         ]
         trace_path = None
         if args.stage in (0, 5):
@@ -766,11 +794,14 @@ def main() -> int:
     parser.add_argument("--binary", type=Path, default=DEFAULT_BINARY)
     parser.add_argument("--jobs", type=int, default=6)
     parser.add_argument("--cpu-list", default="0-7")
+    parser.add_argument("--baseline-alpha", type=float, default=0.25)
+    parser.add_argument("--quick", action="store_true",
+                        help="run the compact representative screen for the selected stage specs")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--rerun", action="store_true")
     args = parser.parse_args()
-    if not 1 <= args.jobs <= 8:
-        parser.error("--jobs must be in [1, 8]")
+    if not 1 <= args.jobs <= (os.cpu_count() or 1):
+        parser.error("--jobs must be in [1, available CPU count]")
     return run_stage(args)
 
 
