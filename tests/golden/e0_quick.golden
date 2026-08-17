@@ -5,5 +5,5 @@ warehouse_10_20.map|warehouse-10-20|1115|1|status=completed steps=1237 completed
 warehouse_20_40.map|warehouse-20-40|224|0|status=completed steps=456 completed=224/224 moves=35671 waits=1860 deadlocks=413 intersections=779 validation=ok vertex_conflicts=0 edge_conflicts=0
 warehouse_20_40.map|warehouse-20-40|1118|1|status=step_limit steps=707 completed=1106/1118 moves=241926 waits=48106 deadlocks=17240 intersections=779 validation=ok vertex_conflicts=0 edge_conflicts=0
 warehouse_20_40.map|warehouse-20-40|2236|0|status=completed steps=1438 completed=2236/2236 moves=715730 waits=339052 deadlocks=85311 intersections=779 validation=ok vertex_conflicts=0 edge_conflicts=0
-cross_3030.map|cross-30-30|178|0|status=completed steps=712 completed=178/178 moves=41799 waits=338 deadlocks=263 intersections=840 validation=ok vertex_conflicts=0 edge_conflicts=0
-cross_3030.map|cross-30-30|892|1|status=completed steps=1426 completed=892/892 moves=247269 waits=17736 deadlocks=8193 intersections=840 validation=ok vertex_conflicts=0 edge_conflicts=0
+cross_3030_open237x177.map|cross-30-30-open237|178|0|status=completed steps=712 completed=178/178 moves=41799 waits=338 deadlocks=263 intersections=840 validation=ok vertex_conflicts=0 edge_conflicts=0
+cross_3030_open237x177.map|cross-30-30-open237|892|1|status=completed steps=1426 completed=892/892 moves=247269 waits=17736 deadlocks=8193 intersections=840 validation=ok vertex_conflicts=0 edge_conflicts=0
