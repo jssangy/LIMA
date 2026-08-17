@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "profile": "lima-default",
+  "profile_version": 4,
+  "reference_instantiation": {
+    "route_planner": {
+      "algorithm": "Structured Waypoint Routing",
+      "routing": "swr",
+      "segment_planner": "bfs",
+      "runtime_information_scope": "static map topology and the robot's own task-level reference route",
+      "seeded": true,
+      "off_route_repair": "bridge from the current cell to the first unfinished reference waypoint, then append the unchanged reference suffix",
+      "off_route_repair_trigger": "first blocked step after local PIBT displacement"
+    },
+    "admission_controller": {
+      "algorithm": "acknowledged AIMD admission",
+      "window_semantics": "maximum unacknowledged entry-eligibility grants",
+      "grant_is_concrete_reservation": false,
+      "hard_capacity_gate": "every physical entry commit independently satisfies sum-minus-max capacity",
+      "grant_order": "oldest request, then agent id",
+      "grant_lifetime": "entry acknowledgement or request withdrawal",
+      "multiplicative_factor": 0.25,
+      "additive_increment": 0.50,
+      "congestion_signal": "structural local stall without execution failure, or full physical occupancy",
+      "execution_failure_signal": "stutter; retain the outstanding eligibility grant",
+      "capacity_formula": "sum_minus_max",
+      "capacity_cap": null,
+      "capacity_margin": 0,
+      "capacity_hysteresis": 0,
+      "gate_resynchronization": true
+    },
+    "marshalling_solver": {
+      "algorithm": "lower-bound beam search with complete exact fallback",
+      "solver": "beam-complete",
+      "beam_width": 2048,
+      "beam_score": "tt",
+      "beam_expansion_budget": 2000000,
+      "fallback": "IDA*",
+      "fallback_lower_bound": "tt",
+      "fallback_threshold_schedule": "next-bound",
+      "fallback_greedy_fastpath": false,
+      "fallback_node_cutoff": null
+    },
+    "recirculation_controller": {
+      "algorithm": "composite recirculation",
+      "policy": "composite",
+      "escape_selection": "maximum adjacent admission slack",
+      "loop_tie_break": "minimum one-cycle-stale loop occupancy",
+      "all_arms": false,
+      "allow_stalled_neighbor": false,
+      "stall_fraction": 1.0
+    }
+  },
+  "external_semantics": {
+    "part_of_profile": false,
+    "single_shot": "agent disappears immediately after reaching its unique goal",
+    "lifelong": "agent receives the next goal from its fixed per-agent goal sequence immediately after completion",
+    "execution": "synchronous discrete steps; stochastic command drops retain the acknowledged decision and insert stutter steps",
+    "stay_at_goal": "excluded"
+  },
+  "expected_provenance": {
+    "profile": "lima-default",
+    "profile_version": "4",
+    "planner": "bfs",
+    "solver": "beam-complete",
+    "routing": "swr",
+    "capacity": "operational",
+    "solver_iterations": "2000000",
+    "beam_width": "2048",
+    "beam_score": "tt",
+    "fallback": "ida-exact",
+    "gate_policy": "aimd",
+    "gate_param": "0.25",
+    "gate_param2": "0.5",
+    "gate_resync": "on",
+    "replan": "1",
+    "discharge_policy": "composite",
+    "goal_behavior": "disappear",
+    "discharge": "on"
+  }
+}
