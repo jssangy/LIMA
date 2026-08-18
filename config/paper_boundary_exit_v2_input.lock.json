@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "input_manifest": "results/revision_final/certified_inputs_boundary_exit_v2/MANIFEST.json",
+  "input_manifest_sha256": "14eafde86ba952a931d4457c63d2c23ca40c0bab9727b5d8be7aa65d7bb30b29",
+  "source_manifest_sha256": "ddd235eb3bf61ad7c493c6153338e519c8812adeee392de016cfb6c9fea643a2",
+  "artifact_file_count": 564,
+  "mission_contract": {
+    "starts": "CPMP-capacity-certified placements inside the managed-cell domain",
+    "goals": "physical boundary G workstations",
+    "movement_domain": "managed cells plus arrival at the active agent's assigned G; terminal lanes and other free space are forbidden",
+    "shared_physical_goals": "allowed across agents as time-separated service events",
+    "completion": "the agent disappears immediately on first arrival at its assigned G"
+  }
+}

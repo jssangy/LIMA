@@ -1,0 +1,1567 @@
+{
+  "agents": 1589,
+  "capacity_formula": "sum-minus-max",
+  "capacity_load_percent": 99.06483790523691,
+  "construction": "certified managed start prefix; original terminal-lane goal projected to its physical G workstation; only the assigned G may be entered; agent disappears on arrival",
+  "expanded_source_map_file": "results/revision_final/certified_inputs_v3/maps/warehouse_10_20_unique_goals.map",
+  "expanded_source_map_sha256": "f1a3acf1f37cd92e7235e4f978a5ae34970b962a98187cae7d2c6d3535a0fdd3",
+  "expanded_source_scenario_file": "results/revision_final/certified_inputs_v3/scenarios/warehouse_10_20/warehouse_10_20_paired_d60_s4.scen",
+  "expanded_source_scenario_sha256": "fd557c33495895ee3ce04233d3c2b449c774116cf842c9fcfb4bc30b2713559a",
+  "goal_assignment": "original physical G exit of each certified task",
+  "intersection_constraints": [
+    {
+      "capacity": 12,
+      "goal_occupancy": 0,
+      "goal_slack": 12,
+      "intersection": 0,
+      "start_occupancy": 12,
+      "start_slack": 0
+    },
+    {
+      "capacity": 12,
+      "goal_occupancy": 0,
+      "goal_slack": 12,
+      "intersection": 1,
+      "start_occupancy": 12,
+      "start_slack": 0
+    },
+    {
+      "capacity": 12,
+      "goal_occupancy": 0,
+      "goal_slack": 12,
+      "intersection": 2,
+      "start_occupancy": 12,
+      "start_slack": 0
+    },
+    {
+      "capacity": 12,
+      "goal_occupancy": 0,
+      "goal_slack": 12,
+      "intersection": 3,
+      "start_occupancy": 12,
+      "start_slack": 0
+    },
+    {
+      "capacity": 12,
+      "goal_occupancy": 0,
+      "goal_slack": 12,
+      "intersection": 4,
+      "start_occupancy": 12,
+      "start_slack": 0
+    },
+    {
+      "capacity": 12,
+      "goal_occupancy": 0,
+      "goal_slack": 12,
+      "intersection": 5,
+      "start_occupancy": 12,
+      "start_slack": 0
+    },
+    {
+      "capacity": 12,
+      "goal_occupancy": 0,
+      "goal_slack": 12,
+      "intersection": 6,
+      "start_occupancy": 12,
+      "start_slack": 0
+    },
+    {
+      "capacity": 12,
+      "goal_occupancy": 0,
+      "goal_slack": 12,
+      "intersection": 7,
+      "start_occupancy": 12,
+      "start_slack": 0
+    },
+    {
+      "capacity": 12,
+      "goal_occupancy": 0,
+      "goal_slack": 12,
+      "intersection": 8,
+      "start_occupancy": 12,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 9,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 10,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 11,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 12,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 13,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 14,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 15,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 16,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 17,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 18,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 19,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 20,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 21,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 22,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 23,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 24,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 25,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 26,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 27,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 28,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 29,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 30,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 31,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 32,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 33,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 34,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 35,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 36,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 37,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 38,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 39,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 40,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 41,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 42,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 43,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 44,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 45,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 46,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 47,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 48,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 49,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 50,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 51,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 52,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 53,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 54,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 55,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 56,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 57,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 58,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 59,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 60,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 61,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 62,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 63,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 64,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 65,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 66,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 67,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 68,
+      "start_occupancy": 12,
+      "start_slack": 2
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 69,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 70,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 71,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 72,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 73,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 74,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 75,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 76,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 77,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 78,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 79,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 80,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 81,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 82,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 83,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 84,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 85,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 86,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 87,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 88,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 89,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 90,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 91,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 92,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 93,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 94,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 95,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 96,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 97,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 98,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 99,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 100,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 101,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 102,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 103,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 104,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 105,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 106,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 107,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 108,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 109,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 110,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 111,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 112,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 113,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 114,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 115,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 116,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 117,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 118,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 119,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 120,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 121,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 122,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 123,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 124,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 125,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 126,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 127,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 128,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 129,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 130,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 131,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 132,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 133,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 134,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 135,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 136,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 137,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 138,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 139,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 140,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 141,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 142,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 143,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 144,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 145,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 146,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 147,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 148,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 149,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 150,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 151,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 152,
+      "start_occupancy": 13,
+      "start_slack": 1
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 153,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 154,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 155,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 156,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 157,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 158,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 159,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 160,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 161,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 162,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 163,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 164,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 165,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 166,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 167,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 168,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 169,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 170,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 171,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 172,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 173,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 174,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 175,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 176,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 177,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 178,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 14,
+      "goal_occupancy": 0,
+      "goal_slack": 14,
+      "intersection": 179,
+      "start_occupancy": 14,
+      "start_slack": 0
+    },
+    {
+      "capacity": 12,
+      "goal_occupancy": 0,
+      "goal_slack": 12,
+      "intersection": 180,
+      "start_occupancy": 12,
+      "start_slack": 0
+    },
+    {
+      "capacity": 12,
+      "goal_occupancy": 0,
+      "goal_slack": 12,
+      "intersection": 181,
+      "start_occupancy": 12,
+      "start_slack": 0
+    },
+    {
+      "capacity": 12,
+      "goal_occupancy": 0,
+      "goal_slack": 12,
+      "intersection": 182,
+      "start_occupancy": 12,
+      "start_slack": 0
+    },
+    {
+      "capacity": 12,
+      "goal_occupancy": 0,
+      "goal_slack": 12,
+      "intersection": 183,
+      "start_occupancy": 12,
+      "start_slack": 0
+    },
+    {
+      "capacity": 12,
+      "goal_occupancy": 0,
+      "goal_slack": 12,
+      "intersection": 184,
+      "start_occupancy": 11,
+      "start_slack": 1
+    },
+    {
+      "capacity": 12,
+      "goal_occupancy": 0,
+      "goal_slack": 12,
+      "intersection": 185,
+      "start_occupancy": 11,
+      "start_slack": 1
+    },
+    {
+      "capacity": 12,
+      "goal_occupancy": 0,
+      "goal_slack": 12,
+      "intersection": 186,
+      "start_occupancy": 12,
+      "start_slack": 0
+    },
+    {
+      "capacity": 12,
+      "goal_occupancy": 0,
+      "goal_slack": 12,
+      "intersection": 187,
+      "start_occupancy": 12,
+      "start_slack": 0
+    },
+    {
+      "capacity": 12,
+      "goal_occupancy": 0,
+      "goal_slack": 12,
+      "intersection": 188,
+      "start_occupancy": 12,
+      "start_slack": 0
+    }
+  ],
+  "map": "warehouse_10_20",
+  "map_annotation_transform": "retain managed-cell union and G workstations; block terminal E lanes and every other off-managed traversable cell",
+  "map_file": "results/revision_final/certified_inputs_boundary_exit_v2/maps/warehouse_10_20_managed_boundary.map",
+  "map_sha256": "325a3cd00f8d396a7d77872341705a913a41b22d2eb9a9efb7958266cb9c213a",
+  "maximum_agents": 1604,
+  "scenario": 4,
+  "scenario_file": "results/revision_final/certified_inputs_boundary_exit_v2/scenarios/warehouse_10_20/warehouse_10_20_boundary_exit_d60_s4.scen",
+  "scenario_sha256": "a5137a462f1d4a30928c8e8435969d67f629aa6e3aee85fc9abcbc34859b7fc4",
+  "source_map_file": "data/maps/warehouse_10_20_paper.map",
+  "source_map_sha256": "2b4167cd6d3145982056df0e7bb5d71178ef4f4c13750567e1deade494448728",
+  "source_start_boundary_certificate": "results/revision_final/certified_inputs_v1/certificates/warehouse_10_20/boundary_s4.json",
+  "source_start_boundary_certificate_sha256": "c850623e962ddc8d9270f75e32b140ab1679150107a8fd0d4cc20c667e649c2f",
+  "source_start_boundary_scenario": "results/revision_final/certified_inputs_v1/scenarios/warehouse_10_20/warehouse_10_20_cert_boundary_s4.scen",
+  "source_start_boundary_scenario_sha256": "e10ba03c99c86b7dbbb80724fe5624e1a71642468c2d82834f725f1d66c1978d",
+  "target": "d60",
+  "tile_density_percent": 59.984899962249905,
+  "validation": {
+    "capacity_violations": 0,
+    "disappear_at_goal": true,
+    "exclusive_assigned_boundary_entry": true,
+    "goal_capacity_violations": 0,
+    "goal_managed_count": 0,
+    "goal_maximum_occupancy": 0,
+    "goal_minimum_slack": 12,
+    "goal_off_managed_count": 1589,
+    "goal_pool_off_managed_total": 0,
+    "goal_terminal_count": 0,
+    "managed_starts": true,
+    "persistent_goal_occupancy_required": false,
+    "physical_boundary_goals": true,
+    "physical_exits_used": 42,
+    "reachable_pairs": 1589,
+    "repeated_goal_assignments": 1547,
+    "same_agent_start_goal": 0,
+    "start_capacity_violations": 0,
+    "start_goal_set_overlap": 0,
+    "start_maximum_occupancy": 14,
+    "start_minimum_slack": 0,
+    "traversable_goals": true,
+    "unique_goals": false,
+    "unique_starts": true
+  }
+}
