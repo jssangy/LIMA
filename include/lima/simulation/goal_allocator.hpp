@@ -13,14 +13,12 @@ namespace lima {
 
 class GridMap;
 
-// Lifelong task stream: hands each completed agent a fresh goal drawn from
-// the interior traversable non-S cells (S sinks are one-shot disappear
-// exits, not persistent lifelong goals; the outermost row/col is excluded to
-// match the scenario-generator start rule).  Goals handed out by the
-// allocator are uniquely owned, so two live tasks never target the same
-// cell; free cells that are currently unoccupied are preferred over
-// free-but-occupied ones.  Owns a dedicated RNG so task arrivals never
-// perturb the simulator's shared random stream.
+// Lifelong task stream. Without a fixed external sequence, goals are drawn
+// from uniquely owned interior cells. Fixed sequences may share physical
+// boundary workstations across live tasks because goal visits do not imply
+// stay-at-goal occupancy; the executor still serializes actual cell use.
+// Owns a dedicated RNG so task arrivals never perturb the simulator's shared
+// random stream.
 class GoalAllocator {
 public:
     GoalAllocator(const GridMap& map, std::span<const Agent> agents, std::uint64_t seed,

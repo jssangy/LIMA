@@ -77,12 +77,11 @@ def read_map(path: Path) -> tuple[int, int, list[str]]:
 
 
 def write_lns_map(source: Path, destination: Path) -> None:
-    """Write the same topology in the strict MovingAI alphabet used by LNS2.
+    """Preserve the managed-only boundary-exit mission alphabet.
 
-    The certified LIMA maps annotate traversable cells with E/G/T. The
-    upstream MAPF-LNS2 loader treats every character other than '.' as an
-    obstacle, so those semantic labels must be normalized without changing
-    the obstacle set.
+    Managed cells (.) and physical terminals (G) remain traversable.  T cells
+    are explicitly blocked so a baseline cannot shortcut through free space.
+    The patched solvers use G to enforce assigned-terminal exclusivity.
     """
     lines = source.read_text(encoding="utf-8").splitlines()
     height = int(lines[1].split()[1])
@@ -91,7 +90,7 @@ def write_lns_map(source: Path, destination: Path) -> None:
     if len(grid) != height or any(len(row) != width for row in grid):
         raise ValueError(f"invalid MovingAI map: {source}")
     normalized = lines[:4] + [
-        "".join("@" if cell == "@" else "." for cell in row)
+        "".join(cell if cell in ".G" else "@" for cell in row)
         for row in grid
     ]
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -131,8 +130,11 @@ def validate_paths(paths: list[list[tuple[int, int]]],
         if path[0] != (sx, sy) or path[-1] != (gx, gy):
             raise ValueError(f"endpoint mismatch for agent {agent}")
         for x, y in path:
-            if not (0 <= x < width and 0 <= y < height) or grid[y][x] == "@":
+            if not (0 <= x < width and 0 <= y < height) or grid[y][x] not in ".G":
                 raise ValueError(f"blocked or out-of-map path cell for agent {agent}")
+            if grid[y][x] == "G" and (x, y) != (gx, gy):
+                raise ValueError(
+                    f"agent {agent} enters non-assigned boundary goal {(x, y)}")
         for previous, current in zip(path, path[1:]):
             if abs(previous[0] - current[0]) + abs(previous[1] - current[1]) > 1:
                 raise ValueError(f"non-adjacent movement for agent {agent}")
@@ -159,8 +161,17 @@ def validate_paths(paths: list[list[tuple[int, int]]],
             if edge[0] != edge[1] and (edge[1], edge[0]) in edges:
                 raise ValueError(f"edge conflict at t={timestep}")
             edges[edge] = agent
-    return {"execution_limit_ok": True, "makespan": makespan,
-            "soc": sum(len(path) - 1 for path in paths)}
+    unique_goals = len({(row[2], row[3]) for row in scenario})
+    return {
+        "execution_limit_ok": True,
+        "makespan": makespan,
+        "soc": sum(len(path) - 1 for path in paths),
+        "unique_physical_goals": unique_goals,
+        "repeated_goal_assignments": len(scenario) - unique_goals,
+        "boundary_entry_violations": 0,
+        "vertex_edge_conflicts": 0,
+        "disappear_at_goal": True,
+    }
 
 
 def read_result(path: Path) -> dict[str, str]:
@@ -174,12 +185,12 @@ def read_result(path: Path) -> dict[str, str]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--method", choices=("mapf_lns2", "address"), default="mapf_lns2")
+    parser.add_argument(
         "--input-manifest",
         default="results/revision_final/certified_inputs_v3/MANIFEST.json")
-    parser.add_argument(
-        "--binary", default=str(Path.home() / "mapf-baselines/MAPF-LNS2/build_bonus/lns"))
-    parser.add_argument(
-        "--source-repo", default=str(Path.home() / "mapf-baselines/MAPF-LNS2"))
+    parser.add_argument("--binary")
+    parser.add_argument("--source-repo")
     parser.add_argument("--maps", help="optional comma-separated map filter")
     parser.add_argument("--targets", help="optional comma-separated target filter")
     parser.add_argument("--scenarios", help="optional comma-separated scenario filter")
@@ -193,12 +204,36 @@ def main() -> int:
     args = parser.parse_args()
     if args.jobs < 1 or args.max_steps < 1 or args.max_iterations < 1:
         parser.error("invalid jobs or step/search limits")
-    binary = Path(args.binary).resolve()
-    source_repo = Path(args.source_repo).resolve()
-    if not binary.is_file() or not (source_repo / ".git").is_dir():
-        parser.error("missing MAPF-LNS2 binary or source repository")
+    defaults = {
+        "mapf_lns2": (
+            Path.home() / "mapf-baselines/MAPF-LNS2-boundary/build_boundary/lns",
+            Path.home() / "mapf-baselines/MAPF-LNS2-boundary",
+        ),
+        "address": (
+            Path.home() / "mapf-baselines/ADDRESS/build_boundary/address",
+            Path.home() / "mapf-baselines/ADDRESS",
+        ),
+    }
+    default_binary, default_repo = defaults[args.method]
+    binary = Path(args.binary).resolve() if args.binary else default_binary.resolve()
+    source_repo = Path(args.source_repo).resolve() if args.source_repo else default_repo.resolve()
+    if not binary.is_file() or not (source_repo / ".git").exists():
+        parser.error(f"missing {args.method} binary or source repository")
+    help_result = subprocess.run(
+        [str(binary), "--help"], cwd=source_repo,
+        capture_output=True, text=True, check=False)
+    required_options = ("exclusiveBoundaryGoals", "maxIterations", "maxInitIterations")
+    if any(option not in help_result.stdout for option in required_options):
+        parser.error(f"{args.method} binary lacks the boundary/search-limit adapter")
     input_manifest_path = (ROOT / args.input_manifest).resolve()
     inputs = json.loads(input_manifest_path.read_text(encoding="utf-8"))
+    goal_semantics = inputs.get("goal_semantics", {})
+    if not (
+        goal_semantics.get("completion")
+        == "agent disappears on first arrival at its assigned G workstation"
+        and str(goal_semantics.get("repeated_physical_goals", "")).startswith("allowed")
+    ):
+        parser.error("input manifest lacks disappearing shared-boundary goals")
     map_filter = set(args.maps.split(",")) if args.maps else None
     target_filter = set(args.targets.split(",")) if args.targets else None
     scenario_filter = set(map(int, args.scenarios.split(","))) if args.scenarios else None
@@ -233,7 +268,10 @@ def main() -> int:
                     "map_file": map_entry["map_file"],
                     "scenario_file": entry["scenario_file"],
                     "certificate_file": entry["certificate_file"],
-                    "tag": f"{map_name}_{target}_a{target_entry['agents']}_s{scenario}_lns2",
+                    "tag": (
+                        f"{map_name}_{target}_a{target_entry['agents']}_s{scenario}_"
+                        f"{args.method}"
+                    ),
                 }
                 cells.append(cell)
                 all_cells.append(cell)
@@ -261,8 +299,12 @@ def main() -> int:
     source_diff_sha256 = hashlib.sha256(source_diff).hexdigest()
     runner = Path(__file__).resolve()
     fingerprint_payload = {
-        "schema_version": 1, "algorithm": "mapf-lns2",
-        "upstream": "Jiaoyang-Li/MAPF-LNS2", "upstream_commit": upstream_commit,
+        "schema_version": 2, "algorithm": args.method,
+        "upstream": (
+            "Jiaoyang-Li/MAPF-LNS2" if args.method == "mapf_lns2"
+            else "JimyZ13/ADDRESS"
+        ),
+        "upstream_commit": upstream_commit,
         "adapter_diff_sha256": source_diff_sha256,
         "binary": str(binary), "binary_sha256": sha256(binary),
         "runner_sha256": sha256(runner),
@@ -271,8 +313,10 @@ def main() -> int:
         "max_execution_steps": args.max_steps,
         "max_high_level_iterations": args.max_iterations,
         "termination_policy": "fixed iteration/execution limits; no wall-clock cutoff",
-        "goal_behavior": "unique non-transit terminal; disappear validation",
-        "map_adapter": "preserve @ obstacles; normalize traversable ./E/G/T cells to .",
+        "goal_behavior": (
+            "repeated physical G allowed; assigned G exclusive; disappear on first arrival"
+        ),
+        "map_adapter": "traversable managed ./G only; T/free-space cells blocked",
         "adapted_map_sha256": {
             name: sha256(path) for name, path in sorted(solver_maps.items())
         },
@@ -320,11 +364,27 @@ def main() -> int:
             "-o", str(resource_path), str(binary), "--map", str(solver_map_path),
             "--agents", str(scenario_path), "--agentNum", str(cell["agents"]),
             "--output", str(output_base), "--outputPaths", str(path_file),
-            "--cutoffTime", "2147483647", "--maxIterations", "0",
+            "--cutoffTime", "2147483647", "--maxIterations", str(args.max_iterations),
             "--maxInitIterations", str(args.max_iterations),
             "--solver", "LNS", "--initLNS", "1", "--initAlgo", "PP",
             "--replanAlgo", "PP", "--seed", str(cell["scenario"]), "--screen", "0",
+            "--exclusiveBoundaryGoals", "1",
         ]
+        if args.method == "mapf_lns2":
+            command.extend([
+                "--initDestoryStrategy", "Collision",
+                "--destoryStrategy", "RandomWalk",
+            ])
+        else:
+            command.extend([
+                "--initDestroyStrategy", "Collision",
+                "--destroyStrategy", "RandomWalk",
+                "--algorithm", "bernoulie",
+                "--k", str(min(64, cell["agents"])),
+                "--b", "canonical",
+                "--banditAlgo", "Random",
+                "--neighborCandidateSizes", "1",
+            ])
         started = time.time()
         process = subprocess.run(command, cwd=source_repo, capture_output=True, text=True, check=False)
         raw_result = read_result(result_file)
@@ -351,7 +411,7 @@ def main() -> int:
             process.stdout + ("\n[stderr]\n" + process.stderr if process.stderr else ""),
             encoding="utf-8")
         atomic_json(record_path, {
-            **cell, "algorithm": "mapf-lns2", "returncode": process.returncode,
+            **cell, "algorithm": args.method, "returncode": process.returncode,
             "timed_out": False, "solved": is_solved, "result": result,
             "validation": validation, "validation_error": validation_error,
             "resource": parse_resource(resource_path),
@@ -370,7 +430,7 @@ def main() -> int:
         if record_path.exists() and not args.rerun:
             return
         atomic_json(record_path, {
-            **cell, "algorithm": "mapf-lns2", "returncode": None,
+            **cell, "algorithm": args.method, "returncode": None,
             "timed_out": False, "solved": False, "result": {},
             "status": "early_stopped_after_zero_success",
             "early_stop_source_target": source_target,

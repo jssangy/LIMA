@@ -63,6 +63,19 @@ def parse_scenario(path: Path, agents: int) -> tuple[list[tuple[int, int]], list
     return starts, goals
 
 
+def boundary_cells(path: Path) -> set[tuple[int, int]]:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    height = int(lines[1].split()[1])
+    width = int(lines[2].split()[1])
+    rows = lines[4:4 + height]
+    if len(rows) != height or any(len(row) != width for row in rows):
+        raise ValueError(f"invalid MovingAI map: {path}")
+    return {
+        (x, y) for y, row in enumerate(rows) for x, value in enumerate(row)
+        if value == "G"
+    }
+
+
 def parse_fields(path: Path) -> dict[str, str]:
     fields: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -266,6 +279,8 @@ class Planner:
                 "--disappear-at-goal",
             ]
             cwd = self.args.pibt_repo
+        if self.args.exclusive_boundary_goals:
+            command.append("--exclusive-boundary-goals")
         process = subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False)
         if process.returncode != 0 or not output.is_file():
             return None, f"planner_returncode_{process.returncode}"
@@ -323,6 +338,7 @@ def main() -> int:
     parser.add_argument("--lacam-repo", type=Path, default=Path.home() / "mapf-baselines/lacam")
     parser.add_argument("--lacam-binary", type=Path, default=Path("results/revision_final/frozen_artifacts_step_v2/lacam"))
     parser.add_argument("--lacam-max-iterations", type=int, default=100000)
+    parser.add_argument("--exclusive-boundary-goals", action="store_true")
     parser.add_argument("--trace-output", type=Path)
     args = parser.parse_args()
     args.map = args.map.resolve()
@@ -335,6 +351,7 @@ def main() -> int:
         parser.error("invalid agents, max-steps, or delay probability")
 
     starts, goals = parse_scenario(args.scen, args.agents)
+    physical_boundary = boundary_cells(args.map)
     active_ids = list(range(args.agents))
     positions = list(starts)
     active_goals = list(goals)
@@ -414,6 +431,11 @@ def main() -> int:
             }
             delayed_moves += len(delayed)
             actual, safety_cancelled = safe_execute(positions, proposed, delayed)
+            if args.exclusive_boundary_goals and any(
+                cell in physical_boundary and cell != goal
+                for cell, goal in zip(actual, active_goals)
+            ):
+                raise RuntimeError("active agent entered a non-assigned boundary goal")
             interventions += safety_cancelled
             diverged = actual != proposed
             deviation_steps += int(diverged)
@@ -484,6 +506,7 @@ def main() -> int:
             "recovery_latency_steps": 1 if deviation_steps else 0,
             "vertex_conflicts": 0,
             "edge_conflicts": 0,
+            "boundary_entry_violations": 0,
             "decision_hash": decision_hash.hexdigest(),
         })
     return 0

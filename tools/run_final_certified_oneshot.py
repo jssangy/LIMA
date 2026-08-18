@@ -168,8 +168,10 @@ def main() -> int:
         pibt_help = subprocess.run(
             [str(pibt), "--help"], cwd=pibt_repo,
             capture_output=True, text=True, check=False)
-        if "--disappear-at-goal" not in pibt_help.stdout:
-            parser.error("PIBT binary lacks the disappear-at-goal adapter")
+        if ("--disappear-at-goal" not in pibt_help.stdout
+                or "--exclusive-boundary-goals" not in pibt_help.stdout):
+            parser.error(
+                "PIBT binary lacks the disappear/exclusive-boundary adapter")
         pibt_commit = subprocess.run(
             ["git", "-C", str(pibt_repo), "rev-parse", "HEAD"],
             capture_output=True, text=True, check=True).stdout.strip()
@@ -187,8 +189,10 @@ def main() -> int:
             [str(lacam), "--help"], cwd=lacam_repo,
             capture_output=True, text=True, check=False)
         if ("--disappear-at-goal" not in lacam_help.stdout
+                or "--exclusive-boundary-goals" not in lacam_help.stdout
                 or "--max_iterations" not in lacam_help.stdout):
-            parser.error("LaCAM binary lacks the disappear/search-limit adapter")
+            parser.error(
+                "LaCAM binary lacks the disappear/exclusive-boundary/search-limit adapter")
         lacam_commit = subprocess.run(
             ["git", "-C", str(lacam_repo), "rev-parse", "HEAD"],
             capture_output=True, text=True, check=True).stdout.strip()
@@ -201,10 +205,30 @@ def main() -> int:
             "working_diff_sha256": hashlib.sha256(lacam_diff).hexdigest(),
         }
 
+    if args.algorithm == "cbs":
+        cbs_help = subprocess.run(
+            [str(cbs)], cwd=ROOT, capture_output=True, text=True, check=False)
+        cbs_usage = cbs_help.stdout + cbs_help.stderr
+        if "--exclusive-boundary-goals" not in cbs_usage:
+            parser.error("CBS binary lacks the exclusive-boundary adapter")
+
     input_manifest_path = (ROOT / args.input_manifest).resolve()
     inputs = json.loads(input_manifest_path.read_text(encoding="utf-8"))
     if inputs.get("capacity_formula") != "sum(arm capacities) - longest arm":
         parser.error("certified input manifest does not use the operational capacity")
+    boundary_exit_semantics = (
+        inputs.get("goal_semantics", {}).get("type")
+        == "physical boundary service event"
+        and inputs.get("goal_semantics", {}).get("completion")
+        == "agent disappears on first arrival at its assigned G workstation"
+    )
+    if boundary_exit_semantics and "boundary_goals=exclusive-v1" not in lima_version.stdout:
+        parser.error("LIMA binary lacks the exclusive assigned-G entry policy")
+    if boundary_exit_semantics and args.algorithm == "primal2":
+        parser.error(
+            f"{args.algorithm} adapter does not implement disappearing shared-exit goals; "
+            "do not run it on the managed-boundary mission"
+        )
     map_filter = set(args.maps.split(",")) if args.maps else None
     target_filter = set(args.targets.split(",")) if args.targets else None
     scenario_filter = set(map(int, args.scenarios.split(","))) if args.scenarios else None
@@ -234,12 +258,22 @@ def main() -> int:
                 if (
                     validation["capacity_violations"] != 0
                     or not validation["unique_starts"]
-                    or not validation["unique_goals"]
                     or not validation["traversable_goals"]
                     or validation["same_agent_start_goal"] != 0
                     or validation["reachable_pairs"] != agents
                 ):
                     parser.error(f"capacity certificate failed: {certificate_path}")
+                if boundary_exit_semantics:
+                    if (
+                        not validation.get("physical_boundary_goals")
+                        or not validation.get("disappear_at_goal")
+                        or not validation.get("exclusive_assigned_boundary_entry")
+                        or validation.get("persistent_goal_occupancy_required") is not False
+                    ):
+                        parser.error(
+                            f"boundary-exit certificate failed: {certificate_path}")
+                elif not validation["unique_goals"]:
+                    parser.error(f"persistent one-shot goals are not unique: {certificate_path}")
                 cells.append({
                     "map": map_name, "target": target, "agents": agents,
                     "tile_density_percent": target_entry.get(
@@ -297,11 +331,23 @@ def main() -> int:
 
     runner = Path(__file__).resolve()
     fingerprint_payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "semantic_scope": (
+            "one-shot; capacity-certified unique starts; repeated physical G exits "
+            "are service events; an active agent may enter only its assigned G; "
+            "agent disappears on first arrival; every other active position is "
+            "inside the managed-cell union"
+            if boundary_exit_semantics else
             "one-shot; unique capacity-certified starts and goals; "
             "fixed-point-free tasks; disappear at goal"
         ),
+        "boundary_exit_semantics": boundary_exit_semantics,
+        "boundary_entry_policy": (
+            "exclusive assigned-G entry; atomic disappear on arrival"
+            if boundary_exit_semantics else None
+        ),
+        "movement_domain": inputs.get("movement_domain"),
+        "goal_semantics": inputs.get("goal_semantics"),
         "algorithm": args.algorithm,
         "executables": {str(path): sha256(path) for path in executables},
         "lima_version": lima_version.stdout.strip(),
@@ -437,12 +483,16 @@ def main() -> int:
                 "--no-trace",
                 "--metrics", str(metrics / tag),
             ]
+            if boundary_exit_semantics:
+                solver.append("--exclusive-boundary-goals")
         elif args.algorithm == "cbs":
             solver = [
                 str(cbs), "--map", cell["map_file"], "--scenario", cell["scenario_file"],
                 "--agents", str(cell["agents"]),
                 "--max-expansions", str(args.cbs_max_expansions),
             ]
+            if boundary_exit_semantics:
+                solver.append("--exclusive-boundary-goals")
         elif args.algorithm == "pibt":
             instance_path = instances / f"{tag}.txt"
             solution_path = solutions / f"{tag}.txt"
@@ -472,6 +522,8 @@ def main() -> int:
                 "--solver", "PIBT", "--output", str(solution_path),
                 "--log-short", "--disappear-at-goal",
             ]
+            if boundary_exit_semantics:
+                solver.append("--exclusive-boundary-goals")
         elif args.algorithm == "lacam":
             solution_path = solutions / f"{tag}.txt"
             solver = [
@@ -483,6 +535,8 @@ def main() -> int:
                 "--disappear-at-goal", "--log_short",
                 "--output", str(solution_path),
             ]
+            if boundary_exit_semantics:
+                solver.append("--exclusive-boundary-goals")
         else:
             solver = [
                 str(primal_python), str(primal_script),
@@ -536,6 +590,8 @@ def main() -> int:
             solved = (
                 result.get("solved") == "1"
                 and int(result.get("makespan", args.max_steps + 1)) <= args.max_steps
+                and (not boundary_exit_semantics
+                     or result.get("boundary_entry_violations") == "0")
             )
         else:
             telemetry = None

@@ -20,6 +20,7 @@ GridMap GridMap::load(const std::filesystem::path& path) {
 
     map.blocked_.assign(static_cast<std::size_t>(map.cell_count()), 1);
     map.goal_mask_.assign(static_cast<std::size_t>(map.cell_count()), 0);
+    map.boundary_mask_.assign(static_cast<std::size_t>(map.cell_count()), 0);
     map.terminal_mask_.assign(static_cast<std::size_t>(map.cell_count()), 0);
     std::string row;
     for (int y = 0; y < map.height_; ++y) {
@@ -39,6 +40,7 @@ GridMap GridMap::load(const std::filesystem::path& path) {
                 map.goals_.push_back(id);
                 map.goal_mask_[static_cast<std::size_t>(id)] = 1;
             }
+            if (value == 'G') map.boundary_mask_[static_cast<std::size_t>(id)] = 1;
             if (value == 'S') map.sinks_.push_back(id);
             if (value == 'E') map.terminal_mask_[static_cast<std::size_t>(id)] = 1;
         }
@@ -72,6 +74,10 @@ bool GridMap::traversable(const CellId id) const noexcept {
 
 bool GridMap::goal(const CellId id) const noexcept {
     return id >= 0 && id < cell_count() && goal_mask_[static_cast<std::size_t>(id)] != 0;
+}
+
+bool GridMap::boundary(const CellId id) const noexcept {
+    return id >= 0 && id < cell_count() && boundary_mask_[static_cast<std::size_t>(id)] != 0;
 }
 
 bool GridMap::terminal(const CellId id) const noexcept {

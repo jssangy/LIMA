@@ -18,6 +18,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from generate_capacity_certified_scenarios import Grid, build_topology
+
 
 ROOT = Path(__file__).resolve().parent.parent
 COMM_KEYS = (
@@ -64,7 +66,7 @@ def atomic_text(path: Path, payload: str) -> None:
     os.replace(temporary, path)
 
 
-def write_pibt_map(source: Path, destination: Path) -> None:
+def write_pibt_map(source: Path, destination: Path) -> set[tuple[int, int]]:
     """Canonicalize line framing while preserving every map-cell symbol.
 
     The upstream Grid reader consumes rows until EOF rather than stopping at
@@ -78,6 +80,60 @@ def write_pibt_map(source: Path, destination: Path) -> None:
     if len(grid) != height or any(len(row) != width for row in grid):
         raise ValueError(f"invalid MovingAI map: {source}")
     atomic_text(destination, "\n".join(lines[:4] + grid) + "\n")
+    return {
+        (x, y) for y, row in enumerate(grid) for x, value in enumerate(row)
+        if value in ".SEG"
+    }
+
+
+def write_pibt_managed_boundary_map(
+    source: Path, destination: Path
+) -> tuple[set[tuple[int, int]], dict[str, int]]:
+    """Expose only LIMA's managed-cell union and physical boundary goals.
+
+    The certified maps append off-managed terminal/free-space cells so that
+    one-shot goals can be unique.  A lifelong PIBT policy must not use that
+    exterior as a waiting or detour buffer: the task is to leave the managed
+    warehouse through a boundary workstation and then re-enter the managed
+    warehouse for the next delivery.
+    """
+    parsed = Grid(source)
+    topology = build_topology(parsed)
+    managed = {
+        cell
+        for intersection in topology
+        for cell in [
+            intersection["center"],
+            *(cell for arm in intersection["arms"] for cell in arm),
+        ]
+    }
+    boundary = {
+        parsed.cell(x, y)
+        for y, row in enumerate(parsed.rows)
+        for x, value in enumerate(row)
+        if value == "G"
+    }
+    allowed_ids = managed | boundary
+    allowed = {parsed.coord(cell) for cell in allowed_ids}
+    lines = source.read_text(encoding="utf-8").splitlines()
+    body: list[str] = []
+    removed = 0
+    for y, row in enumerate(parsed.rows):
+        output_row = []
+        for x, value in enumerate(row):
+            if value in ".SEG" and (x, y) not in allowed:
+                output_row.append("@")
+                removed += 1
+            else:
+                output_row.append(value)
+        body.append("".join(output_row))
+    atomic_text(destination, "\n".join(lines[:4] + body) + "\n")
+    return allowed, {
+        "managed_cells": len(managed),
+        "boundary_goal_cells": len(boundary),
+        "allowed_cells": len(allowed),
+        "removed_free_space_cells": removed,
+    }
 
 
 def parse_fields(text: str) -> dict[str, str]:
@@ -110,10 +166,13 @@ def read_scenario(path: Path, agents: int) -> list[tuple[int, int, int, int]]:
     return rows
 
 
-def validate_sequences(path: Path, scenario: list[tuple[int, int, int, int]]) -> None:
+def validate_sequences(
+    path: Path, scenario: list[tuple[int, int, int, int]]
+) -> list[list[tuple[int, int]]]:
     lines = path.read_text(encoding="utf-8").splitlines()
     if len(lines) != len(scenario):
         raise ValueError("goal-sequence line count differs from agent count")
+    sequences: list[list[tuple[int, int]]] = []
     for index, (line, (_, _, goal_x, goal_y)) in enumerate(zip(lines, scenario)):
         coordinates = list(map(int, line.split()))
         if len(coordinates) < 4 or len(coordinates) % 2:
@@ -124,6 +183,8 @@ def validate_sequences(path: Path, scenario: list[tuple[int, int, int, int]]) ->
         if any(goals[position] == goals[(position + 1) % len(goals)]
                for position in range(len(goals))):
             raise ValueError(f"cyclic consecutive duplicate for agent {index}")
+        sequences.append(goals)
+    return sequences
 
 
 def instance_text(map_reference: str, scenario: list[tuple[int, int, int, int]], seed: int,
@@ -141,7 +202,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--input-manifest",
-        default="results/revision_final/lifelong_inputs_v2/MANIFEST.json")
+        default="results/revision_final/lifelong_inputs_boundary_v3/MANIFEST.json")
     parser.add_argument(
         "--binary", default=str(Path.home() / "mapf-baselines/pibt2/build_bonus/lifelong_fixed"))
     parser.add_argument(
@@ -154,6 +215,11 @@ def main() -> int:
     parser.add_argument("--horizon", type=int, default=10000)
     parser.add_argument("--warmup", type=int, default=1000)
     parser.add_argument("--jobs", type=int, default=2)
+    parser.add_argument(
+        "--movement-domain", choices=("managed-boundary", "full"),
+        default="managed-boundary",
+        help=("managed-boundary forbids PIBT from using off-managed free space; "
+              "full is retained only for diagnostic reproduction"))
     parser.add_argument(
         "--output-dir", default="results/revision_final/bonus_lifelong_pibt_v1")
     parser.add_argument("--rerun", action="store_true")
@@ -169,6 +235,9 @@ def main() -> int:
     inputs = json.loads(input_manifest_path.read_text(encoding="utf-8"))
     if inputs.get("semantics", {}).get("sequence") != "fixed cyclic order; no consecutive duplicate":
         parser.error("input manifest is not the fixed cyclic lifelong dataset")
+    if inputs.get("semantics", {}).get("goal_pool") != (
+            "physical boundary service cells marked G"):
+        parser.error("input manifest is not the boundary-delivery lifelong dataset")
     maps = set(args.maps.split(",")) if args.maps else None
     densities = set(map(int, args.densities.split(","))) if args.densities else None
     scenarios = set(map(int, args.scenarios.split(","))) if args.scenarios else None
@@ -214,11 +283,22 @@ def main() -> int:
     for directory in (records, resources, logs, metrics, instances, adapted_maps):
         directory.mkdir(parents=True, exist_ok=True)
     solver_maps: dict[str, Path] = {}
+    solver_domains: dict[str, set[tuple[int, int]]] = {}
+    domain_stats: dict[str, dict[str, int]] = {}
     for map_name in {cell["map"] for cell in cells}:
         source_map = ROOT / inputs["maps"][map_name]["map_file"]
         solver_map = adapted_maps / f"{map_name}.map"
-        write_pibt_map(source_map, solver_map)
+        if args.movement_domain == "managed-boundary":
+            allowed, stats = write_pibt_managed_boundary_map(source_map, solver_map)
+        else:
+            allowed = write_pibt_map(source_map, solver_map)
+            stats = {
+                "managed_cells": -1, "boundary_goal_cells": -1,
+                "allowed_cells": len(allowed), "removed_free_space_cells": 0,
+            }
         solver_maps[map_name] = solver_map
+        solver_domains[map_name] = allowed
+        domain_stats[map_name] = stats
     upstream_commit = subprocess.check_output(
         ["git", "-C", str(upstream), "rev-parse", "HEAD"], text=True).strip()
     runner = Path(__file__).resolve()
@@ -233,7 +313,15 @@ def main() -> int:
         "cells": [cell["tag"] for cell in cells],
         "horizon_steps": args.horizon, "warmup_steps": args.warmup,
         "termination_policy": "fixed discrete horizon; no wall-clock cutoff",
-        "map_adapter": "preserve grid symbols; emit exactly the declared map rows",
+        "movement_domain": args.movement_domain,
+        "map_adapter": (
+            "managed intersection-cell union plus G boundary goals; all off-managed "
+            "traversable cells blocked"
+            if args.movement_domain == "managed-boundary" else
+            "preserve all traversable grid symbols; emit exactly the declared map rows"
+        ),
+        "movement_domain_stats": domain_stats,
+        "boundary_entry_policy": inputs["semantics"]["boundary_entry_policy"],
         "adapted_map_sha256": {
             name: sha256(path) for name, path in sorted(solver_maps.items())
         },
@@ -267,7 +355,18 @@ def main() -> int:
         sequence_path = ROOT / cell["sequence_file"]
         map_path = solver_maps[cell["map"]]
         scenario_rows = read_scenario(scenario_path, cell["agents"])
-        validate_sequences(sequence_path, scenario_rows)
+        sequence_rows = validate_sequences(sequence_path, scenario_rows)
+        allowed = solver_domains[cell["map"]]
+        invalid_starts = [
+            (sx, sy) for sx, sy, _, _ in scenario_rows if (sx, sy) not in allowed
+        ]
+        invalid_goals = [
+            goal for sequence in sequence_rows for goal in sequence if goal not in allowed
+        ]
+        if invalid_starts or invalid_goals:
+            raise ValueError(
+                f"restricted movement domain excludes {len(invalid_starts)} starts "
+                f"and {len(invalid_goals)} sequence goals for {tag}")
         instance_path = instances / f"{tag}.txt"
         # Upstream pibt2 compiles a fixed map-directory prefix into lib-mapf.
         # The adapter changes only file framing, preserving every grid symbol.
@@ -284,7 +383,7 @@ def main() -> int:
             "max_rss_kb=%M\nuser_seconds=%U\nsystem_seconds=%S\nelapsed_seconds=%e",
             "-o", str(resource_path), str(binary), "--instance", str(instance_path),
             "--sequences", str(sequence_path), "--horizon", str(args.horizon),
-            "--events", str(events_path),
+            "--events", str(events_path), "--exclusive-boundary-goals",
         ]
         started = time.time()
         process = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
@@ -306,6 +405,7 @@ def main() -> int:
             process.returncode == 0 and fields.get("status") == "step_limit"
             and fields.get("steps") == str(args.horizon)
             and fields.get("vertex_conflicts") == "0" and fields.get("edge_conflicts") == "0"
+            and fields.get("boundary_entry_violations") == "0"
         )
         event_rows = []
         if events_path.is_file():

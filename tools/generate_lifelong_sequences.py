@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate fixed, disjoint, cyclic per-agent goal sequences for lifelong runs."""
+"""Generate fixed cyclic boundary-workstation goal sequences for lifelong runs."""
 
 from __future__ import annotations
 
@@ -141,9 +141,12 @@ def main() -> int:
     parser.add_argument("--scenarios", default="0-9")
     parser.add_argument(
         "--certified-manifest",
-        default="results/revision_final/certified_inputs_v2/MANIFEST.json",
+        default="results/revision_final/certified_inputs_v3/MANIFEST.json",
     )
-    parser.add_argument("--output-root", default="results/revision_final/lifelong_inputs_v2")
+    parser.add_argument(
+        "--output-root",
+        default="results/revision_final/lifelong_inputs_boundary_v3",
+    )
     args = parser.parse_args()
     maps = [item.strip() for item in args.maps.split(",") if item.strip()]
     if not maps or not set(maps).issubset(SPECS):
@@ -157,17 +160,26 @@ def main() -> int:
     output = (ROOT / args.output_root).resolve()
     script = Path(__file__).resolve()
     manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "generator": str(script.relative_to(ROOT)), "generator_sha256": sha256(script),
         "capacity_formula": "sum(arm capacities) - longest arm",
         "certified_manifest": str(certified_path.relative_to(ROOT)),
         "certified_manifest_sha256": sha256(certified_path),
         "semantics": {
-            "goal_pool": "interior traversable non-sink cells",
-            "assignment": "disjoint per-agent subsets",
+            "goal_pool": "physical boundary service cells marked G",
+            "assignment": "shared pool; independently shuffled fixed order per agent",
             "sequence": "fixed cyclic order; no consecutive duplicate",
             "activation": "next goal in the completion timestep; movement starts next timestep",
+            "boundary_entry_policy": (
+                "an active task may enter G iff G is its current assigned goal; "
+                "the just-completed G may be occupied only while re-entering the interior"
+            ),
+            "movement_domain": certified.get("movement_domain"),
+            "task_cycle": (
+                "managed interior -> boundary delivery -> managed interior -> "
+                "next boundary delivery"
+            ),
         },
         "maps": {},
     }
@@ -180,13 +192,32 @@ def main() -> int:
             raise ValueError(f"map hash mismatch: {map_name}")
         width, height, rows = load_map(map_path)
         pool = [
-            (x, y) for y in range(1, height - 1) for x in range(1, width - 1)
-            if rows[y][x] in ".EG"
+            (x, y) for y, row in enumerate(rows) for x, value in enumerate(row)
+            if value == "G"
         ]
+        if len(pool) < 2:
+            raise ValueError(f"{map_name} has fewer than two physical task interfaces")
+        traversable = {
+            (x, y) for y, row in enumerate(rows) for x, value in enumerate(row)
+            if value in ".SEG"
+        }
+        invalid_boundary_degree = [
+            goal for goal in pool
+            if sum(
+                (goal[0] + dx, goal[1] + dy) in traversable
+                for dx, dy in DELTAS
+            ) != 1
+        ]
+        if invalid_boundary_degree:
+            raise ValueError(
+                f"{map_name} has {len(invalid_boundary_degree)} G cells "
+                "without exactly one managed neighbor"
+            )
         labels = component_labels(width, height, rows)
         map_entry = {
-            "map_file": spec.map_file, "map_sha256": sha256(map_path),
-            "tiles": spec.tiles, "goal_pool_size": len(pool), "densities": {},
+            "map_file": certified_map["map_file"], "map_sha256": sha256(map_path),
+            "tiles": spec.tiles, "goal_pool_size": len(pool),
+            "boundary_goal_degree": 1, "densities": {},
         }
         manifest["maps"][map_name] = map_entry
         for density in densities:
@@ -223,14 +254,15 @@ def main() -> int:
                         index for index, start in enumerate(starts) if labels[start] == component
                     ]
                     component_pool = [goal for goal in pool if labels[goal] == component]
-                    if len(component_pool) < 2 * len(agent_indexes):
+                    if len(component_pool) < 2:
                         raise ValueError(
                             f"{map_name} d{density} component {component}: "
-                            "reachable goal pool cannot give two cells per agent")
-                    random.Random(seed ^ component).shuffle(component_pool)
+                            "fewer than two reachable boundary exits")
                     reachable_pool_size += len(component_pool)
-                    for local_index, agent_index in enumerate(agent_indexes):
-                        buckets[agent_index] = component_pool[local_index::len(agent_indexes)]
+                    for agent_index in agent_indexes:
+                        order = list(component_pool)
+                        random.Random(seed ^ component ^ ((agent_index + 1) * 0x9E3779B1)).shuffle(order)
+                        buckets[agent_index] = order
                 for index, bucket in enumerate(buckets):
                     if len(bucket) < 2:
                         raise AssertionError("lifelong sequence has fewer than two unique goals")
@@ -241,8 +273,8 @@ def main() -> int:
                     if any(labels[start] != labels[goal] for start, goal in zip([starts[index]] * len(bucket), bucket)):
                         raise AssertionError("lifelong sequence contains an unreachable goal")
                 all_goals = [goal for bucket in buckets for goal in bucket]
-                if len(set(all_goals)) != reachable_pool_size:
-                    raise AssertionError("per-agent lifelong goal subsets overlap or omit cells")
+                if any(rows[y][x] != "G" for x, y in all_goals):
+                    raise AssertionError("lifelong sequence contains a non-boundary goal")
 
                 tag = f"{map_name}_d{density:02d}_a{agents}_s{scenario}"
                 scenario_path = output / "scenarios" / map_name / f"{tag}.scen"
@@ -250,7 +282,7 @@ def main() -> int:
                 scenario_rows = ["version 1"]
                 for start, bucket in zip(starts, buckets):
                     scenario_rows.append(
-                        f"0\t{Path(spec.map_file).name}\t{width}\t{height}\t"
+                        f"0\t{Path(certified_map['map_file']).name}\t{width}\t{height}\t"
                         f"{start[0]}\t{start[1]}\t{bucket[0][0]}\t{bucket[0][1]}\t0")
                 sequence_rows = [
                     " ".join(f"{x} {y}" for x, y in bucket) for bucket in buckets
@@ -270,9 +302,11 @@ def main() -> int:
                     "sequence_file": str(sequence_path.relative_to(ROOT)),
                     "sequence_sha256": sha256(sequence_path),
                     "validation": {
-                        "unique_starts": True, "disjoint_goal_subsets": True,
+                        "unique_starts": True, "shared_boundary_goal_pool": True,
                         "capacity_violations": 0,
-                        "reachable_goals": len(all_goals),
+                        "sequence_entries": len(all_goals),
+                        "unique_boundary_goals": len(set(all_goals)),
+                        "non_boundary_goals": 0,
                         "reachable_goal_pool_size": reachable_pool_size,
                         "minimum_goals_per_agent": min(map(len, buckets)),
                         "maximum_goals_per_agent": max(map(len, buckets)),

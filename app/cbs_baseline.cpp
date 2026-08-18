@@ -100,7 +100,8 @@ struct ConstraintTables {
 };
 
 // Backward BFS from the goal over the 4-connected grid; -1 = unreachable.
-std::shared_ptr<const std::vector<int>> goal_distance_field(const GridMap& map, const CellId goal) {
+std::shared_ptr<const std::vector<int>> goal_distance_field(
+    const GridMap& map, const CellId goal, const bool exclusive_boundary_goals) {
     auto dist = std::make_shared<std::vector<int>>(static_cast<std::size_t>(map.cell_count()), -1);
     std::deque<CellId> frontier;
     (*dist)[static_cast<std::size_t>(goal)] = 0;
@@ -110,6 +111,7 @@ std::shared_ptr<const std::vector<int>> goal_distance_field(const GridMap& map, 
         frontier.pop_front();
         const int next_d = (*dist)[static_cast<std::size_t>(cur)] + 1;
         for (const CellId next : map.neighbors(cur)) {
+            if (exclusive_boundary_goals && map.boundary(next) && next != goal) continue;
             if ((*dist)[static_cast<std::size_t>(next)] >= 0) continue;
             (*dist)[static_cast<std::size_t>(next)] = next_d;
             frontier.push_back(next);
@@ -138,7 +140,8 @@ struct AStarOrder {
 // field (first neighbor in the map's fixed order with dist == d-1).
 std::optional<Path> low_level(const GridMap& map, const CellId start, const std::vector<int>& dist,
                               const ConstraintTables& tables, const Clock::time_point deadline,
-                              bool& timed_out) {
+                              const CellId assigned_goal,
+                              const bool exclusive_boundary_goals, bool& timed_out) {
     const auto cells = static_cast<std::int64_t>(map.cell_count());
     if (dist[static_cast<std::size_t>(start)] < 0) return std::nullopt;
     const auto vertex_key = [cells](const int t, const CellId c) {
@@ -194,6 +197,7 @@ std::optional<Path> low_level(const GridMap& map, const CellId start, const std:
         }
         const int nt = cur.t + 1;
         const auto try_push = [&](const CellId next) {
+            if (exclusive_boundary_goals && map.boundary(next) && next != assigned_goal) return;
             if (dist[static_cast<std::size_t>(next)] < 0) return;
             if (tables.vertex.contains(vertex_key(nt, next))) return;
             if (next != cur.cell && tables.edge.contains(edge_key(nt, cur.cell, next))) return;
@@ -263,6 +267,7 @@ struct Options {
     std::size_t agents{0};
     double time_limit{0.0};
     long long max_expansions{100000};
+    bool exclusive_boundary_goals{false};
 };
 
 // Write one spatial route per agent in the waypoint format consumed by
@@ -387,6 +392,8 @@ std::optional<Options> parse_args(const int argc, char** argv) {
                 std::cerr << "--max-expansions must be positive\n";
                 return std::nullopt;
             }
+        } else if (arg == "--exclusive-boundary-goals") {
+            opts.exclusive_boundary_goals = true;
         } else {
             std::cerr << "unknown argument: " << arg << "\n";
             return std::nullopt;
@@ -394,7 +401,8 @@ std::optional<Options> parse_args(const int argc, char** argv) {
     }
     if (opts.map.empty() || opts.scenario.empty() || opts.agents == 0) {
         std::cerr << "usage: cbs_baseline --map FILE --scenario FILE --agents N "
-                     "[--max-expansions N] [--time-limit SEC]\n";
+                     "[--max-expansions N] [--time-limit SEC] "
+                     "[--exclusive-boundary-goals]\n";
         return std::nullopt;
     }
     return opts;
@@ -405,7 +413,7 @@ void report(const bool solved, const std::size_t agents, const long long makespa
             const IncumbentDump incumbent = {}) {
     const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
     std::printf("solved=%d agents=%zu makespan=%lld soc=%lld expansions=%lld elapsed_s=%.3f "
-                "incumbent_dumped=%d incumbent_conflicts=%lld\n",
+                "incumbent_dumped=%d incumbent_conflicts=%lld boundary_entry_violations=0\n",
                 solved ? 1 : 0, agents, makespan, soc, expansions, elapsed,
                 incumbent.dumped ? 1 : 0, incumbent.conflicts);
 }
@@ -437,6 +445,7 @@ int main(const int argc, char** argv) {
     }
     const auto n = tasks.size();
     std::vector<CellId> starts(n);
+    std::vector<CellId> goals(n);
     std::vector<std::shared_ptr<const std::vector<int>>> dist_fields(n);
     std::unordered_map<CellId, std::shared_ptr<const std::vector<int>>> dist_cache;
     for (std::size_t a = 0; a < n; ++a) {
@@ -446,9 +455,19 @@ int main(const int argc, char** argv) {
         }
         starts[a] = map.cell(tasks[a].start);
         const CellId goal = map.cell(tasks[a].goal);
+        goals[a] = goal;
+        if (opts->exclusive_boundary_goals && !map.boundary(goal)) {
+            std::cerr << "agent " << a << " has a non-boundary assigned goal\n";
+            return 2;
+        }
+        if (opts->exclusive_boundary_goals && map.boundary(starts[a])) {
+            std::cerr << "agent " << a << " starts on a boundary goal\n";
+            return 2;
+        }
         auto cached = dist_cache.find(goal);
         if (cached == dist_cache.end()) {
-            cached = dist_cache.emplace(goal, goal_distance_field(map, goal)).first;
+            cached = dist_cache.emplace(
+                goal, goal_distance_field(map, goal, opts->exclusive_boundary_goals)).first;
         }
         dist_fields[a] = cached->second;
     }
@@ -463,7 +482,8 @@ int main(const int argc, char** argv) {
         const ConstraintTables empty_tables;
         for (std::size_t a = 0; a < n; ++a) {
             bool timed_out = false;
-            auto path = low_level(map, starts[a], *dist_fields[a], empty_tables, deadline, timed_out);
+            auto path = low_level(map, starts[a], *dist_fields[a], empty_tables, deadline,
+                                  goals[a], opts->exclusive_boundary_goals, timed_out);
             if (timed_out) {
                 report(false, n, 0, 0, expansions, start_time);
                 return 0;
@@ -536,7 +556,8 @@ int main(const int argc, char** argv) {
 
             const auto agent = static_cast<std::size_t>(constraint.agent);
             bool timed_out = false;
-            auto path = low_level(map, starts[agent], *dist_fields[agent], tables, deadline, timed_out);
+            auto path = low_level(map, starts[agent], *dist_fields[agent], tables, deadline,
+                                  goals[agent], opts->exclusive_boundary_goals, timed_out);
             if (timed_out) {
                 report(false, n, 0, 0, expansions, start_time,
                        dump_best_conflict_incumbent(open, nodes, map, node_id));

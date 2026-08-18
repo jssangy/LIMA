@@ -100,8 +100,7 @@ def parse_probabilities(text: str) -> list[float]:
 
 
 def parse_fields(text: str) -> dict[str, str]:
-    lines = [line for line in text.splitlines() if line.strip()]
-    return dict(re.findall(r"(\w+)=([^\s]+)", lines[-1])) if lines else {}
+    return dict(re.findall(r"(\w+)=([^\s]+)", text))
 
 
 def parse_resource(path: Path) -> dict[str, str]:
@@ -120,7 +119,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--algorithm", required=True,
-        choices=("lima", "pibt", "lacam-replan", "primal2"))
+        choices=("lima", "pibt", "pibt-native", "lacam-replan", "primal2"))
     parser.add_argument(
         "--input-manifest",
         default="results/revision_final/certified_inputs_v3/MANIFEST.json",
@@ -154,6 +153,12 @@ def main() -> int:
         "--pibt-binary",
         default="results/revision_final/frozen_artifacts_step_v2/pibt")
     parser.add_argument(
+        "--pibt-native-binary",
+        default="results/revision_final/frozen_artifacts_stochastic_baselines_h30000_v1/pibt_native_stochastic")
+    parser.add_argument(
+        "--pibt-native-adapter",
+        default=str(Path(__file__).resolve().with_name("pibt_native_stochastic_adapter.py")))
+    parser.add_argument(
         "--lacam-repo", default=str(Path.home() / "mapf-baselines/lacam"))
     parser.add_argument(
         "--lacam-binary",
@@ -186,11 +191,14 @@ def main() -> int:
     pibt_repo = Path(args.pibt_repo).resolve()
     lacam_repo = Path(args.lacam_repo).resolve()
     pibt_binary = (ROOT / args.pibt_binary).resolve()
+    pibt_native_binary = (ROOT / args.pibt_native_binary).resolve()
+    pibt_native_adapter = Path(args.pibt_native_adapter).resolve()
     lacam_binary = (ROOT / args.lacam_binary).resolve()
     replan_adapter = Path(args.replan_adapter).resolve()
     executables = {
         "lima": [lima],
         "pibt": [Path(sys.executable), replan_adapter, pibt_binary],
+        "pibt-native": [Path(sys.executable), pibt_native_adapter, pibt_native_binary],
         "lacam-replan": [Path(sys.executable), replan_adapter, lacam_binary],
         "primal2": [primal_python, primal_script],
     }[args.algorithm]
@@ -270,12 +278,25 @@ def main() -> int:
                 if (
                     validation["capacity_violations"] != 0
                     or not validation["unique_starts"]
-                    or not validation["unique_goals"]
                     or not validation["traversable_goals"]
                     or validation["same_agent_start_goal"] != 0
                     or validation["reachable_pairs"] != agents
                 ):
                     parser.error(f"capacity certificate failed: {certificate_file}")
+                shared_boundary_contract = (
+                    certified.get("goal_semantics", {}).get("type")
+                    == "physical boundary service event"
+                )
+                if shared_boundary_contract:
+                    if (
+                        not validation.get("physical_boundary_goals")
+                        or not validation.get("exclusive_assigned_boundary_entry")
+                        or not validation.get("disappear_at_goal")
+                    ):
+                        parser.error(
+                            f"shared-boundary certificate failed: {certificate_file}")
+                elif not validation.get("unique_goals"):
+                    parser.error(f"unique-goal certificate failed: {certificate_file}")
                 inputs[scenario_file] = scenario_entry["scenario_sha256"]
                 inputs[certificate_file] = scenario_entry["certificate_sha256"]
                 for probability in probabilities:
@@ -299,11 +320,13 @@ def main() -> int:
 
     runner = Path(__file__).resolve()
     fingerprint_payload = {
-        "schema_version": 2, "algorithm": args.algorithm,
+        "schema_version": 3, "algorithm": args.algorithm,
         "semantic_scope": (
-            "one-shot; unique capacity-certified starts and goals; fixed-point-free tasks; "
-            "disappear at goal; common stochastic movement delay"
+            "one-shot; capacity-certified unique starts; shared physical boundary goals; "
+            "exclusive assigned-G entry; disappear at goal; common stochastic movement delay"
         ),
+        "movement_domain": certified.get("movement_domain"),
+        "goal_semantics": certified.get("goal_semantics"),
         "trace_spec": TRACE_SPEC,
         "p0_source": "matching deterministic certified step campaign",
         "executables": {str(path): sha256(path) for path in executables},
@@ -336,6 +359,24 @@ def main() -> int:
             }
             if args.algorithm in ("pibt", "lacam-replan") else None
         ),
+        "native_stochastic_execution": (
+            {
+                "adapter": str(pibt_native_adapter),
+                "policy": (
+                    "official one-step PIBT transition from observed occupancy at every "
+                    "synchronous timestep; no full joint-plan replanning"
+                ),
+                "safe_executor": (
+                    "delayed commands remain at the observed vertex; iterative dependency "
+                    "cancellation preserves vertex and edge safety"
+                ),
+                "communication_accounting": (
+                    "distributed state/priority and selected-action announcements plus "
+                    "neighbor-to-neighbor inheritance/backtracking messages"
+                ),
+            }
+            if args.algorithm == "pibt-native" else None
+        ),
         "lima_version": lima_version.stdout.strip(), "runner_sha256": sha256(runner),
         "maps": maps, "densities": densities, "scenarios": scenarios,
         "probabilities": probabilities,
@@ -347,7 +388,12 @@ def main() -> int:
                 "fixed synchronous execution horizon; event-triggered global "
                 "replanning after execution divergence; no wall-clock cutoff"
                 if args.algorithm in ("pibt", "lacam-replan")
-                else "fixed synchronous execution horizon; no wall-clock cutoff"
+                else (
+                    "fixed synchronous execution horizon; native one-step distributed "
+                    "reaction to observed execution; no wall-clock cutoff"
+                    if args.algorithm == "pibt-native"
+                    else "fixed synchronous execution horizon; no wall-clock cutoff"
+                )
             )
         ),
         "max_steps": args.max_steps, "inputs": inputs,
@@ -404,6 +450,7 @@ def main() -> int:
                 "--stall-threshold", str(args.max_steps + 1),
                 "--failure-prob", str(job["probability"]),
                 "--goal-behavior", "disappear", "--no-trace",
+                "--exclusive-boundary-goals",
                 "--metrics", str(metrics / tag),
             ]
         elif args.algorithm == "primal2":
@@ -420,6 +467,20 @@ def main() -> int:
             ]
             if args.primal_stall_steps:
                 solver.extend(["--stall-steps", str(args.primal_stall_steps)])
+        elif args.algorithm == "pibt-native":
+            solver = [
+                str(Path(sys.executable).resolve()), str(pibt_native_adapter),
+                "--map", str((ROOT / job["map_file"]).resolve()),
+                "--scen", str((ROOT / job["scenario_file"]).resolve()),
+                "--agents", str(job["agents"]),
+                "--seed", str(job["scenario"]),
+                "--max-steps", str(effective_max_steps),
+                "--delay-prob", str(job["probability"]),
+                "--delay-seed", str(job["scenario"]),
+                "--pibt-repo", str(pibt_repo),
+                "--native-binary", str(pibt_native_binary),
+                "--exclusive-boundary-goals",
+            ]
         else:
             planner_name = "pibt" if args.algorithm == "pibt" else "lacam"
             solver = [
@@ -437,6 +498,7 @@ def main() -> int:
                 "--lacam-repo", str(lacam_repo),
                 "--lacam-binary", str(lacam_binary),
                 "--lacam-max-iterations", str(args.lacam_max_iterations),
+                "--exclusive-boundary-goals",
             ]
         command = [
             "/usr/bin/time", "-f",
@@ -469,12 +531,13 @@ def main() -> int:
                 returncode == 0 and solved
                 and telemetry["path_conformity"]["online_validation_ok"]
             )
-        elif args.algorithm in ("pibt", "lacam-replan"):
+        elif args.algorithm in ("pibt", "pibt-native", "lacam-replan"):
             telemetry = None
             solved = (
                 returncode == 0 and solved
                 and result.get("vertex_conflicts") == "0"
                 and result.get("edge_conflicts") == "0"
+                and result.get("boundary_entry_violations") == "0"
             )
         log_path.write_text(stdout + ("\n[stderr]\n" + stderr if stderr else ""), encoding="utf-8")
         atomic_json(record_path, {

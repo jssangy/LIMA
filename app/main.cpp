@@ -23,7 +23,7 @@
 
 namespace {
 
-constexpr int kLimaDefaultProfileVersion = 5;
+constexpr int kLimaDefaultProfileVersion = 6;
 
 enum class RunMode { Realtime, Solve, Replay, Debug, Bench };
 
@@ -87,9 +87,13 @@ void apply_profile(Options& options, const std::string_view name) {
     options.sim.solver.beam_width = 2'048;
     options.sim.solver.beam_score = "tt";
 
-    // Recirculation Controller: hop-aware widest-ratio winner.
+    // Recirculation Controller: hop-aware widest-ratio winner.  Concurrent
+    // intersection agents reserve the cells of each accepted temporary loop
+    // for the current decision round, preventing overlapping recovery routes
+    // from creating a new wait cycle in the common executor.
     options.sim.discharge = lima::DischargeConfig{};
     options.sim.discharge.policy = lima::DischargePolicy::WidestRatioShortest;
+    options.sim.discharge.exclusive = lima::RecirculationExclusiveMode::ReserveCells;
     options.sim.discharge_enabled = true;
 }
 
@@ -127,7 +131,7 @@ void usage() {
                  "            [--discharge-partial F] [--discharge-weight F]\n"
                  "            [--recirc-probe off|detect|break-slack|break-longarm] [--recirc-probe-ttl N] [--recirc-probe-age N]\n"
                  "            [--recirc-exclusive off|id|age|reserve] [--recirc-cycle-max 4|6|8]\n"
-                 "            [--no-pibt-corridor] [--pibt-sink-yield] [--pibt-arm-retreat[-last]]\n"
+                 "            [--no-pibt-corridor] [--exclusive-boundary-goals] [--pibt-sink-yield] [--pibt-arm-retreat[-last]]\n"
                  "            [--pibt-age-rate] [--pibt-replan N] [--shuffle-order SEED] [--failure-prob P]\n"
                  "            [--goal-behavior disappear|stay|lifelong] [--goal-sequences FILE]\n"
                  "            [--no-discharge] [--metrics DIR] [--trace-jsonl FILE]\n"
@@ -309,6 +313,7 @@ Options parse(const int argc, char** argv) {
         else if (arg == "--subset-scheduling") options.sim.subset_scheduling = true;
         else if (arg == "--pibt-corridor") options.sim.pibt_corridor = true;
         else if (arg == "--no-pibt-corridor") options.sim.pibt_corridor = false;
+        else if (arg == "--exclusive-boundary-goals") options.sim.exclusive_boundary_goals = true;
         else if (arg == "--pibt-sink-yield") options.sim.pibt_sink_yield = true;
         else if (arg == "--pibt-arm-retreat") options.sim.pibt_arm_retreat = true;
         else if (arg == "--pibt-arm-retreat-last") options.sim.pibt_arm_retreat_last = true;
@@ -534,6 +539,7 @@ bool has_non_default_config(const Options& options) {
         || !options.sim.gate_resync
         || options.sim.subset_scheduling
         || !options.sim.pibt_corridor
+        || options.sim.exclusive_boundary_goals
         || options.sim.pibt_sink_yield
         || options.sim.pibt_arm_retreat
         || options.sim.pibt_arm_retreat_last
@@ -616,6 +622,7 @@ void print_provenance(const Options& options) {
     }
     if (options.sim.subset_scheduling) std::cout << " subset=on";
     if (!options.sim.pibt_corridor) std::cout << " pibt=off";
+    if (options.sim.exclusive_boundary_goals) std::cout << " boundary_goals=exclusive";
     if (options.sim.pibt_sink_yield) std::cout << " sink_yield=on";
     if (options.sim.pibt_arm_retreat) std::cout << " arm_retreat=on";
     if (options.sim.pibt_arm_retreat_last) std::cout << " arm_retreat=last";
@@ -803,7 +810,8 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::string_view(argv[1]) == "--version") {
             std::cout << "commit=" << LIMA_COMMIT
                       << " profile=lima-default"
-                      << " profile_version=" << kLimaDefaultProfileVersion << '\n';
+                      << " profile_version=" << kLimaDefaultProfileVersion
+                      << " boundary_goals=exclusive-v1\n";
             return 0;
         }
         Options options = parse(argc, argv);

@@ -17,6 +17,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from generate_capacity_certified_scenarios import Grid, build_topology
 from summarize_telemetry import summarize_metrics
 
 
@@ -42,6 +43,64 @@ def atomic_json(path: Path, payload: dict) -> None:
     os.replace(temporary, path)
 
 
+def atomic_text(path: Path, payload: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w", dir=path.parent, delete=False, encoding="utf-8", newline="\n"
+    ) as stream:
+        stream.write(payload)
+        temporary = Path(stream.name)
+    os.replace(temporary, path)
+
+
+def write_managed_boundary_map(
+    source: Path, destination: Path
+) -> dict[str, int]:
+    """Expose only the managed warehouse graph and its boundary workstations.
+
+    The expanded paper maps also contain off-managed terminal/free-space cells
+    used to encode unique one-shot goals.  In the lifelong pick-and-deliver
+    mission those cells are outside the movement domain and must not become a
+    waiting or detour buffer for any algorithm.
+    """
+    parsed = Grid(source)
+    topology = build_topology(parsed)
+    managed = {
+        cell
+        for intersection in topology
+        for cell in [
+            intersection["center"],
+            *(cell for arm in intersection["arms"] for cell in arm),
+        ]
+    }
+    boundary = {
+        parsed.cell(x, y)
+        for y, row in enumerate(parsed.rows)
+        for x, value in enumerate(row)
+        if value == "G"
+    }
+    allowed = managed | boundary
+    body: list[str] = []
+    removed = 0
+    for y, row in enumerate(parsed.rows):
+        output_row: list[str] = []
+        for x, value in enumerate(row):
+            if value in ".SEG" and parsed.cell(x, y) not in allowed:
+                output_row.append("@")
+                removed += 1
+            else:
+                output_row.append(value)
+        body.append("".join(output_row))
+    header = source.read_text(encoding="utf-8").splitlines()[:4]
+    atomic_text(destination, "\n".join(header + body) + "\n")
+    return {
+        "managed_cells": len(managed),
+        "boundary_goal_cells": len(boundary),
+        "allowed_cells": len(allowed),
+        "removed_free_space_cells": removed,
+    }
+
+
 def parse_fields(text: str) -> dict[str, str]:
     lines = [line for line in text.splitlines() if line.strip()]
     return dict(re.findall(r"(\w+)=([^\s]+)", lines[-1])) if lines else {}
@@ -58,7 +117,8 @@ def parse_resource(path: Path) -> dict[str, str]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--input-manifest", default="results/revision_final/lifelong_inputs_v2/MANIFEST.json")
+        "--input-manifest",
+        default="results/revision_final/lifelong_inputs_boundary_v3/MANIFEST.json")
     parser.add_argument(
         "--binary", default="results/revision_final/frozen_artifacts_step_v2/lima")
     parser.add_argument("--variants", default="bfs,swr,static-guidance")
@@ -68,6 +128,11 @@ def main() -> int:
     parser.add_argument("--horizon", type=int, default=10000)
     parser.add_argument("--warmup", type=int, default=1000)
     parser.add_argument("--jobs", type=int, default=8)
+    parser.add_argument(
+        "--movement-domain", choices=("managed-boundary", "full"),
+        default="managed-boundary",
+        help=("managed-boundary forbids off-managed free-space movement; "
+              "full is retained only for diagnostic reproduction"))
     parser.add_argument("--output-dir", default="results/revision_final/lifelong_lima_step_v2")
     parser.add_argument("--rerun", action="store_true")
     args = parser.parse_args()
@@ -92,6 +157,9 @@ def main() -> int:
     inputs = json.loads(input_manifest_path.read_text(encoding="utf-8"))
     if inputs.get("semantics", {}).get("sequence") != "fixed cyclic order; no consecutive duplicate":
         parser.error("input manifest is not the fixed cyclic lifelong dataset")
+    if inputs.get("semantics", {}).get("goal_pool") != (
+            "physical boundary service cells marked G"):
+        parser.error("input manifest is not the boundary-delivery lifelong dataset")
 
     cells: list[dict] = []
     for map_name, map_entry in inputs["maps"].items():
@@ -135,17 +203,45 @@ def main() -> int:
     output = (ROOT / args.output_dir).resolve()
     records, resources, logs, metrics = (
         output / "records", output / "resources", output / "logs", output / "metrics")
-    for directory in (records, resources, logs, metrics):
+    adapted_maps = output / "adapted_maps"
+    for directory in (records, resources, logs, metrics, adapted_maps):
         directory.mkdir(parents=True, exist_ok=True)
+    solver_maps: dict[str, Path] = {}
+    movement_domain_stats: dict[str, dict[str, int]] = {}
+    adapted_map_sha256: dict[str, str] = {}
+    for map_name, map_entry in inputs["maps"].items():
+        if map_filter is not None and map_name not in map_filter:
+            continue
+        source_map = (ROOT / map_entry["map_file"]).resolve()
+        if args.movement_domain == "managed-boundary":
+            solver_map = adapted_maps / f"{map_name}.map"
+            movement_domain_stats[map_name] = write_managed_boundary_map(
+                source_map, solver_map)
+        else:
+            solver_map = source_map
+            parsed = Grid(source_map)
+            movement_domain_stats[map_name] = {
+                "full_traversable_cells": len(parsed.traversable),
+            }
+        solver_maps[map_name] = solver_map
+        adapted_map_sha256[map_name] = sha256(solver_map)
     runner = Path(__file__).resolve()
     fingerprint_payload = {
-        "schema_version": 2, "algorithm": "lima",
+        "schema_version": 3, "algorithm": "lima",
         "semantic_scope": "lifelong; fixed cyclic per-agent goal sequences",
         "binary": str(binary.relative_to(ROOT)), "binary_sha256": sha256(binary),
         "binary_version": version.stdout.strip(), "runner_sha256": sha256(runner),
         "input_manifest_sha256": sha256(input_manifest_path),
         "variants": variants, "cells": [cell["tag"] for cell in cells],
         "horizon_steps": args.horizon, "warmup_steps": args.warmup,
+        "movement_domain": args.movement_domain,
+        "movement_domain_definition": (
+            "IntersectionTopology managed-cell union plus G boundary workstations"
+            if args.movement_domain == "managed-boundary"
+            else "all traversable cells in expanded input map (diagnostic only)"),
+        "movement_domain_stats": movement_domain_stats,
+        "solver_map_sha256": adapted_map_sha256,
+        "boundary_entry_policy": inputs["semantics"]["boundary_entry_policy"],
         "termination_policy": "fixed discrete horizon; no wall-clock cutoff",
     }
     fingerprint = hashlib.sha256(
@@ -183,12 +279,14 @@ def main() -> int:
         }[cell["variant"]]
         solver = [
             str(binary), "--profile", "lima-default", "--mode", "solve",
-            "--map", cell["map_file"], "--scenario", cell["scenario_file"],
+            "--map", str(solver_maps[cell["map"]]),
+            "--scenario", cell["scenario_file"],
             "--agents", str(cell["agents"]), "--seed", str(cell["scenario"]),
             "--max-steps", str(args.horizon),
             "--stall-threshold", str(args.horizon + 1),
             "--goal-behavior", "lifelong",
             "--goal-sequences", cell["sequence_file"],
+            "--exclusive-boundary-goals",
             "--routing", routing, "--no-trace", "--metrics", str(metrics / tag),
         ]
         command = [
@@ -213,6 +311,9 @@ def main() -> int:
         log_path.write_text(stdout + ("\n[stderr]\n" + stderr if stderr else ""), encoding="utf-8")
         atomic_json(record_path, {
             **cell, "algorithm": "lima", "returncode": returncode,
+            "solver_map_file": str(solver_maps[cell["map"]].relative_to(ROOT)),
+            "solver_map_sha256": adapted_map_sha256[cell["map"]],
+            "movement_domain": args.movement_domain,
             "timed_out": False,
             "horizon_completed": horizon_completed and validation_ok,
             "normal_termination": horizon_completed and validation_ok,

@@ -77,6 +77,11 @@ struct SimulatorConfig {
     // trimmed egress) and enables rescue-group rotation.  Disable with
     // --no-pibt-corridor for ablation.
     bool pibt_corridor{true};
+    // Boundary-service mission: a G cell is an agent-specific completion
+    // event, not shared transit space. An active agent may enter a G cell only
+    // when it is that agent's current goal; disappear-at-goal then removes it
+    // from occupancy atomically after the arrival step.
+    bool exclusive_boundary_goals{false};
     // Straggler-class fixes (Gate C/D tournament, all opt-in; defaults keep
     // the frozen behavior byte-identical).  Diagnosed mechanism: a sink-cell
     // occupant at an aisle mouth can become unpushable because its only free
@@ -272,6 +277,7 @@ private:
     void move_agent_to(Agent& agent, CellId next);
     [[nodiscard]] bool adjacent_or_equal(CellId current, CellId next) const;
     [[nodiscard]] CellId active_discharge_target(const Agent& agent) const;
+    [[nodiscard]] bool boundary_entry_allowed(const Agent& agent, CellId next) const;
     void run_pibt_movement();
     void compute_rescue_groups();
     std::vector<CellId> plan_global(CellId start, CellId goal);

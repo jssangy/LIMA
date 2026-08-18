@@ -20,6 +20,7 @@ public:
     [[nodiscard]] bool traversable(Coord c) const noexcept;
     [[nodiscard]] bool traversable(CellId id) const noexcept;
     [[nodiscard]] bool goal(CellId id) const noexcept;
+    [[nodiscard]] bool boundary(CellId id) const noexcept;
     [[nodiscard]] bool terminal(CellId id) const noexcept;
     [[nodiscard]] CellId cell(Coord c) const noexcept;
     [[nodiscard]] Coord coord(CellId id) const noexcept;
@@ -33,6 +34,7 @@ private:
     int height_{};
     std::vector<std::uint8_t> blocked_;
     std::vector<std::uint8_t> goal_mask_;
+    std::vector<std::uint8_t> boundary_mask_;
     std::vector<std::uint8_t> terminal_mask_;
     std::vector<std::vector<CellId>> neighbors_;
     std::vector<CellId> goals_;

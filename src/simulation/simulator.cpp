@@ -1218,6 +1218,12 @@ bool Simulator::step() {
     for (Agent& agent : agents_) {
         if (!agent.active || agent.scheduled()) continue;
         const CellId next = agent.intended_cell();
+        if (!boundary_entry_allowed(agent, next)) {
+            ++agent.wait_steps;
+            ++stats_.waits;
+            agent.wait_reason = WaitReason::Dependency;
+            continue;
+        }
         if (block_intersection(agent, next, true)) {
             ++agent.wait_steps;
             ++stats_.waits;
@@ -1256,7 +1262,8 @@ bool Simulator::step() {
         for (const AgentId id : scheduled_members_[iid]) {
             const Agent& agent = agents_[static_cast<std::size_t>(id)];
             if (!agent.active) continue;
-            if (block_intersection(agent, agent.intended_cell(), false)
+            if (!boundary_entry_allowed(agent, agent.intended_cell())
+                || block_intersection(agent, agent.intended_cell(), false)
                 || normal_occupied_[static_cast<std::size_t>(agent.intended_cell())]) {
                 blocked_[iid] = true;
                 break;
@@ -1284,7 +1291,8 @@ bool Simulator::step() {
         if (!agent.active || !agent.scheduled()) continue;
         const auto iid = static_cast<std::size_t>(agent.schedule_group);
         if (iid < rescue_group_.size() && rescue_group_[iid] != 0) continue;
-        if (iid < blocked_.size() && blocked_[iid]) {
+        if ((iid < blocked_.size() && blocked_[iid])
+            || !boundary_entry_allowed(agent, agent.intended_cell())) {
             ++agent.wait_steps;
             ++stats_.waits;
             agent.wait_reason = execution_failed_[static_cast<std::size_t>(agent.id)] != 0
@@ -1427,6 +1435,10 @@ bool Simulator::adjacent_or_equal(const CellId current, const CellId next) const
     return std::find(neighbors.begin(), neighbors.end(), next) != neighbors.end();
 }
 
+bool Simulator::boundary_entry_allowed(const Agent& agent, const CellId next) const {
+    return !config_.exclusive_boundary_goals || !map_.boundary(next) || next == agent.goal;
+}
+
 CellId Simulator::active_discharge_target(const Agent& agent) const {
     for (const IntersectionId iid_value : topology_.memberships(agent.position)) {
         const auto iid = static_cast<std::size_t>(iid_value);
@@ -1548,7 +1560,8 @@ void Simulator::compute_rescue_groups() {
             if (blocked_[iid]) break;
             const Agent& agent = agents_[static_cast<std::size_t>(id)];
             const CellId next = next_for(agent);
-            if (block_intersection(agent, next, false)
+            if (!boundary_entry_allowed(agent, next)
+                || block_intersection(agent, next, false)
                 || scheduled_reserved_[static_cast<std::size_t>(next)] != 0
                 || std::find(destinations.begin(), destinations.end(), next) != destinations.end()) {
                 blocked_[iid] = true;
@@ -1712,6 +1725,12 @@ void Simulator::run_pibt_movement() {
         if (!agent.active || agent.scheduled()
             || pibt_eligible_[static_cast<std::size_t>(agent.id)] != 0) continue;
         const CellId next = agent.intended_cell();
+        if (!boundary_entry_allowed(agent, next)) {
+            ++agent.wait_steps;
+            ++stats_.waits;
+            agent.wait_reason = WaitReason::Dependency;
+            continue;
+        }
         if (!adjacent_or_equal(agent.position, next)) {
             ++agent.wait_steps;
             ++stats_.waits;
@@ -1765,6 +1784,7 @@ void Simulator::run_pibt_movement() {
     pibt_->resolve(agents_, occupancy_, pibt_eligible_, pibt_priority_class_,
         [&](const AgentId id, const CellId candidate, const bool relaxed) {
             const Agent& agent = agents_[static_cast<std::size_t>(id)];
+            if (!boundary_entry_allowed(agent, candidate)) return false;
             const CellId forced = pibt_forced_next_[static_cast<std::size_t>(id)];
             if (forced != kInvalidCell) return candidate == forced;
             if (candidate == agent.position) return true;
@@ -1895,7 +1915,7 @@ void Simulator::rotate_blocked_cycles() {
             // Only unscheduled agents that waited this step participate.
             if (!agent.active || agent.scheduled() || agent.wait_steps == 0) break;
             const CellId next = agent.intended_cell();
-            if (next == agent.position) break;
+            if (next == agent.position || !boundary_entry_allowed(agent, next)) break;
             const AgentId occupant = occupancy_[static_cast<std::size_t>(next)];
             if (occupant == kNoAgent) break;
             current = occupant;
@@ -2046,10 +2066,14 @@ std::vector<CellId> Simulator::plan_global(const CellId start, const CellId goal
     bool vertical_goal = destination.y == 0 || destination.y + 1 == map_.height();
     bool horizontal_goal = destination.x == 0 || destination.x + 1 == map_.width();
     if (map_.goal(goal)) {
-        for (const CellId neighbor : map_.neighbors(goal)) if (map_.terminal(neighbor)) {
-            const Coord terminal = map_.coord(neighbor);
-            vertical_goal = vertical_goal || terminal.y != destination.y;
-            horizontal_goal = horizontal_goal || terminal.x != destination.x;
+        for (const CellId neighbor : map_.neighbors(goal)) {
+            // Expanded maps infer the boundary orientation from the outward E
+            // lane. Managed-boundary maps remove E, so a physical G instead
+            // infers it from its unique inward managed neighbor.
+            if (!map_.terminal(neighbor) && !map_.boundary(goal)) continue;
+            const Coord adjacent = map_.coord(neighbor);
+            vertical_goal = vertical_goal || adjacent.y != destination.y;
+            horizontal_goal = horizontal_goal || adjacent.x != destination.x;
         }
     }
     if (!vertical_goal && !horizontal_goal) horizontal_goal = true;

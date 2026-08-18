@@ -11,12 +11,9 @@ namespace lima {
 
 namespace {
 
-// Lifelong goal pool (approved design, 2026-08-13 re-freeze): interior
-// traversable non-S cells.  S cells are shared disappear-exits for the
-// one-shot mode and must not serve as persistent lifelong goals; the
-// outermost row/col is excluded to match the scenario-generator start rule.
-// Mirrors make_goal_candidates from the coworker's scenario_loader, with the
-// pool fixed to interior non-sink cells.
+// Fallback pool for lifelong runs without an explicit task sequence. Fixed
+// sequences may instead use shared map-authored boundary workstations; their
+// semantics are validated by the input certificate and handled below.
 std::vector<CellId> make_goal_candidates(const GridMap& map) {
     const std::unordered_set<CellId> sinks(map.sink_cells().begin(), map.sink_cells().end());
     std::vector<CellId> candidates;
@@ -88,12 +85,14 @@ std::optional<CellId> GoalAllocator::reassign(
         const auto index = static_cast<std::size_t>(agent);
         auto& cursor = fixed_cursors_[index];
         const CellId goal = fixed_sequences_[index][cursor];
-        AgentId& next_owner = owner_[static_cast<std::size_t>(goal)];
-        if (goal == current || next_owner != kNoAgent || !acceptable(goal)) {
+        // Fixed external task streams may assign the same physical boundary
+        // workstation to multiple live tasks. A goal visit is not a stay, and
+        // the common executor serializes actual vertex/edge use. Ownership is
+        // therefore intentionally not imposed on this branch.
+        if (goal == current || !acceptable(goal)) {
             if (owned) previous_owner = agent;
             return std::nullopt;
         }
-        next_owner = agent;
         cursor = (cursor + 1) % fixed_sequences_[index].size();
         return goal;
     }

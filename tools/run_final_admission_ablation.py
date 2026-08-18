@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Run the final AIMD-versus-static admission ablation.
 
-All starts satisfy the operational local-capacity certificate.  Each map uses
-one high-density rung and its certified capacity boundary.  Wall time is
-descriptive only; the simulation terminates by the common discrete horizon.
+All starts satisfy the operational local-capacity certificate. Each map uses
+its highest standard-density rung; capacity-boundary stress cases are excluded
+from the paper ablation. Wall time is descriptive only; the simulation
+terminates by the common discrete horizon.
 """
 
 from __future__ import annotations
@@ -33,9 +34,9 @@ VARIANTS = {
     "static": ("--gate-policy", "static"),
 }
 TARGETS = {
-    "warehouse_10_20": ("d60", "boundary"),
-    "warehouse_20_40": ("d50", "boundary"),
-    "cross_3030": ("d70", "boundary"),
+    "warehouse_10_20": "d60",
+    "warehouse_20_40": "d50",
+    "cross_3030": "d70",
 }
 
 
@@ -68,42 +69,41 @@ def parse_resource(path: Path) -> dict[str, str]:
         r"^(\w+)=([^\n]+)$", path.read_text(encoding="utf-8", errors="replace"), re.MULTILINE))
 
 
-def load_cells(certified_path: Path) -> tuple[list[dict], dict]:
+def load_cells(certified_path: Path, scenarios: tuple[int, ...]) -> tuple[list[dict], dict]:
     cells: list[dict] = []
     certified = json.loads(certified_path.read_text(encoding="utf-8"))
     if certified.get("capacity_formula") != "sum(arm capacities) - longest arm":
         raise ValueError("certified manifest does not use operational capacity")
-    for map_name, targets in TARGETS.items():
+    for map_name, target in TARGETS.items():
         map_entry = certified["maps"][map_name]
         if sha256(ROOT / map_entry["map_file"]) != map_entry["map_sha256"]:
             raise ValueError(f"map hash mismatch: {map_name}")
-        for target in targets:
-            target_entry = map_entry["targets"][target]
-            for scenario in (0, 1):
-                entry = target_entry["scenarios"][str(scenario)]
-                scenario_path = ROOT / entry["scenario_file"]
-                certificate_path = ROOT / entry["certificate_file"]
-                if sha256(scenario_path) != entry["scenario_sha256"]:
-                    raise ValueError(f"scenario hash mismatch: {scenario_path}")
-                if sha256(certificate_path) != entry["certificate_sha256"]:
-                    raise ValueError(f"certificate hash mismatch: {certificate_path}")
-                certificate = json.loads(certificate_path.read_text(encoding="utf-8"))
-                if certificate["validation"]["capacity_violations"] != 0:
-                    raise ValueError(f"capacity certificate failed: {certificate_path}")
-                agents = int(target_entry["agents"])
-                cells.append({
-                    "scope": "capacity_certified_high_density",
-                    "map": map_name,
-                    "target": target,
-                    "agents": agents,
-                    "tile_density_percent": target_entry["tile_density_percent"],
-                    "capacity_load_percent": target_entry["capacity_load_percent"],
-                    "scenario": scenario,
-                    "map_file": map_entry["map_file"],
-                    "scenario_file": entry["scenario_file"],
-                    "certificate_file": entry["certificate_file"],
-                    "tag": f"certified_{map_name}_{target}_a{agents}_s{scenario}",
-                })
+        target_entry = map_entry["targets"][target]
+        for scenario in scenarios:
+            entry = target_entry["scenarios"][str(scenario)]
+            scenario_path = ROOT / entry["scenario_file"]
+            certificate_path = ROOT / entry["certificate_file"]
+            if sha256(scenario_path) != entry["scenario_sha256"]:
+                raise ValueError(f"scenario hash mismatch: {scenario_path}")
+            if sha256(certificate_path) != entry["certificate_sha256"]:
+                raise ValueError(f"certificate hash mismatch: {certificate_path}")
+            certificate = json.loads(certificate_path.read_text(encoding="utf-8"))
+            if certificate["validation"]["capacity_violations"] != 0:
+                raise ValueError(f"capacity certificate failed: {certificate_path}")
+            agents = int(target_entry["agents"])
+            cells.append({
+                "scope": "capacity_certified_high_density",
+                "map": map_name,
+                "target": target,
+                "agents": agents,
+                "tile_density_percent": target_entry["tile_density_percent"],
+                "capacity_load_percent": target_entry["capacity_load_percent"],
+                "scenario": scenario,
+                "map_file": map_entry["map_file"],
+                "scenario_file": entry["scenario_file"],
+                "certificate_file": entry["certificate_file"],
+                "tag": f"certified_{map_name}_{target}_a{agents}_s{scenario}",
+            })
     return cells, certified
 
 
@@ -114,12 +114,19 @@ def main() -> int:
     parser.add_argument(
         "--binary", default="results/revision_final/frozen_artifacts_step_v2/lima")
     parser.add_argument("--max-steps", type=int, default=100000)
+    parser.add_argument("--scenarios", default="0,1,2,3,4")
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--output-dir", default="results/revision_final/admission_ablation_step_v2")
     parser.add_argument("--rerun", action="store_true")
     args = parser.parse_args()
     if args.jobs < 1 or args.max_steps < 1:
         parser.error("jobs and max-steps must be positive")
+    try:
+        scenarios = tuple(sorted({int(item) for item in args.scenarios.split(",")}))
+    except ValueError:
+        parser.error("scenarios must be comma-separated integers")
+    if not scenarios or any(value < 0 or value > 9 for value in scenarios):
+        parser.error("scenarios must be a nonempty subset of 0..9")
 
     freeze_path = Path(args.freeze_manifest).resolve()
     freeze = json.loads(freeze_path.read_text(encoding="utf-8"))
@@ -139,7 +146,7 @@ def main() -> int:
         parser.error("instrumented LIMA binary does not expose the frozen profile")
     certified_path = Path(args.certified_manifest).resolve()
     try:
-        cells, _ = load_cells(certified_path)
+        cells, _ = load_cells(certified_path, scenarios)
     except (OSError, KeyError, ValueError, json.JSONDecodeError) as error:
         parser.error(str(error))
     for cell in cells:
@@ -156,7 +163,10 @@ def main() -> int:
     jobs = [(cell, variant) for cell in cells for variant in VARIANTS]
     fingerprint_payload = {
         "schema_version": 2,
-        "semantic_scope": "one-shot; AIMD versus static admission; disappear at physical sink",
+        "semantic_scope": (
+            "one-shot; AIMD versus static admission; highest standard density; "
+            "capacity-boundary stress excluded; disappear at physical sink"
+        ),
         "freeze_commit": (
             freeze.get("git_commit")
             or freeze.get("source_commit")
@@ -168,6 +178,7 @@ def main() -> int:
         "runner_sha256": sha256(runner),
         "certified_manifest_sha256": sha256(certified_path),
         "cells": [cell["tag"] for cell in cells],
+        "scenarios": scenarios,
         "variants": VARIANTS,
         "termination_policy": "common discrete execution horizon; no wall-clock cutoff",
         "max_steps": args.max_steps,
