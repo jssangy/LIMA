@@ -128,11 +128,16 @@ void test_terminal_egress_reservation() {
     assert(reservations.try_acquire(0, 6, 5));
     assert(reservations.allows(0, 5) && reservations.allows(0, 6));
     assert(!reservations.allows(1, 5) && !reservations.allows(1, 6));
+    assert(reservations.virtual_occupancy_cell(0, 5) == lima::kInvalidCell);
+    assert(reservations.preserves_capacity_credit(0, 5, 6));
     agents[0].position = 6;
     agents[0].goal = 2;
     agents[0].route = {6, 5, 4, 3, 2};
     reservations.begin_cycle(agents, true);
     assert(reservations.return_cell(0, 6) == 5);
+    assert(reservations.virtual_occupancy_cell(0, 6) == 5);
+    assert(reservations.preserves_capacity_credit(0, 6, 5));
+    assert(!reservations.preserves_capacity_credit(0, 6, 4));
     assert(!reservations.try_acquire(1, 6, 5));
     agents[0].position = 5;
     agents[0].route = {5, 4, 3, 2};

@@ -74,6 +74,20 @@ CellId TerminalEgressReservations::return_cell(
     const CellId terminal = terminal_cell(agent);
     return terminal != kInvalidCell && position == terminal ? inward_cell(agent) : kInvalidCell;
 }
+CellId TerminalEgressReservations::virtual_occupancy_cell(
+    const AgentId agent, const CellId position) const noexcept {
+    const CellId terminal = terminal_cell(agent);
+    return terminal != kInvalidCell && position == terminal
+        ? inward_cell(agent) : kInvalidCell;
+}
+bool TerminalEgressReservations::preserves_capacity_credit(
+    const AgentId agent, const CellId current, const CellId next) const noexcept {
+    const CellId terminal = terminal_cell(agent);
+    const CellId inward = inward_cell(agent);
+    if (terminal == kInvalidCell || inward == kInvalidCell) return false;
+    return (current == inward && next == terminal)
+        || (current == terminal && next == inward);
+}
 CellId TerminalEgressReservations::terminal_cell(const AgentId agent) const noexcept {
     const auto index = static_cast<std::size_t>(agent);
     return agent >= 0 && index < leases_.size() ? leases_[index].terminal : kInvalidCell;

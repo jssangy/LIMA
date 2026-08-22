@@ -15,6 +15,14 @@ public:
     [[nodiscard]] bool try_acquire(AgentId agent, CellId terminal, CellId inward);
     [[nodiscard]] bool allows(AgentId agent, CellId destination) const noexcept;
     [[nodiscard]] CellId return_cell(AgentId agent, CellId position) const noexcept;
+    // While the owner is physically on G, its inward predecessor still
+    // consumes one local-capacity credit. This prevents an unrelated
+    // admission from spending the credit required for the acknowledged
+    // return transaction.
+    [[nodiscard]] CellId virtual_occupancy_cell(
+        AgentId agent, CellId position) const noexcept;
+    [[nodiscard]] bool preserves_capacity_credit(
+        AgentId agent, CellId current, CellId next) const noexcept;
     [[nodiscard]] CellId terminal_cell(AgentId agent) const noexcept;
     [[nodiscard]] CellId inward_cell(AgentId agent) const noexcept;
 private:

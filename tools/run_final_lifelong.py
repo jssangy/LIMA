@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import csv
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -114,6 +116,82 @@ def parse_resource(path: Path) -> dict[str, str]:
         path.read_text(encoding="utf-8", errors="replace"), re.MULTILINE))
 
 
+def percentile(values: list[float], probability: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    position = probability * (len(ordered) - 1)
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    weight = position - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
+def summarize_pick_delivery(
+    path: Path, agents: int, warmup: int, horizon: int
+) -> dict[str, object]:
+    rows = list(csv.DictReader(path.open(newline="", encoding="utf-8")))
+    measured_counts = [0] * agents
+    last_delivery = [warmup] * agents
+    pending_pickup_service: dict[int, int] = {}
+    cycle_service_steps: list[float] = []
+    pickup_stages = 0
+    deliveries = 0
+    measured_deliveries = 0
+    for row in rows:
+        timestep = int(row["t"])
+        agent = int(row["agent"])
+        task_index = int(row["task_index"])
+        service_steps = int(row["service_steps"])
+        if task_index % 2 == 1:
+            pickup_stages += 1
+            pending_pickup_service[agent] = service_steps
+            continue
+        deliveries += 1
+        cycle_service = pending_pickup_service.pop(agent, 0) + service_steps
+        if timestep > warmup:
+            measured_deliveries += 1
+            measured_counts[agent] += 1
+            last_delivery[agent] = timestep
+            cycle_service_steps.append(float(cycle_service))
+    measured_steps = horizon - warmup
+    count_sum = sum(measured_counts)
+    count_sq_sum = sum(value * value for value in measured_counts)
+    fairness = (
+        (count_sum * count_sum) / (agents * count_sq_sum)
+        if count_sq_sum else 0.0
+    )
+    ages = [float(horizon - timestep) for timestep in last_delivery]
+    return {
+        "definition": "one completed task is one even-indexed boundary delivery G",
+        "pickup_stages_total": pickup_stages,
+        "delivery_tasks_total": deliveries,
+        "delivery_tasks_measured": measured_deliveries,
+        "warmup_steps": warmup,
+        "measured_steps": measured_steps,
+        "throughput_deliveries_per_1000_steps": (
+            measured_deliveries * 1000.0 / measured_steps),
+        "throughput_deliveries_per_1000_agent_steps": (
+            measured_deliveries * 1000.0 / (measured_steps * agents)),
+        "cycle_service_steps": {
+            "count": len(cycle_service_steps),
+            "mean": (sum(cycle_service_steps) / len(cycle_service_steps)
+                     if cycle_service_steps else None),
+            "p50": percentile(cycle_service_steps, 0.50),
+            "p90": percentile(cycle_service_steps, 0.90),
+            "p99": percentile(cycle_service_steps, 0.99),
+        },
+        "jain_delivery_fairness": fairness,
+        "unfinished_delivery_age_steps": {
+            "p90": percentile(ages, 0.90),
+            "p99": percentile(ages, 0.99),
+            "max": max(ages) if ages else None,
+        },
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -138,8 +216,9 @@ def main() -> int:
     args = parser.parse_args()
     variants = [item.strip() for item in args.variants.split(",") if item.strip()]
     if not variants or not set(variants).issubset(
-            {"bfs", "swr", "static-guidance", "direct"}):
-        parser.error("variants must be bfs, swr, and/or static-guidance")
+            {"bfs", "swr", "static-guidance", "tfo-gp", "direct"}):
+        parser.error(
+            "variants must be bfs, swr, static-guidance, tfo-gp, and/or direct")
     if args.jobs < 1 or args.horizon < 1 or args.warmup < 0 or args.warmup >= args.horizon:
         parser.error("invalid jobs, horizon, or warmup")
     map_filter = set(args.maps.split(",")) if args.maps else None
@@ -155,11 +234,13 @@ def main() -> int:
         parser.error("lifelong binary does not expose the frozen LIMA profile")
     input_manifest_path = (ROOT / args.input_manifest).resolve()
     inputs = json.loads(input_manifest_path.read_text(encoding="utf-8"))
-    if inputs.get("semantics", {}).get("sequence") != "fixed cyclic order; no consecutive duplicate":
+    semantics = inputs.get("semantics", {})
+    if semantics.get("sequence") != "fixed cyclic order; no consecutive duplicate":
         parser.error("input manifest is not the fixed cyclic lifelong dataset")
-    if inputs.get("semantics", {}).get("goal_pool") != (
-            "physical boundary service cells marked G"):
-        parser.error("input manifest is not the boundary-delivery lifelong dataset")
+    if semantics.get("workload") != "interior-pickup-boundary-delivery":
+        parser.error("input manifest is not the pickup-delivery lifelong dataset")
+    if semantics.get("sequence_pattern") != "P,G,P,G; first stage is pickup":
+        parser.error("input manifest does not use the certified P,G stage order")
 
     cells: list[dict] = []
     for map_name, map_entry in inputs["maps"].items():
@@ -228,7 +309,7 @@ def main() -> int:
     runner = Path(__file__).resolve()
     fingerprint_payload = {
         "schema_version": 3, "algorithm": "lima",
-        "semantic_scope": "lifelong; fixed cyclic per-agent goal sequences",
+        "semantic_scope": "lifelong; fixed cyclic per-agent P,G task streams",
         "binary": str(binary.relative_to(ROOT)), "binary_sha256": sha256(binary),
         "binary_version": version.stdout.strip(), "runner_sha256": sha256(runner),
         "input_manifest_sha256": sha256(input_manifest_path),
@@ -241,7 +322,8 @@ def main() -> int:
             else "all traversable cells in expanded input map (diagnostic only)"),
         "movement_domain_stats": movement_domain_stats,
         "solver_map_sha256": adapted_map_sha256,
-        "boundary_entry_policy": inputs["semantics"]["boundary_entry_policy"],
+        "mission_contract": semantics,
+        "boundary_entry_policy": semantics["boundary_entry_policy"],
         "termination_policy": "fixed discrete horizon; no wall-clock cutoff",
     }
     fingerprint = hashlib.sha256(
@@ -275,7 +357,7 @@ def main() -> int:
         resource_path.unlink(missing_ok=True)
         routing = {
             "bfs": "bfs", "direct": "bfs", "swr": "swr",
-            "static-guidance": "static-guidance",
+            "static-guidance": "static-guidance", "tfo-gp": "tfo-gp",
         }[cell["variant"]]
         solver = [
             str(binary), "--profile", "lima-default", "--mode", "solve",
@@ -308,6 +390,9 @@ def main() -> int:
         )
         telemetry = summarize_metrics(metrics / tag)
         validation_ok = telemetry["path_conformity"]["online_validation_ok"]
+        mission_metrics = summarize_pick_delivery(
+            metrics / tag / "task_completions.csv",
+            cell["agents"], args.warmup, args.horizon)
         log_path.write_text(stdout + ("\n[stderr]\n" + stderr if stderr else ""), encoding="utf-8")
         atomic_json(record_path, {
             **cell, "algorithm": "lima", "returncode": returncode,
@@ -320,6 +405,7 @@ def main() -> int:
             "runner_wall_seconds": time.time() - started,
             "result": result, "resource": parse_resource(resource_path),
             "telemetry": telemetry,
+            "mission_metrics": mission_metrics,
             "metrics": str((metrics / tag).relative_to(ROOT)),
             "command": command, "log": str(log_path.relative_to(ROOT)),
             "experiment_fingerprint": fingerprint,

@@ -780,6 +780,9 @@ bool Simulator::block_intersection(const Agent& agent, const CellId next, const 
 }
 
 void Simulator::update_available_on_move(const AgentId agent, const CellId current, const CellId next) {
+    // A terminal lease owns one CPMP credit for the full exit-return transaction.
+    // Neither crossing changes the available local-capacity budget.
+    if (terminal_egress_.preserves_capacity_credit(agent, current, next)) return;
     const auto& from = topology_.memberships(current);
     const auto& to = topology_.memberships(next);
     for (const IntersectionId iid : from) {
@@ -957,6 +960,12 @@ bool Simulator::step() {
         for (const IntersectionId iid : topology_.memberships(agent.position)) {
             ++inside_counts_[static_cast<std::size_t>(iid)];
             members_[static_cast<std::size_t>(iid)].push_back(agent.id);
+        }
+        const CellId virtual_cell =
+            terminal_egress_.virtual_occupancy_cell(agent.id, agent.position);
+        if (virtual_cell != kInvalidCell) {
+            for (const IntersectionId iid : topology_.memberships(virtual_cell))
+                ++inside_counts_[static_cast<std::size_t>(iid)];
         }
         for (const IntersectionId iid : topology_.memberships(agent.position)) {
             const Intersection& intersection = topology_.intersections()[static_cast<std::size_t>(iid)];
