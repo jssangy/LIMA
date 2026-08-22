@@ -207,6 +207,11 @@ def main() -> int:
     parser.add_argument("--warmup", type=int, default=1000)
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument(
+        "--sweep-by-scenario", action="store_true",
+        help=("finish every map-density cell for one scenario seed before "
+              "starting the next seed; each completed sweep is a balanced "
+              "partial sample for paper tables"))
+    parser.add_argument(
         "--movement-domain", choices=("managed-boundary", "full"),
         default="managed-boundary",
         help=("managed-boundary forbids off-managed free-space movement; "
@@ -314,6 +319,9 @@ def main() -> int:
         "binary_version": version.stdout.strip(), "runner_sha256": sha256(runner),
         "input_manifest_sha256": sha256(input_manifest_path),
         "variants": variants, "cells": [cell["tag"] for cell in cells],
+        "execution_order": (
+            "scenario-major-barrier" if args.sweep_by_scenario
+            else "executor-queue"),
         "horizon_steps": args.horizon, "warmup_steps": args.warmup,
         "movement_domain": args.movement_domain,
         "movement_domain_definition": (
@@ -413,13 +421,28 @@ def main() -> int:
         return tag, "horizon" if horizon_completed and validation_ok else "stopped"
 
     completed = 0
+    if args.sweep_by_scenario:
+        batches = [
+            [cell for cell in cells if cell["scenario"] == scenario]
+            for scenario in sorted({cell["scenario"] for cell in cells})
+        ]
+    else:
+        batches = [cells]
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-            futures = [pool.submit(run, cell) for cell in cells]
-            for future in concurrent.futures.as_completed(futures):
-                tag, status = future.result()
-                completed += 1
-                print(f"[{completed:3d}/{len(cells):3d}] {status:8s} {tag}", flush=True)
+        for batch in batches:
+            if args.sweep_by_scenario:
+                scenario = batch[0]["scenario"]
+                print(
+                    f"[sweep] scenario={scenario} cells={len(batch)}",
+                    flush=True)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
+                futures = [pool.submit(run, cell) for cell in batch]
+                for future in concurrent.futures.as_completed(futures):
+                    tag, status = future.result()
+                    completed += 1
+                    print(
+                        f"[{completed:3d}/{len(cells):3d}] "
+                        f"{status:8s} {tag}", flush=True)
     finally:
         lock.unlink(missing_ok=True)
     print(records)
