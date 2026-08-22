@@ -122,7 +122,7 @@ void usage() {
                  "            [--solver ida|astar|wastar|gbfs|ucs|greedy|beam|beam-complete|hybrid] [--solver-iterations N]\n"
                  "            [--bound-step N] [--no-fastpath] [--lb-mode legacy|bf|tt] [--dominance]\n"
                  "            [--solver-nodes N] [--beam-width N] [--beam-score disorder|bf|tt] [--search-weight F]\n"
-                 "            [--routing swr|bfs|direct|static-guidance] [--capacity-formula operational|plus-one] [--isolation-cap N]\n"
+                 "            [--routing swr|bfs|direct|static-guidance|tfo-gp] [--capacity-formula operational|plus-one] [--isolation-cap N]\n"
                  "            [--gate-policy NAME] [--gate-param F] [--gate-param2 F] [--gate-param3 F]\n"
                  "            [--admit-lookahead off|hard|thresh|ratio|diff] [--admit-lookahead-param F]\n"
                  "            [--aimd-signal local|nbmax|nbmean|trend] [--aimd-signal-param F]\n"
@@ -353,7 +353,10 @@ Options parse(const int argc, char** argv) {
                 options.sim.routing = lima::GlobalRoutingPolicy::Bfs;
             else if (name == "static-guidance")
                 options.sim.routing = lima::GlobalRoutingPolicy::StaticGuidance;
-            else throw std::invalid_argument("routing must be swr, bfs, or static-guidance");
+            else if (name == "tfo-gp")
+                options.sim.routing = lima::GlobalRoutingPolicy::TfoGp;
+            else throw std::invalid_argument(
+                "routing must be swr, bfs, static-guidance, or tfo-gp");
         }
         else if (arg == "--capacity-formula") {
             const auto name = value();
@@ -567,11 +570,17 @@ void print_provenance(const Options& options) {
         if (!options.routes.empty()) std::cout << "external+";
         std::cout << planner_name(options.planner);
     }
-    std::cout << " solver=" << options.sim.solver.kind
-              << " routing=" << (options.sim.routing == lima::GlobalRoutingPolicy::Swr
-                  ? "swr" : options.sim.routing == lima::GlobalRoutingPolicy::Bfs
-                  ? "bfs" : "static-guidance")
-              << " capacity=" << (options.sim.isolation.formula == lima::CapacityFormula::SumMinusMax
+    std::cout << " solver=" << options.sim.solver.kind << " routing=";
+    if (options.sim.routing == lima::GlobalRoutingPolicy::Swr)
+        std::cout << "swr";
+    else if (options.sim.routing == lima::GlobalRoutingPolicy::Bfs)
+        std::cout << "bfs";
+    else if (options.sim.routing == lima::GlobalRoutingPolicy::StaticGuidance)
+        std::cout << "static-guidance";
+    else
+        std::cout << "tfo-gp";
+    std::cout << " capacity="
+              << (options.sim.isolation.formula == lima::CapacityFormula::SumMinusMax
                   ? "operational" : "plus-one");
     if (options.profile != "legacy"
         || options.sim.solver.max_iterations != lima::SolverConfig{}.max_iterations)

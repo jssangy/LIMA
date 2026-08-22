@@ -15,6 +15,7 @@ class Planner {
 public:
     virtual ~Planner() = default;
     [[nodiscard]] virtual std::vector<CellId> plan(CellId start, CellId goal) = 0;
+    virtual void note_assigned_route(std::span<const CellId>) {}
 };
 
 class BfsPlanner final : public Planner {
@@ -57,10 +58,42 @@ private:
     std::deque<CellId> field_order_;
 };
 
+// Online traffic-flow guidance. Each newly assigned route is chosen within a
+// bounded stretch of a shortest path while penalizing cumulative vertex,
+// directed-edge, and reverse-edge load from routes assigned earlier in the
+// same run. This is the simulator-native form of tools/generate_route_plans.py
+// planner=tfo_gp and changes only the global route provider.
+class TrafficFlowPlanner final : public Planner {
+public:
+    TrafficFlowPlanner(const GridMap& map, double max_stretch = 1.5,
+                       double vertex_weight = 0.25, double edge_weight = 0.50,
+                       double contraflow_weight = 2.0);
+    [[nodiscard]] std::vector<CellId> plan(CellId start, CellId goal) override;
+    void note_assigned_route(std::span<const CellId> route) override;
+
+private:
+    [[nodiscard]] const std::vector<std::int32_t>& distance_field(CellId goal);
+    [[nodiscard]] double directed_load(CellId source, CellId destination) const;
+    [[nodiscard]] std::size_t directed_index(CellId source, CellId destination) const;
+
+    const GridMap& map_;
+    double max_stretch_{1.5};
+    double vertex_weight_{0.25};
+    double edge_weight_{0.50};
+    double contraflow_weight_{2.0};
+    std::vector<double> vertex_load_;
+    std::vector<double> edge_load_;
+    std::unordered_map<CellId, std::vector<std::int32_t>> fields_;
+    std::deque<CellId> field_order_;
+};
+
 std::unique_ptr<Planner> make_planner(PlannerKind kind, const GridMap& map, std::mt19937_64& rng);
 std::unique_ptr<Planner> make_static_guidance_planner(
     const GridMap& map, std::uint64_t seed, double penalty = 0.20);
 
+std::unique_ptr<Planner> make_traffic_flow_planner(
+    const GridMap& map, double max_stretch = 1.5, double vertex_weight = 0.25,
+    double edge_weight = 0.50, double contraflow_weight = 2.0);
 struct SuffixRepair {
     // Executable route beginning at the agent's current cell and ending at the
     // unchanged reference goal.

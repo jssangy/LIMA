@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <queue>
 #include <stdexcept>
@@ -33,6 +34,15 @@ std::vector<CellId> reconstruct(const CellId start, const CellId goal, const std
     }
     std::reverse(path.begin(), path.end());
     return path;
+}
+
+std::uint64_t directed_key(const CellId source, const CellId destination) {
+    return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(source)) << 32U)
+        | static_cast<std::uint32_t>(destination);
+}
+
+std::uint64_t state_key(const CellId cell, const std::int32_t steps) {
+    return directed_key(cell, steps);
 }
 
 }  // namespace
@@ -204,6 +214,282 @@ std::vector<CellId> StaticGuidancePlanner::plan(const CellId start, const CellId
     return route;
 }
 
+TrafficFlowPlanner::TrafficFlowPlanner(
+    const GridMap& map, const double max_stretch, const double vertex_weight,
+    const double edge_weight, const double contraflow_weight)
+    : map_(map), max_stretch_(max_stretch), vertex_weight_(vertex_weight),
+      edge_weight_(edge_weight), contraflow_weight_(contraflow_weight),
+      vertex_load_(static_cast<std::size_t>(map.cell_count()), 0.0),
+      edge_load_(static_cast<std::size_t>(map.cell_count()) * 4U, 0.0) {
+    if (max_stretch < 1.0 || vertex_weight < 0.0 || edge_weight < 0.0
+        || contraflow_weight < 0.0) {
+        throw std::invalid_argument("invalid traffic-flow planner parameters");
+    }
+}
+
+const std::vector<std::int32_t>& TrafficFlowPlanner::distance_field(
+    const CellId goal) {
+    constexpr std::size_t kMaxCachedFields = 128;
+    if (!fields_.contains(goal)) {
+        if (fields_.size() >= kMaxCachedFields) {
+            fields_.erase(field_order_.front());
+            field_order_.pop_front();
+        }
+        field_order_.push_back(goal);
+    }
+    auto [it, inserted] = fields_.try_emplace(goal);
+    auto& distance = it->second;
+    if (inserted) {
+        distance.assign(static_cast<std::size_t>(map_.cell_count()), -1);
+        std::queue<CellId> queue;
+        distance[static_cast<std::size_t>(goal)] = 0;
+        queue.push(goal);
+        while (!queue.empty()) {
+            const CellId current = queue.front();
+            queue.pop();
+            for (const CellId next : map_.neighbors(current)) {
+                auto& value = distance[static_cast<std::size_t>(next)];
+                if (value >= 0) continue;
+                value = distance[static_cast<std::size_t>(current)] + 1;
+                queue.push(next);
+            }
+        }
+    }
+    return distance;
+}
+
+std::size_t TrafficFlowPlanner::directed_index(
+    const CellId source, const CellId destination) const {
+    const Coord a = map_.coord(source);
+    const Coord b = map_.coord(destination);
+    std::size_t direction = 0;
+    if (b.x == a.x && b.y + 1 == a.y) direction = 0;
+    else if (b.x + 1 == a.x && b.y == a.y) direction = 1;
+    else if (b.x == a.x + 1 && b.y == a.y) direction = 2;
+    else if (b.x == a.x && b.y == a.y + 1) direction = 3;
+    else throw std::logic_error("traffic-flow load update is not 4-connected");
+    return static_cast<std::size_t>(source) * 4U + direction;
+}
+
+double TrafficFlowPlanner::directed_load(
+    const CellId source, const CellId destination) const {
+    return edge_load_[directed_index(source, destination)];
+}
+
+void TrafficFlowPlanner::note_assigned_route(
+    const std::span<const CellId> route) {
+    for (const CellId cell : route) {
+        vertex_load_[static_cast<std::size_t>(cell)] += 1.0;
+    }
+    for (std::size_t i = 1; i < route.size(); ++i) {
+        edge_load_[directed_index(route[i - 1], route[i])] += 1.0;
+    }
+}
+
+std::vector<CellId> TrafficFlowPlanner::plan(
+    const CellId start, const CellId goal) {
+    if (!map_.traversable(start) || !map_.traversable(goal)) return {};
+    if (start == goal) return {start};
+    const auto& distance = distance_field(goal);
+    const std::int32_t shortest = distance[static_cast<std::size_t>(start)];
+    if (shortest < 0) return {};
+    const std::int32_t maximum = std::max(
+        shortest, static_cast<std::int32_t>(std::floor(
+            static_cast<double>(shortest) * max_stretch_ + 1e-9)));
+
+    const auto edge_cost_for = [&](const CellId source, const CellId destination) {
+        return 1.0
+            + vertex_weight_ * vertex_load_[static_cast<std::size_t>(destination)]
+            + edge_weight_ * directed_load(source, destination)
+            + contraflow_weight_ * directed_load(destination, source);
+    };
+
+    // A feasible shortest route supplies an upper bound. The unconstrained
+    // flow optimum is exact whenever it already satisfies the stretch budget,
+    // which is the common case.
+    std::vector<CellId> incumbent_route{start};
+    double incumbent_cost = 0.0;
+    for (CellId current = start; current != goal;) {
+        CellId best = kInvalidCell;
+        double best_edge = std::numeric_limits<double>::infinity();
+        const auto target = distance[static_cast<std::size_t>(current)] - 1;
+        for (const CellId next : map_.neighbors(current)) {
+            if (distance[static_cast<std::size_t>(next)] != target) continue;
+            const double candidate = edge_cost_for(current, next);
+            if (candidate + 1e-12 < best_edge
+                || (std::abs(candidate - best_edge) <= 1e-12 && next < best)) {
+                best = next;
+                best_edge = candidate;
+            }
+        }
+        if (best == kInvalidCell) return {};
+        incumbent_cost += best_edge;
+        current = best;
+        incumbent_route.push_back(current);
+    }
+
+    struct FlowNode {
+        double estimate;
+        double cost;
+        std::int32_t steps;
+        CellId cell;
+        bool operator>(const FlowNode& rhs) const noexcept {
+            if (estimate != rhs.estimate) return estimate > rhs.estimate;
+            if (cost != rhs.cost) return cost > rhs.cost;
+            if (steps != rhs.steps) return steps > rhs.steps;
+            return cell > rhs.cell;
+        }
+    };
+    const std::size_t cells = static_cast<std::size_t>(map_.cell_count());
+    std::vector<double> best_cost(cells, std::numeric_limits<double>::infinity());
+    std::vector<std::int32_t> best_steps(cells, std::numeric_limits<std::int32_t>::max());
+    std::vector<CellId> flow_parent(cells, kInvalidCell);
+    std::priority_queue<FlowNode, std::vector<FlowNode>, std::greater<>> flow_open;
+    best_cost[static_cast<std::size_t>(start)] = 0.0;
+    best_steps[static_cast<std::size_t>(start)] = 0;
+    flow_open.push({static_cast<double>(shortest), 0.0, 0, start});
+    while (!flow_open.empty()) {
+        const FlowNode node = flow_open.top();
+        flow_open.pop();
+        const auto index = static_cast<std::size_t>(node.cell);
+        if (std::abs(node.cost - best_cost[index]) > 1e-12
+            || node.steps != best_steps[index]) continue;
+        if (node.cell == goal) {
+            auto route = reconstruct(start, goal, flow_parent);
+            if (!route.empty()
+                && static_cast<std::int32_t>(route.size() - 1) <= maximum) {
+                return route;
+            }
+            break;
+        }
+        for (const CellId next : map_.neighbors(node.cell)) {
+            const double candidate = node.cost + edge_cost_for(node.cell, next);
+            const auto next_steps = node.steps + 1;
+            const auto next_index = static_cast<std::size_t>(next);
+            if (candidate + 1e-12 > best_cost[next_index]
+                || (std::abs(candidate - best_cost[next_index]) <= 1e-12
+                    && next_steps >= best_steps[next_index])) continue;
+            best_cost[next_index] = candidate;
+            best_steps[next_index] = next_steps;
+            flow_parent[next_index] = node.cell;
+            const auto remaining = distance[next_index];
+            flow_open.push({candidate + static_cast<double>(std::max(0, remaining)),
+                            candidate, next_steps, next});
+        }
+    }
+
+    struct Node {
+        double estimate;
+        double cost;
+        std::int32_t steps;
+        CellId cell;
+        bool operator>(const Node& rhs) const noexcept {
+            if (estimate != rhs.estimate) return estimate > rhs.estimate;
+            if (cost != rhs.cost) return cost > rhs.cost;
+            if (steps != rhs.steps) return steps > rhs.steps;
+            return cell > rhs.cell;
+        }
+    };
+    using Label = std::pair<std::int32_t, double>;
+    constexpr std::size_t kMaxLabelsPerCell = 16;
+    std::vector<std::vector<Label>> labels(
+        static_cast<std::size_t>(map_.cell_count()));
+    std::unordered_map<std::uint64_t, std::uint64_t> parent;
+    std::priority_queue<Node, std::vector<Node>, std::greater<>> open;
+    labels[static_cast<std::size_t>(start)].push_back({0, 0.0});
+    open.push({static_cast<double>(shortest), 0.0, 0, start});
+    std::uint64_t goal_state = 0;
+    bool found = false;
+    while (!open.empty()) {
+        const Node node = open.top();
+        open.pop();
+        const auto& current_labels = labels[static_cast<std::size_t>(node.cell)];
+        const bool current = std::any_of(
+            current_labels.begin(), current_labels.end(), [&](const Label& label) {
+                return label.first == node.steps
+                    && std::abs(label.second - node.cost) <= 1e-12;
+            });
+        if (!current) continue;
+        if (node.cell == goal) {
+            goal_state = state_key(node.cell, node.steps);
+            found = true;
+            break;
+        }
+        for (const CellId next : map_.neighbors(node.cell)) {
+            const std::int32_t next_steps = node.steps + 1;
+            const std::int32_t remaining = distance[static_cast<std::size_t>(next)];
+            if (remaining < 0 || next_steps + remaining > maximum) continue;
+            const double edge_cost = edge_cost_for(node.cell, next);
+            const double candidate = node.cost + edge_cost;
+            if (candidate + static_cast<double>(remaining) > incumbent_cost + 1e-12) continue;
+            auto& next_labels = labels[static_cast<std::size_t>(next)];
+            if (std::any_of(next_labels.begin(), next_labels.end(),
+                    [&](const Label& label) {
+                        return label.first <= next_steps
+                            && label.second <= candidate + 1e-12;
+                    })) {
+                continue;
+            }
+            next_labels.erase(std::remove_if(
+                next_labels.begin(), next_labels.end(), [&](const Label& label) {
+                    return next_steps <= label.first
+                        && candidate <= label.second + 1e-12;
+                }), next_labels.end());
+            next_labels.push_back({next_steps, candidate});
+            if (next_labels.size() > kMaxLabelsPerCell) {
+                std::sort(next_labels.begin(), next_labels.end(),
+                    [](const Label& lhs, const Label& rhs) {
+                        if (lhs.first != rhs.first) return lhs.first < rhs.first;
+                        return lhs.second < rhs.second;
+                    });
+                std::size_t redundant = 1;
+                double least_deviation = std::numeric_limits<double>::infinity();
+                for (std::size_t i = 1; i + 1 < next_labels.size(); ++i) {
+                    const auto& left = next_labels[i - 1];
+                    const auto& middle = next_labels[i];
+                    const auto& right = next_labels[i + 1];
+                    const double ratio = static_cast<double>(middle.first - left.first)
+                        / static_cast<double>(right.first - left.first);
+                    const double interpolated = left.second
+                        + ratio * (right.second - left.second);
+                    const double scale = std::max({1.0, std::abs(left.second),
+                                                   std::abs(middle.second),
+                                                   std::abs(right.second)});
+                    const double deviation = std::abs(middle.second - interpolated) / scale;
+                    if (deviation < least_deviation) {
+                        least_deviation = deviation;
+                        redundant = i;
+                    }
+                }
+                next_labels.erase(next_labels.begin() + static_cast<std::ptrdiff_t>(redundant));
+                if (std::none_of(next_labels.begin(), next_labels.end(), [&](const Label& label) {
+                        return label.first == next_steps
+                            && std::abs(label.second - candidate) <= 1e-12;
+                    })) continue;
+            }
+            const auto next_state = state_key(next, next_steps);
+            parent[next_state] = state_key(node.cell, node.steps);
+            open.push({
+                candidate + static_cast<double>(remaining), candidate,
+                next_steps, next,
+            });
+        }
+    }
+    if (!found) return incumbent_route;
+
+    const std::uint64_t start_state = state_key(start, 0);
+    std::vector<CellId> route{goal};
+    auto state = goal_state;
+    while (state != start_state) {
+        const auto it = parent.find(state);
+        if (it == parent.end()) return {};
+        state = it->second;
+        route.push_back(static_cast<CellId>(state >> 32U));
+    }
+    std::reverse(route.begin(), route.end());
+    return route;
+}
+
 std::unique_ptr<Planner> make_planner(const PlannerKind kind, const GridMap& map, std::mt19937_64& rng) {
     if (kind == PlannerKind::Bfs) return std::make_unique<BfsPlanner>(map, rng);
     if (kind == PlannerKind::AStar) return std::make_unique<AStarPlanner>(map);
@@ -214,6 +500,13 @@ std::unique_ptr<Planner> make_static_guidance_planner(
     const GridMap& map, const std::uint64_t seed, const double penalty) {
     if (penalty < 0.0) throw std::invalid_argument("guidance penalty must be non-negative");
     return std::make_unique<StaticGuidancePlanner>(map, seed, penalty);
+}
+
+std::unique_ptr<Planner> make_traffic_flow_planner(
+    const GridMap& map, const double max_stretch, const double vertex_weight,
+    const double edge_weight, const double contraflow_weight) {
+    return std::make_unique<TrafficFlowPlanner>(
+        map, max_stretch, vertex_weight, edge_weight, contraflow_weight);
 }
 
 std::optional<SuffixRepair> repair_to_reference_suffix(

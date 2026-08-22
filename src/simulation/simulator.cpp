@@ -93,6 +93,8 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
       failure_seed_(seed ^ 0xa0761d6478bd642fULL),
       planner_(config_.routing == GlobalRoutingPolicy::StaticGuidance
           ? make_static_guidance_planner(map_, seed)
+          : config_.routing == GlobalRoutingPolicy::TfoGp
+          ? make_traffic_flow_planner(map_)
           : make_planner(planner_kind, map_, rng_)),
       topology_(IntersectionTopology::build(map_)),
       solver_(make_solver(config_.solver)), coordinator_(*solver_, config_.pibt_corridor),
@@ -224,6 +226,7 @@ Simulator::Simulator(GridMap map, const std::span<const Task> tasks, const Plann
     blocked_.resize(intersection_count);
     occupancy_.resize(static_cast<std::size_t>(map_.cell_count()), kNoAgent);
     normal_occupied_.resize(static_cast<std::size_t>(map_.cell_count()));
+    terminal_egress_.resize(agents_.size(), static_cast<std::size_t>(map_.cell_count()));
     candidates_.reserve(intersection_count);
     pending_.reserve(intersection_count);
     if (config_.goal_behavior == GoalBehavior::Lifelong) {
@@ -1208,6 +1211,20 @@ bool Simulator::step() {
         }
     }
 
+    // Treat boundary service as an atomic exit-and-return transaction.
+    const bool terminal_egress_enabled =
+        config_.goal_behavior == GoalBehavior::Lifelong && config_.exclusive_boundary_goals;
+    terminal_egress_.begin_cycle(agents_, terminal_egress_enabled);
+    if (terminal_egress_enabled) {
+        for (const Agent& agent : agents_) {
+            if (!agent.active || agent.position == agent.goal
+                || agent.intended_cell() != agent.goal || !map_.boundary(agent.goal)
+                || !adjacent_or_equal(agent.position, agent.goal)) continue;
+            static_cast<void>(
+                terminal_egress_.try_acquire(agent.id, agent.goal, agent.position));
+        }
+    }
+
     std::fill(occupancy_.begin(), occupancy_.end(), kNoAgent);
     for (const Agent& agent : agents_) if (agent.active)
         occupancy_[static_cast<std::size_t>(agent.position)] = agent.id;
@@ -1436,7 +1453,9 @@ bool Simulator::adjacent_or_equal(const CellId current, const CellId next) const
 }
 
 bool Simulator::boundary_entry_allowed(const Agent& agent, const CellId next) const {
-    return !config_.exclusive_boundary_goals || !map_.boundary(next) || next == agent.goal;
+    const bool goal_semantics =
+        !config_.exclusive_boundary_goals || !map_.boundary(next) || next == agent.goal;
+    return goal_semantics && terminal_egress_.allows(agent.id, next);
 }
 
 CellId Simulator::active_discharge_target(const Agent& agent) const {
@@ -1672,6 +1691,12 @@ void Simulator::run_pibt_movement() {
     for (const Agent& agent : agents_) {
         if (!agent.active || agent.scheduled()) continue;
         const auto index = static_cast<std::size_t>(agent.id);
+        const CellId terminal_return = terminal_egress_.return_cell(agent.id, agent.position);
+        if (terminal_return != kInvalidCell) {
+            pibt_eligible_[index] = 1;
+            pibt_priority_class_[index] = 3;
+            continue;
+        }
         const CellId discharge = active_discharge_target(agent);
         if (discharge != kInvalidCell) {
             pibt_eligible_[index] = 1;
@@ -1785,6 +1810,9 @@ void Simulator::run_pibt_movement() {
         [&](const AgentId id, const CellId candidate, const bool relaxed) {
             const Agent& agent = agents_[static_cast<std::size_t>(id)];
             if (!boundary_entry_allowed(agent, candidate)) return false;
+            const CellId terminal_return = terminal_egress_.return_cell(id, agent.position);
+            if (terminal_return != kInvalidCell)
+                return candidate == terminal_return;
             const CellId forced = pibt_forced_next_[static_cast<std::size_t>(id)];
             if (forced != kInvalidCell) return candidate == forced;
             if (candidate == agent.position) return true;
@@ -2015,7 +2043,11 @@ std::vector<CellId> Simulator::plan_global(const CellId start, const CellId goal
             return route;
         }
     }
-    if (config_.routing != GlobalRoutingPolicy::Swr) return planner_->plan(start, goal);
+    if (config_.routing != GlobalRoutingPolicy::Swr) {
+        auto route = planner_->plan(start, goal);
+        if (!route.empty()) planner_->note_assigned_route(route);
+        return route;
+    }
     const Coord source = map_.coord(start);
     const Coord destination = map_.coord(goal);
     std::vector<int> center_xs;

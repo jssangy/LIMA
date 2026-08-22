@@ -11,6 +11,7 @@
 #include "lima/simulation/goal_allocator.hpp"
 #include "lima/simulation/metrics.hpp"
 #include "lima/simulation/pibt_resolver.hpp"
+#include "lima/simulation/terminal_egress.hpp"
 #include "lima/simulation/trace.hpp"
 
 #include <memory>
@@ -27,6 +28,7 @@ enum class GlobalRoutingPolicy : std::uint8_t {
     Swr,
     Bfs,
     StaticGuidance,
+    TfoGp,
 };
 
 struct SimulationStats {
@@ -194,6 +196,7 @@ private:
     std::unique_ptr<StepTracer> tracer_;
     std::unique_ptr<GoalAllocator> goal_allocator_;  // lifelong mode only
     std::unique_ptr<PibtResolver> pibt_;             // pibt_corridor mode only
+    TerminalEgressReservations terminal_egress_;
     std::vector<std::uint8_t> pibt_eligible_;
     std::vector<std::uint8_t> pibt_priority_class_;
     std::vector<CellId> pibt_forced_next_;

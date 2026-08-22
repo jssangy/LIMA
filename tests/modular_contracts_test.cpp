@@ -2,6 +2,7 @@
 #include "lima/intersection/admission_information.hpp"
 #include "lima/intersection/gating.hpp"
 #include "lima/planning/planner.hpp"
+#include "lima/simulation/terminal_egress.hpp"
 
 #include <cassert>
 #include <cmath>
@@ -112,6 +113,37 @@ void test_directional_credit_advertisement() {
     assert(advertised == 2);
 }
 
+void test_terminal_egress_reservation() {
+    lima::TerminalEgressReservations reservations;
+    reservations.resize(3, 12);
+    std::vector<lima::Agent> agents(3);
+    for (std::size_t i = 0; i < agents.size(); ++i) {
+        agents[i].id = static_cast<lima::AgentId>(i);
+        agents[i].active = true;
+    }
+    agents[0].position = 5;
+    agents[0].goal = 6;
+    agents[0].route = {5, 6};
+    reservations.begin_cycle(agents, true);
+    assert(reservations.try_acquire(0, 6, 5));
+    assert(reservations.allows(0, 5) && reservations.allows(0, 6));
+    assert(!reservations.allows(1, 5) && !reservations.allows(1, 6));
+    agents[0].position = 6;
+    agents[0].goal = 2;
+    agents[0].route = {6, 5, 4, 3, 2};
+    reservations.begin_cycle(agents, true);
+    assert(reservations.return_cell(0, 6) == 5);
+    assert(!reservations.try_acquire(1, 6, 5));
+    agents[0].position = 5;
+    agents[0].route = {5, 4, 3, 2};
+    reservations.begin_cycle(agents, true);
+    assert(reservations.return_cell(0, 5) == lima::kInvalidCell);
+    assert(reservations.allows(1, 5) && reservations.allows(1, 6));
+    assert(reservations.try_acquire(1, 6, 5));
+    reservations.begin_cycle(agents, false);
+    assert(reservations.allows(2, 5) && reservations.allows(2, 6));
+}
+
 }  // namespace
 
 int main() {
@@ -119,5 +151,6 @@ int main() {
     test_suffix_repair();
     test_acknowledged_aimd();
     test_directional_credit_advertisement();
+    test_terminal_egress_reservation();
     return 0;
 }
